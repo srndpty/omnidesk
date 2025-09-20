@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Callable
 
@@ -16,8 +17,14 @@ class TabContainer(QWidget):
 
     currentPathChanged = pyqtSignal(Path)
     tabCountChanged = pyqtSignal(int)
+    nameColumnWidthChanged = pyqtSignal(int)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        name_column_width: int | None = None,
+    ) -> None:
         super().__init__(parent)
         self._tabs = QTabWidget(self)
         self._tabs.setDocumentMode(True)
@@ -30,14 +37,23 @@ class TabContainer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._tabs)
 
+        self._name_column_width = (
+            name_column_width
+            if name_column_width and name_column_width > 0
+            else FileBrowserTab.DEFAULT_NAME_COLUMN_WIDTH
+        )
+
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
     def open_in_new_tab(self, path: Path) -> FileBrowserTab:
-        tab = FileBrowserTab(self)
+        tab = FileBrowserTab(self, name_column_width=self._name_column_width)
         tab.navigate_to(path)
         tab.directoryChanged.connect(self._make_directory_changed_handler(tab))
         tab.requestOpenInNewTab.connect(self.open_in_new_tab)
+        tab.nameColumnWidthChanged.connect(
+            partial(self._handle_name_column_width_changed, source=tab)
+        )
         index = self._tabs.addTab(tab, self._label_for(path))
         self._tabs.setCurrentIndex(index)
         self.tabCountChanged.emit(self._tabs.count())
@@ -94,6 +110,15 @@ class TabContainer(QWidget):
         prev_index = (self._tabs.currentIndex() - 1) % count
         self._tabs.setCurrentIndex(prev_index)
 
+    def name_column_width(self) -> int:
+        return self._name_column_width
+
+    def set_name_column_width(self, width: int) -> None:
+        if width <= 0 or width == self._name_column_width:
+            return
+        self._name_column_width = width
+        self._apply_name_column_width(width)
+
     # ------------------------------------------------------------------
     # internal helpers
     # ------------------------------------------------------------------
@@ -125,7 +150,22 @@ class TabContainer(QWidget):
                 self.currentPathChanged.emit(path)
         return handler
 
+    def _handle_name_column_width_changed(self, width: int, *, source: FileBrowserTab) -> None:
+        if width <= 0 or width == self._name_column_width:
+            return
+        self._name_column_width = width
+        self.nameColumnWidthChanged.emit(width)
+        self._apply_name_column_width(width, exclude=source)
+
+    def _apply_name_column_width(self, width: int, *, exclude: FileBrowserTab | None = None) -> None:
+        for index in range(self._tabs.count()):
+            widget = self._tabs.widget(index)
+            if not isinstance(widget, FileBrowserTab) or widget is exclude:
+                continue
+            widget.set_name_column_width(width)
+
     @staticmethod
     def _label_for(path: Path) -> str:
         label = path.name or path.drive or str(path)
         return label
+

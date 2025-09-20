@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QMainWindow, QStackedWidget, QToolBar
 
+from ..utils.config import load_settings, save_settings
 from ..utils.paths import get_default_start_path
 from ..utils.windows_theme import apply_dark_title_bar
 from .column_browser import ColumnBrowser
@@ -22,9 +24,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OmniDesk")
         self.resize(1200, 720)
 
-        self._tab_container = TabContainer(self)
+        self._settings: dict[str, Any] = load_settings()
+        file_browser_config = self._settings.get("file_browser", {})
+        name_column_width = file_browser_config.get("name_column_width")
+        if not isinstance(name_column_width, int) or name_column_width <= 0:
+            name_column_width = None
+
+        self._tab_container = TabContainer(self, name_column_width=name_column_width)
         self._tab_container.currentPathChanged.connect(self._update_status_path)
         self._tab_container.tabCountChanged.connect(self._update_action_state)
+        self._tab_container.nameColumnWidthChanged.connect(self._handle_name_column_width_changed)
 
         self._column_browser = ColumnBrowser(self)
         self._column_browser.currentPathChanged.connect(self._update_status_path)
@@ -153,6 +162,15 @@ class MainWindow(QMainWindow):
         if self._is_tab_mode():
             self._tab_container.select_previous_tab()
 
+    def _handle_name_column_width_changed(self, width: int) -> None:
+        if width <= 0:
+            return
+        file_browser_config = self._settings.setdefault("file_browser", {})
+        if file_browser_config.get("name_column_width") == width:
+            return
+        file_browser_config["name_column_width"] = width
+        save_settings(self._settings)
+
     # ------------------------------------------------------------------
     def _switch_to_columns(self) -> None:
         self._column_browser.set_root_path(self._current_active_path())
@@ -190,6 +208,9 @@ class MainWindow(QMainWindow):
         self._next_tab_action.setEnabled(in_tabs and tab_count > 1)
         self._previous_tab_action.setEnabled(in_tabs and tab_count > 1)
 
+    def _persist_settings(self) -> None:
+        save_settings(self._settings)
+
     # ------------------------------------------------------------------
     def focusInEvent(self, event) -> None:  # noqa: N802
         super().focusInEvent(event)
@@ -197,3 +218,8 @@ class MainWindow(QMainWindow):
             self._tab_container.focus_current()
         else:
             self._column_browser.focus_view()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._persist_settings()
+        super().closeEvent(event)
+

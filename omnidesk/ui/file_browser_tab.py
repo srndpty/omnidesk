@@ -12,31 +12,35 @@ from PyQt6.QtCore import (
     Qt,
     pyqtSignal,
 )
-from PyQt6.QtGui import (
-    QDesktopServices, 
-    QKeyEvent,
-    QFileSystemModel,
-)
+from PyQt6.QtGui import QDesktopServices, QFileSystemModel, QKeyEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
+    QHeaderView,
     QLineEdit,
     QMessageBox,
     QToolButton,
     QTreeView,
     QVBoxLayout,
     QWidget,
-    
 )
 
 
 class FileBrowserTab(QWidget):
     """File browser view based on QFileSystemModel."""
 
+    DEFAULT_NAME_COLUMN_WIDTH = 420
+
     directoryChanged = pyqtSignal(Path)
     requestOpenInNewTab = pyqtSignal(Path)
+    nameColumnWidthChanged = pyqtSignal(int)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        name_column_width: int | None = None,
+    ) -> None:
         super().__init__(parent)
         self._model = QFileSystemModel(self)
         self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
@@ -53,6 +57,13 @@ class FileBrowserTab(QWidget):
         self._view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self._view.setRootIsDecorated(False)
         self._view.setUniformRowHeights(True)
+
+        header = self._view.header()
+        header.setStretchLastSection(False)
+        header.setSectionsClickable(True)
+        header.setMinimumSectionSize(80)
+        header.sectionResized.connect(self._handle_section_resized)
+        self._header = header
 
         self._path_edit = QLineEdit(self)
         self._path_edit.setClearButtonEnabled(True)
@@ -82,6 +93,14 @@ class FileBrowserTab(QWidget):
         root_layout.addWidget(self._view, stretch=1)
 
         self._current_path = Path.home()
+        self._name_column_width = (
+            name_column_width
+            if name_column_width and name_column_width > 0
+            else self.DEFAULT_NAME_COLUMN_WIDTH
+        )
+        self._configure_header_sections()
+        self._apply_name_column_width()
+
         self._model.directoryLoaded.connect(self._on_directory_loaded)
 
     # ------------------------------------------------------------------
@@ -98,6 +117,8 @@ class FileBrowserTab(QWidget):
         root_index = self._model.setRootPath(str(target))
         self._view.setRootIndex(root_index)
         self._connect_selection_signals()
+        self._configure_header_sections()
+        self._apply_name_column_width()
         self.directoryChanged.emit(target)
         self._select_first_row()
 
@@ -106,8 +127,6 @@ class FileBrowserTab(QWidget):
 
     def refresh(self) -> None:
         """Refresh the current directory view."""
-        # index = self._model.index(str(self._current_path))
-        # self._model.refresh(index) # <- AttributeError: 'QFileSystemModel' object has no attribute 'refresh'
         self.navigate_to(self._current_path)
 
     def go_up(self) -> None:
@@ -119,11 +138,25 @@ class FileBrowserTab(QWidget):
     def focus_view(self) -> None:
         self._view.setFocus(Qt.FocusReason.OtherFocusReason)
 
+    def set_name_column_width(self, width: int | None) -> None:
+        """Apply a new preferred width to the name column."""
+        if not width or width <= 0:
+            return
+        if width == self._name_column_width:
+            return
+        self._name_column_width = width
+        self._apply_name_column_width()
+
+    def name_column_width(self) -> int:
+        return self._name_column_width
+
     # ------------------------------------------------------------------
     # internal slots
     # ------------------------------------------------------------------
     def _on_directory_loaded(self, _: str) -> None:
         self._select_first_row()
+        self._configure_header_sections()
+        self._apply_name_column_width()
 
     def _handle_path_entered(self) -> None:
         entered = self._path_edit.text().strip()
@@ -143,8 +176,49 @@ class FileBrowserTab(QWidget):
         else:
             self._open_file(target)
 
-    def _open_file(self, path: Path) -> None:
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    def _handle_section_resized(self, logical_index: int, _: int, new_size: int) -> None:
+        if logical_index != 0:
+            return
+        if new_size <= 0 or new_size == self._name_column_width:
+            return
+        self._name_column_width = new_size
+        self.nameColumnWidthChanged.emit(new_size)
+
+    # ------------------------------------------------------------------
+    # QWidget overrides
+    # ------------------------------------------------------------------
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            selected = self._selected_index_path()
+            if selected and selected.is_dir():
+                self.requestOpenInNewTab.emit(selected)
+                return
+        super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+    def _apply_name_column_width(self) -> None:
+        if self._name_column_width > 0:
+            self._header.resizeSection(0, self._name_column_width)
+
+    def _configure_header_sections(self) -> None:
+        count = self._header.count()
+        if count == 0:
+            return
+        self._header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        for section in range(1, count):
+            self._header.setSectionResizeMode(section, QHeaderView.ResizeMode.ResizeToContents)
+
+    def _selected_index_path(self) -> Path | None:
+        selection_model = self._view.selectionModel()
+        if not selection_model:
+            return None
+        index = selection_model.currentIndex()
+        if not index.isValid():
+            return None
+        file_info = self._model.fileInfo(index)
+        return Path(file_info.absoluteFilePath())
 
     def _select_first_row(self) -> None:
         if not self._view.model():
@@ -174,26 +248,5 @@ class FileBrowserTab(QWidget):
         if file_info.isDir():
             self.directoryChanged.emit(Path(file_info.absoluteFilePath()))
 
-    # ------------------------------------------------------------------
-    # QWidget overrides
-    # ------------------------------------------------------------------
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            selected = self._selected_index_path()
-            if selected and selected.is_dir():
-                self.requestOpenInNewTab.emit(selected)
-                return
-        super().keyPressEvent(event)
-
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
-    def _selected_index_path(self) -> Path | None:
-        selection_model = self._view.selectionModel()
-        if not selection_model:
-            return None
-        index = selection_model.currentIndex()
-        if not index.isValid():
-            return None
-        file_info = self._model.fileInfo(index)
-        return Path(file_info.absoluteFilePath())
+    def _open_file(self, path: Path) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))

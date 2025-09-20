@@ -1,4 +1,4 @@
-"""設定ファイル読み書きユーティリティ。"""
+"""Helpers for loading and saving OmniDesk configuration."""
 
 from __future__ import annotations
 
@@ -25,4 +25,3 @@ def save_settings(data: dict[str, Any]) -> None:
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except OSError:
         pass
-
