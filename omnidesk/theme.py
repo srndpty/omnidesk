@@ -30,7 +30,17 @@ QTreeView, QColumnView {
     show-decoration-selected: 1;
 }
 
-QTreeView::item:hover, QColumnView::item:hover {
+QTreeView::item:selected, QColumnView::item:selected {
+    background-color: #3d7bfd;
+    color: #ffffff;
+}
+
+QTreeView::item:selected:hover, QColumnView::item:selected:hover {
+    background-color: #3d7bfd;
+    color: #ffffff;
+}
+
+QTreeView::item:hover:!selected, QColumnView::item:hover:!selected {
     background-color: #33363b;
 }
 
