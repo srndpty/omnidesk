@@ -14,6 +14,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QDesktopServices,
     QFileSystemModel,
+    QWheelEvent,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -24,8 +25,39 @@ from PyQt6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
-    
 )
+
+
+_COLUMN_VIEW_STYLESHEET = """
+QColumnView,
+QColumnView QListView {
+    background-color: #25262a;
+    alternate-background-color: #2f3034;
+    color: #f2f2f2;
+}
+
+QColumnView QListView::item:selected {
+    color: #ffffff;
+}
+"""
+
+
+class _DarkColumnView(QColumnView):
+    """Column view with dark styling and enhanced scrolling."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet(_COLUMN_VIEW_STYLESHEET)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            delta = event.angleDelta().y() or event.angleDelta().x()
+            if delta:
+                hbar = self.horizontalScrollBar()
+                hbar.setValue(hbar.value() - delta)
+                event.accept()
+                return
+        super().wheelEvent(event)
 
 
 class ColumnBrowser(QWidget):
@@ -40,7 +72,7 @@ class ColumnBrowser(QWidget):
         self._model.setResolveSymlinks(True)
         self._model.setReadOnly(True)
 
-        self._view = QColumnView(self)
+        self._view = _DarkColumnView(self)
         self._view.setModel(self._model)
         self._view.setAlternatingRowColors(True)
         self._view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
