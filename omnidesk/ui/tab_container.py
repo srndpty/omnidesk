@@ -145,7 +145,8 @@ class TabContainer(QWidget):
             tab_index = self._tabs.indexOf(tab)
             if tab_index == -1:
                 return
-            self._tabs.setTabText(tab_index, self._label_for(path))
+            root_path = tab.current_path()
+            self._tabs.setTabText(tab_index, self._label_for(root_path))
             if tab_index == self._tabs.currentIndex():
                 self.currentPathChanged.emit(path)
         return handler
