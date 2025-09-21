@@ -97,9 +97,7 @@ class _BaseFileViewMixin:
         super().mouseMoveEvent(event)
 
     def startDrag(self, supported_actions: Qt.DropAction) -> None:  # noqa: N802
-        print(f"[_BaseFileViewMixin] startDrag: supported_actions={supported_actions}", flush=True)
         paths = self.selected_paths()
-        print(f"[_BaseFileViewMixin] startDrag: selected paths={len(paths)}, [0]={paths[0]}", flush=True)
         if not paths:
             return
         mime = QMimeData()
@@ -110,14 +108,12 @@ class _BaseFileViewMixin:
         drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction, default_action)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
-        print(f"[_BaseFileViewMixin] dragEnterEvent: mime={event.mimeData().formats()}", flush=True)
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
-        print(f"[_BaseFileViewMixin] dragMoveEvent: mime={event.mimeData().formats()}", flush=True)
         if event.mimeData().hasUrls():
             print
             action = (
@@ -128,27 +124,21 @@ class _BaseFileViewMixin:
             event.setDropAction(action)
             event.acceptProposedAction()
         else:
-            print(f"[_BaseFileViewMixin] dragMoveEvent ignored: no URLs", flush=True)
             event.ignore()
 
     def dropEvent(self, event) -> None:  # noqa: N802
-        print(f"[_BaseFileViewMixin] dropEvent: mime={event.mimeData().formats()}", flush=True)
         if not event.mimeData().hasUrls():
             event.ignore()
-            print(f"[_BaseFileViewMixin] dropEvent ignored: no URLs", flush=True)
             return
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
         if not paths:
             event.ignore()
-            print(f"[_BaseFileViewMixin] dropEvent ignored: no local files", flush=True)
             return
         pos = event.position().toPoint()
         index = self.indexAt(pos)
         target_dir = self._tab._current_path
-        print(f"[_BaseFileViewMixin] dropEvent at {target_dir}, index valid={index.isValid()}", flush=True)
         if index.isValid():
             file_info = self._tab._model.fileInfo(index)
-            print(f"[_BaseFileViewMixin] drop target info: dir={file_info.isDir()} path={file_info.absoluteFilePath()}", flush=True)
             if file_info.isDir():
                 target_dir = Path(file_info.absoluteFilePath())
             else:
@@ -157,25 +147,20 @@ class _BaseFileViewMixin:
             event.dropAction() == Qt.DropAction.MoveAction
             and not event.modifiers() & Qt.KeyboardModifier.ControlModifier
         )
-        print(f"[_BaseFileViewMixin] drop move={move} urls={len(paths)}", flush=True)
         self._tab._handle_external_drop(paths, target_dir, move)
         event.setDropAction(Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction)
         event.acceptProposedAction()
 
     def dropMimeData(self, data, action, row, column, parent_index: QModelIndex) -> bool:
-        print(f"[_BaseFileViewMixin] dropMimeData: action={action} row={row} column={column} parent valid={parent_index.isValid()}", flush=True)
         if action != Qt.DropAction.MoveAction:
-            print(f"[_BaseFileViewMixin] dropMimeData ignored: action not move", flush=True)
             return False
 
         # parent_index はドロップ先のディレクトリのインデックス
         if not parent_index.isValid():
-            print(f"[_BaseFileViewMixin] dropMimeData ignored: invalid parent index", flush=True)
             return False
 
         dest_dir = self.filePath(parent_index)
         if not os.path.isdir(dest_dir):
-            print(f"[_BaseFileViewMixin] dropMimeData ignored: destination not a directory: {dest_dir}", flush=True)
             return False
 
         # data.urls() にドラッグされたファイルのパスが入ってくる
@@ -191,7 +176,6 @@ class _BaseFileViewMixin:
                 # 移動（リネーム）
                 os.rename(src_path, dest_path)
             except Exception as e:
-                print("Error moving file:", e)
                 # 必要ならメッセージなど
                 return False
 
@@ -369,8 +353,14 @@ class FileBrowserTab(QWidget):
         self._view_stack.addWidget(self._tile_view)
 
         self._manual_media_mode: bool | None = None
+        self._manual_media_mode: bool | None = None
         self._clipboard: dict[str, object] | None = None
         self._create_actions()
+        self._toggle_view_button = QToolButton(self)
+        self._toggle_view_button.setText("Tile View")
+        self._toggle_view_button.setToolTip("Toggle between tile and list views")
+        self._toggle_view_button.clicked.connect(self._handle_view_toggle_clicked)
+        self._update_view_toggle_button()
 
         header = self._tree_view.header()
         header.setStretchLastSection(False)
@@ -398,10 +388,6 @@ class FileBrowserTab(QWidget):
         path_bar_layout.setSpacing(6)
         path_bar_layout.addWidget(self._path_edit, stretch=1)
         path_bar_layout.addWidget(self._up_button)
-        self._toggle_view_button = QToolButton(self)
-        self._toggle_view_button.setText("Tile View")
-        self._toggle_view_button.setToolTip("Toggle between tile and list views")
-        self._toggle_view_button.clicked.connect(self._handle_view_toggle_clicked)
         path_bar_layout.addWidget(self._toggle_view_button)
         path_bar_layout.addWidget(self._refresh_button)
 
@@ -550,10 +536,7 @@ class FileBrowserTab(QWidget):
         name, ok = QInputDialog.getText(self, "New File", "File name:", text="New File.txt")
         if not ok or not name.strip():
             return
-        target = self._current_path / name.strip()
-        if target.exists():
-            QMessageBox.warning(self, "Create file failed", f"{target} already exists.")
-            return
+        target = self._resolve_destination(self._current_path, name.strip(), move=False)
         try:
             target.touch(exist_ok=False)
         except Exception as exc:  # pragma: no cover - filesystem dependent
@@ -568,10 +551,7 @@ class FileBrowserTab(QWidget):
         name, ok = QInputDialog.getText(self, "New Folder", "Folder name:", text="New Folder")
         if not ok or not name.strip():
             return
-        target = self._current_path / name.strip()
-        if target.exists():
-            QMessageBox.warning(self, "Create folder failed", f"{target} already exists.")
-            return
+        target = self._resolve_destination(self._current_path, name.strip(), move=False)
         try:
             target.mkdir(parents=True, exist_ok=False)
         except Exception as exc:  # pragma: no cover - filesystem dependent
@@ -983,10 +963,7 @@ class FileBrowserTab(QWidget):
 
     def _handle_view_toggle_clicked(self) -> None:
         target = not self._media_icon_mode
-        if self._manual_media_mode is None:
-            self._manual_media_mode = target
-        else:
-            self._manual_media_mode = target
+        self._manual_media_mode = target
         self._media_icon_mode = target
         self._apply_media_mode()
 
