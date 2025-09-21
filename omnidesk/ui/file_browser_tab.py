@@ -466,8 +466,7 @@ class FileBrowserTab(QWidget):
         self._update_action_states()
 
     def _setup_shortcuts(self) -> None:
-        QShortcut(QKeySequence.StandardKey.SelectAll, self, self._select_all)
-        # QShortcut(QKeySequence("Ctrl+A"), self, self._select_all)
+        QShortcut(QKeySequence("Ctrl+A"), self, self._select_all)
         QShortcut(QKeySequence("Alt+D"), self, self._focus_path_edit)
         QShortcut(QKeySequence("Alt+Up"), self, self.go_up)
 

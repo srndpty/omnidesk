@@ -126,6 +126,14 @@ class TabContainer(QWidget):
         prev_index = (self._tabs.currentIndex() - 1) % count
         self._tabs.setCurrentIndex(prev_index)
 
+    def tab_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        for index in range(self._tabs.count()):
+            widget = self._tabs.widget(index)
+            if isinstance(widget, FileBrowserTab):
+                paths.append(widget.current_path())
+        return paths
+
     def name_column_width(self) -> int:
         return self._name_column_width
 

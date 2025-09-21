@@ -49,13 +49,41 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("Starting...")
 
+        self._restore_initial_state()
+        apply_dark_title_bar(self)
+
+    def _restore_initial_state(self) -> None:
+        session = self._settings.get("session", {}) if isinstance(self._settings, dict) else {}
+        tab_entries = session.get("tabs") if isinstance(session, dict) else None
+        opened = False
+        if isinstance(tab_entries, list):
+            for raw in tab_entries:
+                try:
+                    candidate = Path(raw)
+                except Exception:  # pragma: no cover - defensive
+                    continue
+                if not candidate.exists():
+                    continue
+                self._tab_container.open_in_new_tab(candidate)
+                opened = True
+            if opened:
+                current = self._tab_container.current_tab()
+                active_path = current.current_path() if current else get_default_start_path()
+                self._column_browser.set_root_path(active_path)
+                if session.get("view_mode") == "columns":
+                    self._switch_to_columns()
+                else:
+                    self._switch_to_tabs()
+                self._update_status_path(self._current_active_path())
+                self._update_action_state()
+                return
+
         initial_path = get_default_start_path()
         self._tab_container.open_in_new_tab(initial_path)
         self._column_browser.set_root_path(initial_path)
         self._stack.setCurrentWidget(self._tab_container)
         self._update_status_path(initial_path)
         self._update_action_state()
-        apply_dark_title_bar(self)
 
     # ------------------------------------------------------------------
     def _create_actions(self) -> None:
@@ -209,6 +237,10 @@ class MainWindow(QMainWindow):
         self._previous_tab_action.setEnabled(in_tabs and tab_count > 1)
 
     def _persist_settings(self) -> None:
+        session = self._settings.setdefault("session", {})
+        if isinstance(session, dict):
+            session["tabs"] = [str(path) for path in self._tab_container.tab_paths()]
+            session["view_mode"] = self._view_mode
         save_settings(self._settings)
 
     # ------------------------------------------------------------------
