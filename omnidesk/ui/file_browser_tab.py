@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import shutil
+from functools import partial
+from itertools import count
+from pathlib import Path
+
 from PyQt6.QtCore import (
     QDir,
     QItemSelectionModel,
@@ -13,14 +18,23 @@ from PyQt6.QtCore import (
     Qt,
     pyqtSignal,
     QTimer,
+    QMimeData,
 )
-from PyQt6.QtGui import QDesktopServices, QKeyEvent
+from PyQt6.QtGui import (
+    QCursor,
+    QDesktopServices,
+    QDrag,
+    QKeyEvent,
+    QKeySequence,
+    QAction,
+)
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QHeaderView,
     QLineEdit,
     QListView,
+    QMenu,
     QMessageBox,
     QStackedWidget,
     QToolButton,
@@ -29,7 +43,104 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+
 from .media_file_system_model import MediaFileSystemModel
+
+
+class _BaseFileViewMixin:
+    """Adds reusable drag-and-drop and context menu behaviours."""
+
+    def _init_file_view(self, tab: "FileBrowserTab") -> None:
+        self._tab = tab
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(partial(tab._show_context_menu, self))
+
+    def selected_paths(self) -> list[Path]:
+        selection_model = self.selectionModel()
+        if not selection_model:
+            return []
+        rows = selection_model.selectedRows() or selection_model.selectedIndexes()
+        if not rows:
+            return []
+        return self._tab._paths_from_indexes(rows)
+
+    def startDrag(self, supported_actions: Qt.DropAction) -> None:  # noqa: N802
+        paths = self.selected_paths()
+        if not paths:
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        default_action = Qt.DropAction.MoveAction
+        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction, default_action)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            action = (
+                Qt.DropAction.CopyAction
+                if event.modifiers() & Qt.KeyboardModifier.ControlModifier
+                else Qt.DropAction.MoveAction
+            )
+            event.setDropAction(action)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+        if not paths:
+            event.ignore()
+            return
+        pos = event.position().toPoint()
+        index = self.indexAt(pos)
+        target_dir = self._tab._current_path
+        if index.isValid():
+            file_info = self._tab._model.fileInfo(index)
+            if file_info.isDir():
+                target_dir = Path(file_info.absoluteFilePath())
+            else:
+                target_dir = Path(file_info.absolutePath())
+        move = (
+            event.dropAction() == Qt.DropAction.MoveAction
+            and not event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        )
+        self._tab._handle_external_drop(paths, target_dir, move)
+        event.acceptProposedAction()
+
+
+class _FileTreeView(_BaseFileViewMixin, QTreeView):
+    def __init__(self, tab: "FileBrowserTab") -> None:
+        super().__init__(tab)
+        self._init_file_view(tab)
+
+
+class _FileTileView(_BaseFileViewMixin, QListView):
+    def __init__(self, tab: "FileBrowserTab") -> None:
+        super().__init__(tab)
+        self._init_file_view(tab)
+        self.setViewMode(QListView.ViewMode.IconMode)
+        self.setFlow(QListView.Flow.LeftToRight)
+        self.setWrapping(True)
+        self.setResizeMode(QListView.ResizeMode.Adjust)
+        self.setMovement(QListView.Movement.Static)
+        self.setSpacing(16)
+        self.setUniformItemSizes(False)
+        self.setWordWrap(True)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 
 
 class FileBrowserTab(QWidget):
@@ -51,13 +162,15 @@ class FileBrowserTab(QWidget):
         name_column_width: int | None = None,
     ) -> None:
         super().__init__(parent)
+        self._media_icon_mode = False
+
         self._model = MediaFileSystemModel(self)
         self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
         # self._model.thumbnailUpdated.connect(self._handle_thumbnail_updated)
         self._model.setResolveSymlinks(True)
         self._model.setReadOnly(True)
 
-        self._tree_view = QTreeView(self)
+        self._tree_view = _FileTreeView(self)
         self._tree_view.setModel(self._model)
         self._tree_view.setAlternatingRowColors(True)
         self._tree_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -69,17 +182,8 @@ class FileBrowserTab(QWidget):
         self._tree_view.setUniformRowHeights(True)
         self._tree_view.setIconSize(QSize(32, 32))
 
-        self._tile_view = QListView(self)
+        self._tile_view = _FileTileView(self)
         self._tile_view.setModel(self._model)
-        self._tile_view.setViewMode(QListView.ViewMode.IconMode)
-        self._tile_view.setFlow(QListView.Flow.LeftToRight)
-        self._tile_view.setWrapping(True)
-        self._tile_view.setResizeMode(QListView.ResizeMode.Adjust)
-        self._tile_view.setMovement(QListView.Movement.Static)
-        self._tile_view.setSpacing(16)
-        self._tile_view.setUniformItemSizes(False)
-        self._tile_view.setWordWrap(True)
-        self._tile_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tile_view.doubleClicked.connect(self._handle_index_activated)
         self._tile_view.activated.connect(self._handle_index_activated)
         self._tile_view.setIconSize(QSize(128, 128))
@@ -88,6 +192,9 @@ class FileBrowserTab(QWidget):
         self._view_stack = QStackedWidget(self)
         self._view_stack.addWidget(self._tree_view)
         self._view_stack.addWidget(self._tile_view)
+
+        self._clipboard: dict[str, object] | None = None
+        self._create_actions()
 
         header = self._tree_view.header()
         header.setStretchLastSection(False)
@@ -129,7 +236,6 @@ class FileBrowserTab(QWidget):
             if name_column_width and name_column_width > 0
             else self.DEFAULT_NAME_COLUMN_WIDTH
         )
-        self._media_icon_mode = False
         self._bound_selection_model: QItemSelectionModel | None = None
 
         self._configure_header_sections()
@@ -149,6 +255,200 @@ class FileBrowserTab(QWidget):
         self._tile_view.horizontalScrollBar().valueChanged.connect(self._on_scroll)
 
         self._model.directoryLoaded.connect(self._on_directory_loaded)
+
+    def _create_actions(self) -> None:
+        self._copy_action = QAction("Copy", self)
+        self._copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        self._copy_action.triggered.connect(self._copy_selected)
+
+        self._cut_action = QAction("Cut", self)
+        self._cut_action.setShortcut(QKeySequence.StandardKey.Cut)
+        self._cut_action.triggered.connect(self._cut_selected)
+
+        self._paste_action = QAction("Paste", self)
+        self._paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        self._paste_action.triggered.connect(self._paste_into_current)
+
+        self._delete_action = QAction("Delete", self)
+        self._delete_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
+        self._delete_action.triggered.connect(self._delete_selected)
+
+        for action in (
+            self._copy_action,
+            self._cut_action,
+            self._paste_action,
+            self._delete_action,
+        ):
+            self.addAction(action)
+        self._update_action_states()
+
+    def _update_action_states(self) -> None:
+        has_selection = bool(self._selected_paths())
+        clipboard_ready = isinstance(self._clipboard, dict) and bool(self._clipboard.get("paths"))
+        self._copy_action.setEnabled(has_selection)
+        self._cut_action.setEnabled(has_selection)
+        self._delete_action.setEnabled(has_selection)
+        self._paste_action.setEnabled(clipboard_ready and self._current_path.exists())
+
+    def _paths_from_indexes(self, indexes: list[QModelIndex]) -> list[Path]:
+        paths: list[Path] = []
+        seen: set[Path] = set()
+        for index in indexes:
+            if not index.isValid():
+                continue
+            source = index.siblingAtColumn(0)
+            path = Path(self._model.filePath(source))
+            if path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+        return paths
+
+    def _selected_paths(self) -> list[Path]:
+        view = self._active_view()
+        return view.selected_paths()
+
+    def _show_context_menu(self, view: QAbstractItemView, point) -> None:
+        index = view.indexAt(point)
+        selection_model = view.selectionModel()
+        if index.isValid() and selection_model and not selection_model.isSelected(index):
+            selection_model.setCurrentIndex(
+                index,
+                QItemSelectionModel.SelectionFlag.ClearAndSelect,
+            )
+        self._update_action_states()
+        menu = QMenu(self)
+        menu.addAction(self._copy_action)
+        menu.addAction(self._cut_action)
+        menu.addAction(self._paste_action)
+        menu.addSeparator()
+        menu.addAction(self._delete_action)
+        menu.exec(view.viewport().mapToGlobal(point))
+
+    def _copy_selected(self) -> None:
+        paths = self._selected_paths()
+        if not paths:
+            return
+        self._clipboard = {"paths": paths, "mode": "copy"}
+        self._update_action_states()
+
+    def _cut_selected(self) -> None:
+        paths = self._selected_paths()
+        if not paths:
+            return
+        self._clipboard = {"paths": paths, "mode": "move"}
+        self._update_action_states()
+
+    def _paste_into_current(self) -> None:
+        if not self._clipboard:
+            return
+        paths = [Path(p) for p in self._clipboard.get("paths", [])]
+        if not paths:
+            return
+        move = self._clipboard.get("mode") == "move"
+        self._perform_copy_or_move(paths, self._current_path, move=move)
+        if move:
+            self._clipboard = None
+        self.refresh()
+        self._update_action_states()
+
+    def _delete_selected(self) -> None:
+        paths = self._selected_paths()
+        if not paths:
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "Delete",
+                f"Delete {len(paths)} item(s)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        errors: list[str] = []
+        for path in paths:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except Exception as exc:  # pragma: no cover - filesystem dependent
+                errors.append(f"{path}: {exc}")
+        if errors:
+            QMessageBox.warning(self, "Delete failed", "\n".join(errors))
+        self.refresh()
+        self._update_action_states()
+
+    def _perform_copy_or_move(self, sources: list[Path], dest_dir: Path, *, move: bool) -> None:
+        errors: list[str] = []
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for src in sources:
+            if not src.exists():
+                errors.append(f"Missing: {src}")
+                continue
+            try:
+                if move and src.parent.resolve() == dest_dir.resolve():
+                    continue
+            except Exception:  # pragma: no cover - resolution failure on some systems
+                pass
+            try:
+                target = self._resolve_destination(dest_dir, src.name, move)
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            try:
+                if move:
+                    shutil.move(str(src), str(target))
+                else:
+                    if src.is_dir():
+                        shutil.copytree(src, target)
+                    else:
+                        shutil.copy2(src, target)
+            except Exception as exc:  # pragma: no cover - filesystem dependent
+                errors.append(f"{src} -> {target}: {exc}")
+        if errors:
+            QMessageBox.warning(self, "Operation issues", "\n".join(errors))
+
+    def _resolve_destination(self, dest_dir: Path, name: str, move: bool) -> Path:
+        target = dest_dir / name
+        if not target.exists():
+            return target
+        if move and target.exists():
+            raise ValueError(f"Destination already has {name}")
+        stem = target.stem
+        suffix = target.suffix
+        for n in count(1):
+            candidate = dest_dir / f"{stem} - Copy {n}{suffix}"
+            if not candidate.exists():
+                return candidate
+        raise ValueError("Unable to resolve destination")
+
+    @staticmethod
+    def _is_within(path: Path, potential_parent: Path) -> bool:
+        try:
+            path.relative_to(potential_parent)
+            return True
+        except ValueError:
+            return False
+
+    def _handle_external_drop(self, paths: list[Path], target_dir: Path, move: bool) -> None:
+        if not target_dir.exists():
+            QMessageBox.warning(self, "Drop failed", f"Destination {target_dir} does not exist.")
+            return
+        if move:
+            for path in paths:
+                try:
+                    src_resolved = path.resolve()
+                    dest_resolved = target_dir.resolve()
+                except Exception:  # pragma: no cover - Windows UNC etc.
+                    continue
+                if src_resolved == dest_resolved or self._is_within(dest_resolved, src_resolved):
+                    QMessageBox.warning(self, "Drop failed", "Cannot move a folder into itself.")
+                    return
+        self._perform_copy_or_move(paths, target_dir, move=move)
+        self.refresh()
+
 
     # ------------------------------------------------------------------
     # public API
@@ -350,8 +650,14 @@ class FileBrowserTab(QWidget):
                 self._bound_selection_model.currentChanged.disconnect(self._handle_current_changed)
             except TypeError:
                 pass
+            try:
+                self._bound_selection_model.selectionChanged.disconnect(self._handle_selection_changed)
+            except TypeError:
+                pass
         self._bound_selection_model = selection_model
         selection_model.currentChanged.connect(self._handle_current_changed)
+        selection_model.selectionChanged.connect(self._handle_selection_changed)
+        self._update_action_states()
 
     def _handle_current_changed(self, current: QModelIndex, _: QModelIndex) -> None:
         file_info = self._model.fileInfo(current)
@@ -422,3 +728,7 @@ class FileBrowserTab(QWidget):
         ratio = media_files / total_files
         print(f"[FileBrowserTab] media ratio check: media={media_files} total={total_files} ratio={ratio:.2f}", flush=True)
         return ratio >= self.MEDIA_RATIO_THRESHOLD
+
+    def _handle_selection_changed(self, *_args) -> None:
+        self._update_action_states()
+
