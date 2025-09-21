@@ -56,9 +56,9 @@ class MediaThumbnailProvider(QObject):
         key = str(path)
         if suffix in self.IMAGE_EXTENSIONS:
             if key in self._image_jobs:
-                print(f"[MediaThumbnailProvider] image job already queued: {key}", flush=True)
+                # print(f"[MediaThumbnailProvider] image job already queued: {key}", flush=True)
                 return False
-            print(f"[MediaThumbnailProvider] queue image job: {key} edge={edge}", flush=True)
+            # print(f"[MediaThumbnailProvider] queue image job: {key} edge={edge}", flush=True)
             job = _ImageJob(key, path, edge)
             job.signals.finished.connect(self._handle_image_from_worker)
             self._image_jobs[key] = job
@@ -66,12 +66,12 @@ class MediaThumbnailProvider(QObject):
             return True
         if suffix in self.VIDEO_EXTENSIONS:
             if not self._video_support:
-                print(f"[MediaThumbnailProvider] video support unavailable for: {key}", flush=True)
+                # print(f"[MediaThumbnailProvider] video support unavailable for: {key}", flush=True)
                 return False
             if key in self._video_jobs:
-                print(f"[MediaThumbnailProvider] video job already queued: {key}", flush=True)
+                # print(f"[MediaThumbnailProvider] video job already queued: {key}", flush=True)
                 return False
-            print(f"[MediaThumbnailProvider] start video job: {key} edge={edge}", flush=True)
+            # print(f"[MediaThumbnailProvider] start video job: {key} edge={edge}", flush=True)
             job = _VideoJob(path, edge)
             job.finished.connect(self._on_video_finished)
             self._video_jobs[key] = job
@@ -94,7 +94,7 @@ class MediaThumbnailProvider(QObject):
                 Qt.TransformationMode.SmoothTransformation,
             )
             icon = QIcon(pixmap)
-            print(f"[MediaThumbnailProvider] created pixmap for {key} size={pixmap.width()}x{pixmap.height()}", flush=True)
+            # print(f"[MediaThumbnailProvider] created pixmap for {key} size={pixmap.width()}x{pixmap.height()}", flush=True)
         else:
             print(f"[MediaThumbnailProvider] image job finished with no image: {key}", flush=True)
         # print(f"[MediaThumbnailProvider] image job finished: {key} icon={'Y' if icon else 'N'}", flush=True)
@@ -121,10 +121,10 @@ class _ImageJob(QRunnable):
         self.signals = WorkerSignals()
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
-        print(f"[_ImageJob] processing image: {self._path}", flush=True)
+        # print(f"[_ImageJob] processing image: {self._path}", flush=True)
         image = self._load_image(self._path)
         has_image = isinstance(image, QImage) and not image.isNull() if image is not None else False
-        print(f"[_ImageJob] emitting result for {self._path} image={'Y' if has_image else 'N'}", flush=True)
+        # print(f"[_ImageJob] emitting result for {self._path} image={'Y' if has_image else 'N'}", flush=True)
         self.signals.finished.emit(self._key, image, self._edge)
 
     @staticmethod
@@ -133,9 +133,9 @@ class _ImageJob(QRunnable):
         reader.setAutoTransform(True)
         image = reader.read()
         if image.isNull():
-            print(f"[_ImageJob] failed to read image: {path}", flush=True)
+            # print(f"[_ImageJob] failed to read image: {path}", flush=True)
             return None
-        print(f"[_ImageJob] image read success: {path} size={image.width()}x{image.height()}", flush=True)
+        # print(f"[_ImageJob] image read success: {path} size={image.width()}x{image.height()}", flush=True)
         return image
 
 

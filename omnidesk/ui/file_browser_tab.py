@@ -8,6 +8,7 @@ import shutil
 from functools import partial
 from itertools import count
 from pathlib import Path
+import os
 
 from PyQt6.QtCore import (
     QDir,
@@ -87,7 +88,9 @@ class _BaseFileViewMixin:
         super().mouseMoveEvent(event)
 
     def startDrag(self, supported_actions: Qt.DropAction) -> None:  # noqa: N802
+        print(f"[_BaseFileViewMixin] startDrag: supported_actions={supported_actions}", flush=True)
         paths = self.selected_paths()
+        print(f"[_BaseFileViewMixin] startDrag: selected paths={len(paths)}", flush=True)
         if not paths:
             return
         mime = QMimeData()
@@ -98,36 +101,45 @@ class _BaseFileViewMixin:
         drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction, default_action)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
+        print(f"[_BaseFileViewMixin] dragEnterEvent: mime={event.mimeData().formats()}", flush=True)
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
+        print(f"[_BaseFileViewMixin] dragMoveEvent: mime={event.mimeData().formats()}", flush=True)
         if event.mimeData().hasUrls():
+            print
             action = (
                 Qt.DropAction.CopyAction
                 if event.modifiers() & Qt.KeyboardModifier.ControlModifier
                 else Qt.DropAction.MoveAction
             )
             event.setDropAction(action)
-            event.accept()
+            event.acceptProposedAction()
         else:
+            print(f"[_BaseFileViewMixin] dragMoveEvent ignored: no URLs", flush=True)
             event.ignore()
 
     def dropEvent(self, event) -> None:  # noqa: N802
+        print(f"[_BaseFileViewMixin] dropEvent: mime={event.mimeData().formats()}", flush=True)
         if not event.mimeData().hasUrls():
             event.ignore()
+            print(f"[_BaseFileViewMixin] dropEvent ignored: no URLs", flush=True)
             return
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
         if not paths:
             event.ignore()
+            print(f"[_BaseFileViewMixin] dropEvent ignored: no local files", flush=True)
             return
         pos = event.position().toPoint()
         index = self.indexAt(pos)
         target_dir = self._tab._current_path
+        print(f"[_BaseFileViewMixin] dropEvent at {target_dir}, index valid={index.isValid()}", flush=True)
         if index.isValid():
             file_info = self._tab._model.fileInfo(index)
+            print(f"[_BaseFileViewMixin] drop target info: dir={file_info.isDir()} path={file_info.absoluteFilePath()}", flush=True)
             if file_info.isDir():
                 target_dir = Path(file_info.absoluteFilePath())
             else:
@@ -136,9 +148,45 @@ class _BaseFileViewMixin:
             event.dropAction() == Qt.DropAction.MoveAction
             and not event.modifiers() & Qt.KeyboardModifier.ControlModifier
         )
+        print(f"[_BaseFileViewMixin] drop move={move} urls={len(paths)}", flush=True)
         self._tab._handle_external_drop(paths, target_dir, move)
+        event.setDropAction(Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction)
         event.acceptProposedAction()
 
+    def dropMimeData(self, data, action, row, column, parent_index: QModelIndex) -> bool:
+        print(f"[_BaseFileViewMixin] dropMimeData: action={action} row={row} column={column} parent valid={parent_index.isValid()}", flush=True)
+        if action != Qt.DropAction.MoveAction:
+            print(f"[_BaseFileViewMixin] dropMimeData ignored: action not move", flush=True)
+            return False
+
+        # parent_index はドロップ先のディレクトリのインデックス
+        if not parent_index.isValid():
+            print(f"[_BaseFileViewMixin] dropMimeData ignored: invalid parent index", flush=True)
+            return False
+
+        dest_dir = self.filePath(parent_index)
+        if not os.path.isdir(dest_dir):
+            print(f"[_BaseFileViewMixin] dropMimeData ignored: destination not a directory: {dest_dir}", flush=True)
+            return False
+
+        # data.urls() にドラッグされたファイルのパスが入ってくる
+        for url in data.urls():
+            src_path = url.toLocalFile()
+            basename = os.path.basename(src_path)
+            dest_path = os.path.join(dest_dir, basename)
+
+            # 防御的にチェック
+            if src_path == dest_path:
+                continue
+            try:
+                # 移動（リネーム）
+                os.rename(src_path, dest_path)
+            except Exception as e:
+                print("Error moving file:", e)
+                # 必要ならメッセージなど
+                return False
+
+        return True
 
 class _FileTreeView(_BaseFileViewMixin, QTreeView):
     def __init__(self, tab: "FileBrowserTab") -> None:
@@ -154,12 +202,14 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setFlow(QListView.Flow.LeftToRight)
         self.setWrapping(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
-        self.setMovement(QListView.Movement.Static)
+        self.setMovement(QListView.Movement.Free)
+        # self.setMovement(QListView.Movement.Static)
         self.setSpacing(16)
         self.setUniformItemSizes(False)
         self.setWordWrap(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionRectVisible(False)
+
 
 
 class FileBrowserTab(QWidget):
@@ -689,10 +739,8 @@ class FileBrowserTab(QWidget):
     # ------------------------------------------------------------------
     def _update_media_mode(self, directory: Path) -> None:
         should_enable = self._is_media_heavy(directory)
-        print(f"[FileBrowserTab] media mode check: {directory} -> {should_enable}", flush=True)
         if should_enable != self._media_icon_mode:
             self._media_icon_mode = should_enable
-            print(f"[FileBrowserTab] media mode toggled to {self._media_icon_mode}", flush=True)
             self._apply_media_mode()
         elif self._media_icon_mode:
             self._apply_media_mode()
@@ -700,13 +748,11 @@ class FileBrowserTab(QWidget):
     def _apply_media_mode(self) -> None:
         if self._media_icon_mode:
             icon_edge = 160
-            print(f"[FileBrowserTab] apply media mode with edge {icon_edge}", flush=True)
             self._model.set_thumbnail_edge(icon_edge)
             self._tile_view.setIconSize(QSize(icon_edge, icon_edge))
             self._tile_view.setGridSize(self._calculate_grid_size(icon_edge))
             self._view_stack.setCurrentWidget(self._tile_view)
         else:
-            print("[FileBrowserTab] apply list mode", flush=True)
             self._model.set_thumbnail_edge(96)
             self._tree_view.setIconSize(QSize(32, 32))
             self._view_stack.setCurrentWidget(self._tree_view)
@@ -719,7 +765,6 @@ class FileBrowserTab(QWidget):
         padding = 24
         width = edge + padding
         height = edge + padding + text_height
-        print(f"[FileBrowserTab] grid size edge={edge} -> {width}x{height}", flush=True)
         return QSize(width, height)
 
     def _is_media_heavy(self, directory: Path) -> bool:
@@ -740,12 +785,10 @@ class FileBrowserTab(QWidget):
         if media_files == 0:
             return False
         if total_files <= self.MEDIA_MIN_COUNT:
-            print(f"[FileBrowserTab] media-heavy due to small count: files={total_files} media={media_files}", flush=True)
             return True
         if media_files < self.MEDIA_MIN_COUNT:
             return False
         ratio = media_files / total_files
-        print(f"[FileBrowserTab] media ratio check: media={media_files} total={total_files} ratio={ratio:.2f}", flush=True)
         return ratio >= self.MEDIA_RATIO_THRESHOLD
 
     def _handle_selection_changed(self, *_args) -> None:
