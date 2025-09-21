@@ -29,6 +29,7 @@ from PyQt6.QtGui import (
     QAction,
 )
 from PyQt6.QtWidgets import (
+    QApplication,
     QAbstractItemView,
     QHBoxLayout,
     QHeaderView,
@@ -52,10 +53,13 @@ class _BaseFileViewMixin:
 
     def _init_file_view(self, tab: "FileBrowserTab") -> None:
         self._tab = tab
+        self._drag_start_pos = None
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(partial(tab._show_context_menu, self))
 
@@ -67,6 +71,20 @@ class _BaseFileViewMixin:
         if not rows:
             return []
         return self._tab._paths_from_indexes(rows)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.position()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if event.buttons() & Qt.MouseButton.LeftButton and self._drag_start_pos is not None:
+            distance = (event.position() - self._drag_start_pos).manhattanLength()
+            if distance >= QApplication.startDragDistance():
+                if self.selected_paths():
+                    self.startDrag(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
+                    return
+        super().mouseMoveEvent(event)
 
     def startDrag(self, supported_actions: Qt.DropAction) -> None:  # noqa: N802
         paths = self.selected_paths()
@@ -141,6 +159,7 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setUniformItemSizes(False)
         self.setWordWrap(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setSelectionRectVisible(False)
 
 
 class FileBrowserTab(QWidget):
