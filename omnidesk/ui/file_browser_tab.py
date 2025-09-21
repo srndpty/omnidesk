@@ -20,6 +20,8 @@ from PyQt6.QtCore import (
     pyqtSignal,
     QTimer,
     QMimeData,
+    QRect,
+    QItemSelection,
 )
 from PyQt6.QtGui import (
     QCursor,
@@ -43,6 +45,7 @@ from PyQt6.QtWidgets import (
     QTreeView,
     QVBoxLayout,
     QWidget,
+    QRubberBand,
 )
 
 
@@ -55,6 +58,7 @@ class _BaseFileViewMixin:
     def _init_file_view(self, tab: "FileBrowserTab") -> None:
         self._tab = tab
         self._drag_start_pos = None
+        self._drag_on_item = False 
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
@@ -76,13 +80,16 @@ class _BaseFileViewMixin:
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.position()
+            # クリックされた位置にアイテムが存在するかどうかをチェック
+            index_at_pos = self.indexAt(event.position().toPoint())
+            self._drag_on_item = index_at_pos.isValid()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if event.buttons() & Qt.MouseButton.LeftButton and self._drag_start_pos is not None:
             distance = (event.position() - self._drag_start_pos).manhattanLength()
             if distance >= QApplication.startDragDistance():
-                if self.selected_paths():
+                if self._drag_on_item and self.selected_paths():
                     self.startDrag(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
                     return
         super().mouseMoveEvent(event)
@@ -192,7 +199,103 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
     def __init__(self, tab: "FileBrowserTab") -> None:
         super().__init__(tab)
         self._init_file_view(tab)
+        
+        self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
+        self._rubber_band_origin = None
+        
+        # ★★★ リアルタイム選択更新のための状態変数を追加 ★★★
+        self._last_selection = QItemSelection()
 
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        super().mousePressEvent(event) # Mixinの処理を先に呼ぶ
+
+        if not self._drag_on_item and event.button() == Qt.MouseButton.LeftButton:
+            self._rubber_band_origin = event.pos()
+            self._rubber_band.setGeometry(QRect(self._rubber_band_origin, QSize()))
+            self._rubber_band.show()
+            
+            # ★★★ 既存の選択状態を保存しておく ★★★
+            self._last_selection = QItemSelection(self.selectionModel().selection())
+            
+            event.accept()
+            return
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._rubber_band.isVisible():
+            rect = QRect(self._rubber_band_origin, event.pos()).normalized()
+            self._rubber_band.setGeometry(rect)
+            
+            # ★★★ mouseMoveイベント内で直接、選択更新処理を呼び出す ★★★
+            self._update_rubber_band_selection(event.modifiers())
+            
+            event.accept()
+            return
+        
+        super().mouseMoveEvent(event) # MixinのD&D処理
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._rubber_band.isVisible():
+            self._rubber_band.hide()
+            
+            # ★★★ 状態変数をリセット ★★★
+            self._last_selection = QItemSelection()
+            
+            event.accept()
+            return
+
+        super().mouseReleaseEvent(event) # Mixinの処理
+
+    def _update_rubber_band_selection(self, modifiers: Qt.KeyboardModifier) -> None:
+        """ラバーバンド内のアイテムをリアルタイムで選択するメソッド"""
+        selection_rect = self._rubber_band.geometry()
+        current_selection_in_band = QItemSelection()
+        root = self.rootIndex()
+        model = self.model()
+        column_count = model.columnCount()
+
+        for row in range(model.rowCount(root)):
+            # ★★★ ここからが変更されたロジック ★★★
+
+            # 1. 行の最初のカラムのインデックスを取得
+            first_col_index = model.index(row, 0, root)
+            if not first_col_index.isValid():
+                continue
+
+            # 2. 行全体の表示矩形を計算する
+            #    最初のカラムの矩形と最後のカラムの矩形を結合する
+            last_col_index = model.index(row, column_count - 1, root)
+            full_row_rect = self.visualRect(first_col_index).united(self.visualRect(last_col_index))
+            
+            # 高速化のため、行がビューポート外ならチェックをスキップ
+            if not full_row_rect.intersects(self.viewport().rect()):
+                continue
+
+            # 3. ラバーバンドが行全体の矩形と交差するかどうかをチェック
+            if selection_rect.intersects(full_row_rect):
+                row_selection = QItemSelection(first_col_index, last_col_index)
+                current_selection_in_band.merge(row_selection, QItemSelectionModel.SelectionFlag.Select)
+
+        # ★★★ ここから下の選択ロジックは変更なし ★★★
+        selection_model = self.selectionModel()
+
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            last_indexes = set(self._last_selection.indexes())
+            current_indexes_in_band = set(current_selection_in_band.indexes())
+            final_indexes_to_select = last_indexes.symmetric_difference(current_indexes_in_band)
+
+            final_selection = QItemSelection()
+            processed_rows = set()
+            for index in final_indexes_to_select:
+                row = index.row()
+                if row not in processed_rows:
+                    start_index = model.index(row, 0, root)
+                    end_index = model.index(row, column_count - 1, root)
+                    final_selection.select(start_index, end_index)
+                    processed_rows.add(row)
+            
+            selection_model.select(final_selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        else:
+            selection_model.select(current_selection_in_band, QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
 class _FileTileView(_BaseFileViewMixin, QListView):
     def __init__(self, tab: "FileBrowserTab") -> None:
@@ -203,12 +306,11 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setWrapping(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Free)
-        # self.setMovement(QListView.Movement.Static)
         self.setSpacing(16)
         self.setUniformItemSizes(False)
         self.setWordWrap(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.setSelectionRectVisible(False)
+        self.setSelectionRectVisible(True)
 
 
 
@@ -243,6 +345,7 @@ class FileBrowserTab(QWidget):
         self._tree_view.setModel(self._model)
         self._tree_view.setAlternatingRowColors(True)
         self._tree_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._tree_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tree_view.doubleClicked.connect(self._handle_index_activated)
         self._tree_view.activated.connect(self._handle_index_activated)
         self._tree_view.setSortingEnabled(True)
