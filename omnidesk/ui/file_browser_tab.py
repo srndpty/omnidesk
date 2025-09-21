@@ -90,7 +90,7 @@ class _BaseFileViewMixin:
     def startDrag(self, supported_actions: Qt.DropAction) -> None:  # noqa: N802
         print(f"[_BaseFileViewMixin] startDrag: supported_actions={supported_actions}", flush=True)
         paths = self.selected_paths()
-        print(f"[_BaseFileViewMixin] startDrag: selected paths={len(paths)}", flush=True)
+        print(f"[_BaseFileViewMixin] startDrag: selected paths={len(paths)}, [0]={paths[0]}", flush=True)
         if not paths:
             return
         mime = QMimeData()
