@@ -6,10 +6,23 @@ from functools import partial
 from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import QTabBar, QTabWidget, QVBoxLayout, QWidget
 
 from .file_browser_tab import FileBrowserTab
+
+
+class _ClosableTabBar(QTabBar):
+    middleClicked = pyqtSignal(int)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.MiddleButton:
+            index = self.tabAt(event.position().toPoint())
+            if index >= 0:
+                self.middleClicked.emit(index)
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
 
 
 class TabContainer(QWidget):
@@ -27,6 +40,9 @@ class TabContainer(QWidget):
     ) -> None:
         super().__init__(parent)
         self._tabs = QTabWidget(self)
+        tab_bar = _ClosableTabBar(self._tabs)
+        tab_bar.middleClicked.connect(self._close_tab)
+        self._tabs.setTabBar(tab_bar)
         self._tabs.setDocumentMode(True)
         self._tabs.setMovable(True)
         self._tabs.setTabsClosable(True)

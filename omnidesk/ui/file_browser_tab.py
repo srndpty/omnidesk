@@ -30,6 +30,7 @@ from PyQt6.QtGui import (
     QKeyEvent,
     QKeySequence,
     QAction,
+    QShortcut,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -40,6 +41,7 @@ from PyQt6.QtWidgets import (
     QListView,
     QMenu,
     QMessageBox,
+    QInputDialog,
     QStackedWidget,
     QToolButton,
     QTreeView,
@@ -334,6 +336,7 @@ class FileBrowserTab(QWidget):
     ) -> None:
         super().__init__(parent)
         self._media_icon_mode = False
+        self._current_path = Path.home()
 
         self._model = MediaFileSystemModel(self)
         self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
@@ -365,6 +368,7 @@ class FileBrowserTab(QWidget):
         self._view_stack.addWidget(self._tree_view)
         self._view_stack.addWidget(self._tile_view)
 
+        self._manual_media_mode: bool | None = None
         self._clipboard: dict[str, object] | None = None
         self._create_actions()
 
@@ -394,6 +398,11 @@ class FileBrowserTab(QWidget):
         path_bar_layout.setSpacing(6)
         path_bar_layout.addWidget(self._path_edit, stretch=1)
         path_bar_layout.addWidget(self._up_button)
+        self._toggle_view_button = QToolButton(self)
+        self._toggle_view_button.setText("Tile View")
+        self._toggle_view_button.setToolTip("Toggle between tile and list views")
+        self._toggle_view_button.clicked.connect(self._handle_view_toggle_clicked)
+        path_bar_layout.addWidget(self._toggle_view_button)
         path_bar_layout.addWidget(self._refresh_button)
 
         root_layout = QVBoxLayout(self)
@@ -402,7 +411,6 @@ class FileBrowserTab(QWidget):
         root_layout.addLayout(path_bar_layout)
         root_layout.addWidget(self._view_stack, stretch=1)
 
-        self._current_path = Path.home()
         self._name_column_width = (
             name_column_width
             if name_column_width and name_column_width > 0
@@ -445,22 +453,49 @@ class FileBrowserTab(QWidget):
         self._delete_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
         self._delete_action.triggered.connect(self._delete_selected)
 
+        self._rename_action = QAction("Rename", self)
+        self._rename_action.setShortcut(QKeySequence(Qt.Key.Key_F2))
+        self._rename_action.triggered.connect(self._rename_selected)
+
+        self._new_file_action = QAction("New File", self)
+        self._new_file_action.setShortcut(QKeySequence("Ctrl+N"))
+        self._new_file_action.triggered.connect(self._create_new_file)
+
+        self._new_folder_action = QAction("New Folder", self)
+        self._new_folder_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        self._new_folder_action.triggered.connect(self._create_new_folder)
+
         for action in (
+            self._rename_action,
             self._copy_action,
             self._cut_action,
             self._paste_action,
             self._delete_action,
+            self._new_file_action,
+            self._new_folder_action,
         ):
             self.addAction(action)
+
+        self._setup_shortcuts()
         self._update_action_states()
 
+    def _setup_shortcuts(self) -> None:
+        QShortcut(QKeySequence.StandardKey.SelectAll, self, self._select_all)
+        # QShortcut(QKeySequence("Ctrl+A"), self, self._select_all)
+        QShortcut(QKeySequence("Alt+D"), self, self._focus_path_edit)
+        QShortcut(QKeySequence("Alt+Up"), self, self.go_up)
+
     def _update_action_states(self) -> None:
-        has_selection = bool(self._selected_paths())
+        paths = self._selected_paths()
+        has_selection = bool(paths)
         clipboard_ready = isinstance(self._clipboard, dict) and bool(self._clipboard.get("paths"))
         self._copy_action.setEnabled(has_selection)
         self._cut_action.setEnabled(has_selection)
         self._delete_action.setEnabled(has_selection)
+        self._rename_action.setEnabled(len(paths) == 1)
         self._paste_action.setEnabled(clipboard_ready and self._current_path.exists())
+        self._new_file_action.setEnabled(self._current_path.exists())
+        self._new_folder_action.setEnabled(self._current_path.exists())
 
     def _paths_from_indexes(self, indexes: list[QModelIndex]) -> list[Path]:
         paths: list[Path] = []
@@ -480,6 +515,84 @@ class FileBrowserTab(QWidget):
         view = self._active_view()
         return view.selected_paths()
 
+    def _select_all(self) -> None:
+        view = self._active_view()
+        if view:
+            view.selectAll()
+
+    def _focus_path_edit(self) -> None:
+        self._path_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._path_edit.selectAll()
+
+    def _rename_selected(self) -> None:
+        paths = self._selected_paths()
+        if len(paths) != 1:
+            return
+        original = paths[0]
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=original.name)
+        if not ok or not new_name or new_name == original.name:
+            return
+        target = original.with_name(new_name)
+        if target.exists():
+            QMessageBox.warning(self, "Rename failed", f"{target} already exists.")
+            return
+        try:
+            original.rename(target)
+        except Exception as exc:  # pragma: no cover - filesystem dependent
+            QMessageBox.warning(self, "Rename failed", str(exc))
+            return
+        self.refresh()
+        self._select_path(target)
+
+    def _create_new_file(self) -> None:
+        if not self._current_path.exists():
+            return
+        name, ok = QInputDialog.getText(self, "New File", "File name:", text="New File.txt")
+        if not ok or not name.strip():
+            return
+        target = self._current_path / name.strip()
+        if target.exists():
+            QMessageBox.warning(self, "Create file failed", f"{target} already exists.")
+            return
+        try:
+            target.touch(exist_ok=False)
+        except Exception as exc:  # pragma: no cover - filesystem dependent
+            QMessageBox.warning(self, "Create file failed", str(exc))
+            return
+        self.refresh()
+        self._select_path(target)
+
+    def _create_new_folder(self) -> None:
+        if not self._current_path.exists():
+            return
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:", text="New Folder")
+        if not ok or not name.strip():
+            return
+        target = self._current_path / name.strip()
+        if target.exists():
+            QMessageBox.warning(self, "Create folder failed", f"{target} already exists.")
+            return
+        try:
+            target.mkdir(parents=True, exist_ok=False)
+        except Exception as exc:  # pragma: no cover - filesystem dependent
+            QMessageBox.warning(self, "Create folder failed", str(exc))
+            return
+        self.refresh()
+        self._select_path(target)
+
+    def _select_path(self, path: Path) -> None:
+        index = self._model.index(str(path))
+        if not index.isValid():
+            return
+        view = self._active_view()
+        selection_model = view.selectionModel()
+        if selection_model:
+            selection_model.setCurrentIndex(
+                index,
+                QItemSelectionModel.SelectionFlag.ClearAndSelect,
+            )
+        view.scrollTo(index)
+
     def _show_context_menu(self, view: QAbstractItemView, point) -> None:
         index = view.indexAt(point)
         selection_model = view.selectionModel()
@@ -490,11 +603,16 @@ class FileBrowserTab(QWidget):
             )
         self._update_action_states()
         menu = QMenu(self)
+        menu.addAction(self._rename_action)
+        menu.addSeparator()
         menu.addAction(self._copy_action)
         menu.addAction(self._cut_action)
         menu.addAction(self._paste_action)
         menu.addSeparator()
         menu.addAction(self._delete_action)
+        menu.addSeparator()
+        menu.addAction(self._new_file_action)
+        menu.addAction(self._new_folder_action)
         menu.exec(view.viewport().mapToGlobal(point))
 
     def _copy_selected(self) -> None:
@@ -859,8 +977,27 @@ class FileBrowserTab(QWidget):
             self._model.set_thumbnail_edge(96)
             self._tree_view.setIconSize(QSize(32, 32))
             self._view_stack.setCurrentWidget(self._tree_view)
+        self._update_view_toggle_button()
         self._connect_selection_signals()
         self._select_first_row()
+
+    def _handle_view_toggle_clicked(self) -> None:
+        target = not self._media_icon_mode
+        if self._manual_media_mode is None:
+            self._manual_media_mode = target
+        else:
+            self._manual_media_mode = target
+        self._media_icon_mode = target
+        self._apply_media_mode()
+
+    def _update_view_toggle_button(self) -> None:
+        current = self._media_icon_mode
+        if current:
+            self._toggle_view_button.setText("List View")
+            self._toggle_view_button.setToolTip("Switch to list view (details)")
+        else:
+            self._toggle_view_button.setText("Tile View")
+            self._toggle_view_button.setToolTip("Switch to tile view (thumbnails)")
 
     def _calculate_grid_size(self, edge: int) -> QSize:
         fm = self._tile_view.fontMetrics()

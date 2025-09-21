@@ -3,7 +3,7 @@
 - 適宜コードのファイルを分割し、god classにならないようにしてください
 
 ## PyQt6 に関する注意
-- PyQt6 では QFileSystemModel は PyQt6.QtGui 内に移動されているため留意してください。
+- PyQt6 では QFileSystemModelとQShortcut は PyQt6.QtGui 内に移動されているため留意してください。
   NG: from PyQt6.QtWidgets import QFileSystemModel
   OK: from PyQt6.QtGui import QFileSystemModel
 - `PyQt6.QtConcurrent` は存在しません。代替手段を用いてください（QThreadPool + QRunnableなど）
