@@ -40,7 +40,7 @@ class MediaFileSystemModel(QFileSystemModel):
 
     # ------------------------------------------------------------------
     def data(self, index, role):
-        if role == Qt.ItemDataRole.DecorationRole and index.isValid():
+        if role == Qt.ItemDataRole.DecorationRole and index.isValid() and index.column() == 0:
             file_info = self.fileInfo(index)
             if file_info.isFile():
                 path_str = file_info.absoluteFilePath()
