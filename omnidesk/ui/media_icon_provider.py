@@ -38,6 +38,8 @@ class MediaThumbnailProvider(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._thread_pool = QThreadPool.globalInstance()
+        # これにより、メインスレッドへのシグナルの殺到を防ぎ、UIの応答性を保つ
+        self._thread_pool.setMaxThreadCount(4)
         self._image_jobs: Dict[str, _ImageJob] = {}
         self._video_jobs: Dict[str, _VideoJob] = {}
         self._video_support = QMediaPlayer is not None and QVideoSink is not None
