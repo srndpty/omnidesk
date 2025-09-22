@@ -65,6 +65,7 @@ class TabContainer(QWidget):
         # 5. イベントフィルタは、セットした後のタブバーにインストールする
         bar = self._tabs.tabBar()
         bar.installEventFilter(self)
+        bar.setAcceptDrops(True)
         bar.setStyleSheet("QTabBar::tab { max-width: 220px; }")
         # (C) ホイールをタブバーで受ける（フォーカス不要でも届くように）
         bar.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
@@ -95,6 +96,44 @@ class TabContainer(QWidget):
     # ★★★ このメソッドをまるごとTabContainerクラスに追加 ★★★
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if obj is self._tabs.tabBar():
+            # ドラッグが入ってきたら受け入れ
+            if event.type() == QEvent.Type.DragEnter:
+                if event.mimeData().hasUrls():
+                    event.acceptProposedAction()
+                    return True
+                return False
+
+            # 移動中：どのタブ上かを示し、コピー/移動の種別を決定
+            if event.type() == QEvent.Type.DragMove:
+                if event.mimeData().hasUrls():
+                    idx = obj.tabAt(event.position().toPoint())
+                    if idx != -1:
+                        obj.setCurrentIndex(idx)  # 視覚的に対象タブをハイライト
+                        action = (Qt.DropAction.CopyAction
+                                if event.modifiers() & Qt.KeyboardModifier.ControlModifier
+                                else Qt.DropAction.MoveAction)
+                        event.setDropAction(action)
+                        event.accept()
+                        return True
+                return False
+
+            # ドロップ：対象タブのフォルダへ移動（またはコピー）
+            if event.type() == QEvent.Type.Drop:
+                if event.mimeData().hasUrls():
+                    idx = obj.tabAt(event.position().toPoint())
+                    if idx != -1:
+                        target_tab = self._tabs.widget(idx)
+                        if isinstance(target_tab, FileBrowserTab):
+                            paths = [Path(u.toLocalFile())
+                                    for u in event.mimeData().urls() if u.isLocalFile()]
+                            move = not (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                            dest_dir = target_tab.current_path()
+                            target_tab._handle_external_drop(paths, dest_dir, move)
+                            event.setDropAction(Qt.DropAction.MoveAction if move
+                                                else Qt.DropAction.CopyAction)
+                            event.acceptProposedAction()
+                            return True
+                return False
             if event.type() == QEvent.Type.Wheel:
                 wheel: QWheelEvent = event
                 # --- ステップ数を決める（マウス/トラックパッド両対応） ---
@@ -123,7 +162,7 @@ class TabContainer(QWidget):
                     return True
 
             # ここに他の処理（中クリックでクローズ等）があれば続けてOK
-            if event.type() == QEvent.Type.MouseButtonRelease:
+            elif event.type() == QEvent.Type.MouseButtonRelease:
                 mouse: QMouseEvent = event
                 if mouse.button() == Qt.MouseButton.MiddleButton:
                     index = self._tabs.tabBar().tabAt(mouse.position().toPoint())
