@@ -111,12 +111,19 @@ class MediaFileSystemModel(QFileSystemModel):
 
             # ★★★ ここからが修正されたロジック ★★★
             if file_info.isFile():
+                # ★ 追加: ここでも軽くガード（get() はディスクからの復元を伴う）
+                if file_thumbnail_cache.get(key) is not None:
+                    self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+                    continue
                 # --- ファイルの処理 (変更なし) ---
                 suffix = path.suffix.lower()
                 if suffix in self.media_extensions:
                     self._ensure_thumbnail(path, suffix)
             
             elif file_info.isDir() and self._thumbnail_edge > 64:
+                if folder_preview_cache.get(key) is not None:
+                    self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+                    continue
                 # --- フォルダの処理をここに追加 ---
                 self._ensure_folder_thumbnail(path)
 
@@ -131,6 +138,14 @@ class MediaFileSystemModel(QFileSystemModel):
     # ------------------------------------------------------------------
     def _ensure_thumbnail(self, path: Path, suffix: str, key: str | None = None) -> None:
         norm_key = key or self._normalise_key(path)
+   
+        # ★ 追加: すでにキャッシュにあればジョブを投げない（ディスク→メモリ復元もここで済む）
+        if file_thumbnail_cache.get(norm_key) is not None:
+            idx = self.index(norm_key)
+            if idx.isValid():
+                self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
+            return
+        
         if norm_key in self._pending or norm_key in self._failed:
             # print(f"[MediaFileSystemModel] skip existing job for {norm_key}", flush=True)
             return
@@ -148,6 +163,14 @@ class MediaFileSystemModel(QFileSystemModel):
     def _handle_thumbnail_ready(self, path: str, icon: QIcon | None) -> None:
         # print(f"[MediaFileSystemModel] thumbnail ready for {path} icon={'Y' if icon else 'N'}", flush=True)
         key = self._normalise_key(path)
+
+        # ★ 追加: フォルダのプレビューがキャッシュにあれば生成しない
+        if folder_preview_cache.get(key) is not None:
+            idx = self.index(key)
+            if idx.isValid():
+                self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
+            return
+
         self._pending.discard(key)
         if icon is None or icon.isNull():
             # print(f"[MediaFileSystemModel] thumbnail failed for {key}", flush=True)

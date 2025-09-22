@@ -856,7 +856,7 @@ class FileBrowserTab(QWidget):
 
         if visible_indexes:
             print(f"_request_visible_thumbnails: {len(visible_indexes)} visible items")
-            print(self._model.get_path_list(visible_indexes))
+            # print(self._model.get_path_list(visible_indexes))
             self._model.prioritize_thumbnail_requests(visible_indexes)
 
     def current_path(self) -> Path:
