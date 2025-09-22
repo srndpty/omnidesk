@@ -938,7 +938,8 @@ class FileBrowserTab(QWidget):
 
     # ------------------------------------------------------------------
     def _update_media_mode(self, directory: Path) -> None:
-        should_enable = self._is_media_heavy(directory)
+        # should_enable = self._is_media_heavy(directory)
+        should_enable = True  # 常にサムネイルモードにする
         if should_enable != self._media_icon_mode:
             self._media_icon_mode = should_enable
             self._apply_media_mode()
