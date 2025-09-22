@@ -96,6 +96,26 @@ class _BaseFileViewMixin:
                     return
         super().mouseMoveEvent(event)
 
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        """
+        このビュー上でマウスボタンが離されたときに呼び出される。
+        戻る/進むボタンを処理し、親のタブコンテナに伝える。
+        """
+        # まず、親クラス（QTreeView/QListView）のデフォルト処理を呼び出す
+        # これにより、通常のクリック選択などが壊れないようにする
+        super().mouseReleaseEvent(event)
+
+        button = event.button()
+        if button == Qt.MouseButton.BackButton:
+            print("[_BaseFileViewMixin] Back button pressed, telling tab to go up.", flush=True)
+            self._tab.go_up() # 親であるタブのgo_up()を呼び出す
+            event.accept()
+        elif button == Qt.MouseButton.ForwardButton:
+            # 将来の「進む」機能のために、ここに処理を追加できる
+            print("[_BaseFileViewMixin] Forward button pressed.", flush=True)
+            # self._tab.go_forward() # のようなメソッドを将来的に呼び出す
+            event.accept()
+
     def startDrag(self, supported_actions: Qt.DropAction) -> None:  # noqa: N802
         paths = self.selected_paths()
         if not paths:
@@ -321,6 +341,7 @@ class FileBrowserTab(QWidget):
         super().__init__(parent)
         self._media_icon_mode = False
         self._current_path = Path.home()
+        self._navigation_history: list[Path] = []
         self._is_active = False 
 
         self._model = MediaFileSystemModel(self)
@@ -731,11 +752,20 @@ class FileBrowserTab(QWidget):
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
-    def navigate_to(self, path: Path) -> None:
+    def navigate_to(self, path: Path, *, from_history: bool = False) -> None:
         """Display the given directory as the current root."""
         if not path.exists():
             QMessageBox.warning(self, "Cannot navigate", f"{path} does not exist.")
             return
+        
+        current = self._current_path
+        
+        # 通常のナビゲーション（履歴からではない）の場合のみ、履歴を記録
+        if not from_history:
+            # 移動先が現在の場所と異なる場合のみ履歴に追加
+            if current.resolve() != path.resolve():
+                self._navigation_history.append(current)
+
         target = path if path.is_dir() else path.parent
         self._current_path = target
         self._path_edit.setText(str(target))
@@ -838,9 +868,18 @@ class FileBrowserTab(QWidget):
 
     def go_up(self) -> None:
         """Navigate to the parent directory."""
+        
+        # ★★★ フォーカスすべきパスを、現在のパスとして記憶しておく ★★★
+        path_to_focus = self._current_path
+        
         parent = self._current_path.parent
         if parent != self._current_path:
-            self.navigate_to(parent)
+            # ★★★ from_history=True を付けて navigate_to を呼び出す ★★★
+            self.navigate_to(parent, from_history=True)
+            
+            # ★★★ 移動後に、記憶しておいたパスを選択する ★★★
+            # 少し遅延させてから選択を実行するのが確実
+            QTimer.singleShot(0, lambda p=path_to_focus: self._select_path(p))
 
     def focus_view(self) -> None:
         self._active_view().setFocus(Qt.FocusReason.OtherFocusReason)
@@ -898,7 +937,10 @@ class FileBrowserTab(QWidget):
     # QWidget overrides
     # ------------------------------------------------------------------
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        print(f"keyPressEvent: key={event.key()}, modifiers={event.modifiers()}", flush=True)
+        # Ctrl+Enter で選択中のフォルダを新しいタブで開く
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            print("Ctrl+Enter detected")
             selected = self._selected_index_path()
             if selected and selected.is_dir():
                 self.requestOpenInNewTab.emit(selected)
@@ -908,11 +950,28 @@ class FileBrowserTab(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         """ウィンドウサイズが変更されたときに呼び出される"""
         # 親クラスの元のリサイズ処理を必ず呼び出す
-        super().resizeEvent(event)
         # スクロール時と同じタイマーを開始し、可視範囲のサムネイル要求をスケジュールする
         if self._is_active: # アクティブなタブだけがリサイズに応答
             self._restart_thumbnail_requests()
             print("resizeEvent, _thumbnail_request_timer.start...")
+            return
+        super().resizeEvent(event)
+
+    # def mouseReleaseEvent(self, event) -> None: # noqa: N802
+    #     """マウスボタンが離されたときに呼び出される"""
+    #     # 親クラスのイベント処理をまず呼び出す
+
+    #     print(f"mouseReleaseEvent: button={event.button()}", flush=True)
+        
+    #     # どのボタンが離されたかチェック
+    #     if event.button() == Qt.MouseButton.BackButton:
+    #         print("[FileBrowserTab] Back button pressed, going up.", flush=True)
+    #         self.go_up()
+    #         event.accept() # イベントが処理されたことをQtに伝える
+    #         return
+        
+    #     super().mouseReleaseEvent(event)
+        
 
     # ------------------------------------------------------------------
     # helpers

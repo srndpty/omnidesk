@@ -146,7 +146,7 @@ class MediaFileSystemModel(QFileSystemModel):
             print(f"[MediaFileSystemModel] job not started for {norm_key}", flush=True)
 
     def _handle_thumbnail_ready(self, path: str, icon: QIcon | None) -> None:
-        print(f"[MediaFileSystemModel] thumbnail ready for {path} icon={'Y' if icon else 'N'}", flush=True)
+        # print(f"[MediaFileSystemModel] thumbnail ready for {path} icon={'Y' if icon else 'N'}", flush=True)
         key = self._normalise_key(path)
         self._pending.discard(key)
         if icon is None or icon.isNull():
@@ -190,9 +190,9 @@ class MediaFileSystemModel(QFileSystemModel):
             
             # 4. 合成したPixmapから新しいQIconを作成してキャッシュ
             final_icon = QIcon(base_pixmap)
-            print(f"  final_icon valid={'Y' if not final_icon.isNull() else 'N'}", flush=True)
+            # print(f"  final_icon valid={'Y' if not final_icon.isNull() else 'N'}", flush=True)
             folder_preview_cache.put(key, final_icon, base_pixmap)
-            print(f"[MediaFileSystemModel] folder thumbnail created for {key}", flush=True)
+            # print(f"[MediaFileSystemModel] folder thumbnail created for {key}", flush=True)
         else:
             # --- 通常のファイルの処理 (変更なし) ---
             # QIconから元になったPixmapを取得して渡す
