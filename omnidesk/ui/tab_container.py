@@ -47,7 +47,8 @@ class TabContainer(QWidget):
         self._tabs.setMovable(True)
         self._tabs.setTabsClosable(True)
         self._tabs.tabCloseRequested.connect(self._close_tab)
-        self._tabs.currentChanged.connect(self._emit_current_path)
+        # self._tabs.currentChanged.connect(self._emit_current_path)
+        self._tabs.currentChanged.connect(self._handle_current_tab_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -159,10 +160,28 @@ class TabContainer(QWidget):
         self.tabCountChanged.emit(self._tabs.count())
         self._emit_current_path(self._tabs.currentIndex())
 
-    def _emit_current_path(self, index: int) -> None:
-        widget = self._tabs.widget(index)
-        if isinstance(widget, FileBrowserTab):
-            self.currentPathChanged.emit(widget.current_path())
+    # def _emit_current_path(self, index: int) -> None:
+    #     widget = self._tabs.widget(index)
+    #     if isinstance(widget, FileBrowserTab):
+    #         self.currentPathChanged.emit(widget.current_path())
+    
+    # ★★★ 3. _emit_current_path を _handle_current_tab_changed に統合・置換 ★★★
+    def _handle_current_tab_changed(self, index: int) -> None:
+        """タブが切り替わったときに呼び出される中央ハンドラ"""
+        # すべてのタブをループ
+        for i in range(self._tabs.count()):
+            widget = self._tabs.widget(i)
+            if not isinstance(widget, FileBrowserTab):
+                continue
+            
+            # 新しくカレントになったタブを activate する
+            if i == index:
+                widget.activate()
+                # 以前 _emit_current_path がやっていた処理もここで行う
+                self.currentPathChanged.emit(widget.current_path())
+            # それ以外のタブは deactivate する
+            else:
+                widget.deactivate()
 
     def _make_directory_changed_handler(self, tab: FileBrowserTab) -> Callable[[Path], None]:
         def handler(path: Path) -> None:

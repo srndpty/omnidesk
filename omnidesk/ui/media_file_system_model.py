@@ -120,6 +120,14 @@ class MediaFileSystemModel(QFileSystemModel):
                 # --- フォルダの処理をここに追加 ---
                 self._ensure_folder_thumbnail(path)
 
+    def get_path_list(self, indexes: list[QModelIndex]) -> list[str]:
+        """Given a list of indexes, return their absolute file paths."""
+        paths = []
+        for index in indexes:
+            if index.isValid():
+                file_info = self.fileInfo(index)
+                paths.append(file_info.absoluteFilePath())
+        return paths
     # ------------------------------------------------------------------
     def _ensure_thumbnail(self, path: Path, suffix: str, key: str | None = None) -> None:
         norm_key = key or self._normalise_key(path)

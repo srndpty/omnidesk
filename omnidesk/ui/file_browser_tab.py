@@ -321,6 +321,7 @@ class FileBrowserTab(QWidget):
         super().__init__(parent)
         self._media_icon_mode = False
         self._current_path = Path.home()
+        self._is_active = False 
 
         self._model = MediaFileSystemModel(self)
         self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
@@ -328,6 +329,9 @@ class FileBrowserTab(QWidget):
         self._model.setResolveSymlinks(True)
         self._model.setReadOnly(True)
 
+        # モデルのレイアウトが変更されたら、サムネイル要求をトリガーする
+        self._model.layoutChanged.connect(self._on_layout_changed)
+        
         self._tree_view = _FileTreeView(self)
         self._tree_view.setModel(self._model)
         self._tree_view.setAlternatingRowColors(True)
@@ -335,11 +339,21 @@ class FileBrowserTab(QWidget):
         self._tree_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tree_view.doubleClicked.connect(self._handle_index_activated)
         self._tree_view.activated.connect(self._handle_index_activated)
-        self._tree_view.setSortingEnabled(True)
-        self._tree_view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self._tree_view.setRootIsDecorated(False)
         self._tree_view.setUniformRowHeights(True)
         self._tree_view.setIconSize(QSize(32, 32))
+
+        header = self._tree_view.header()
+        header.setStretchLastSection(False)
+        header.setSectionsClickable(True)
+        header.setMinimumSectionSize(80)
+        header.sectionResized.connect(self._handle_section_resized)
+        # NOTE: _tree_view.sortByColumn()よりも先に来なければならない！ 順序変更注意！
+        # header.sortIndicatorChanged.connect(self._on_sort_changed) 
+        self._header = header
+
+        self._tree_view.setSortingEnabled(True)
+        self._tree_view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
 
         self._tile_view = _FileTileView(self)
         self._tile_view.setModel(self._model)
@@ -362,12 +376,6 @@ class FileBrowserTab(QWidget):
         self._toggle_view_button.clicked.connect(self._handle_view_toggle_clicked)
         self._update_view_toggle_button()
 
-        header = self._tree_view.header()
-        header.setStretchLastSection(False)
-        header.setSectionsClickable(True)
-        header.setMinimumSectionSize(80)
-        header.sectionResized.connect(self._handle_section_resized)
-        self._header = header
 
         self._path_edit = QLineEdit(self)
         self._path_edit.setClearButtonEnabled(True)
@@ -421,6 +429,7 @@ class FileBrowserTab(QWidget):
         self._tile_view.horizontalScrollBar().valueChanged.connect(self._on_scroll)
 
         self._model.directoryLoaded.connect(self._on_directory_loaded)
+        
 
     def _create_actions(self) -> None:
         self._copy_action = QAction("Copy", self)
@@ -739,13 +748,55 @@ class FileBrowserTab(QWidget):
         self._connect_selection_signals()
         self.directoryChanged.emit(target)
         self._select_first_row()
-        # ★★★ 追加: ディレクトリ移動後、最初のサムネイルリクエストをタイマー経由で行う ★★★
-        self._thumbnail_request_timer.start()
-    # ★★★ 追加: スクロール時にタイマーを開始するスロット ★★★
-    def _on_scroll(self) -> None:
-        self._thumbnail_request_timer.start()
+        self._restart_thumbnail_requests()  # ナビゲート後にサムネイル要求を再開
+        print(f"navigate_to target:`{target}`, _restart_thumbnail_requests()")
 
-    # ★★★ 追加: 表示されているアイテムのサムネイルをリクエストするメソッド ★★★
+    # ★★★ 3. activate と deactivate メソッドを追加 ★★★
+    def activate(self) -> None:
+        """このタブがアクティブになったときに呼び出される"""
+        if self._is_active:
+            return
+        print(f"[FileBrowserTab] Activating tab for {self._current_path}", flush=True)
+        self._is_active = True
+        # アクティブになったので、サムネイル要求を開始する
+        self._restart_thumbnail_requests()
+
+    def deactivate(self) -> None:
+        """このタブが非アクティブになったときに呼び出される"""
+        if not self._is_active:
+            return
+        print(f"[FileBrowserTab] Deactivating tab for {self._current_path}", flush=True)
+        self._is_active = False
+        # 保留中のサムネイル要求があればキャンセルする
+        self._thumbnail_request_timer.stop()
+    
+    # 場所は _on_directory_loaded や _on_scroll の近くが分かりやすい
+    # def _on_sort_changed(self, logical_index: int, order: Qt.SortOrder) -> None:
+    #     print(f"_on_sort_changed(logical_index={logical_index}, order={order})")
+    #     """ソート順が変更されたときに呼び出されるスロット"""
+    #     # アクティブなタブの場合のみ、サムネイル要求をスケジュールする
+    #     if self._is_active:
+    #         QTimer.singleShot(1000, self._restart_thumbnail_requests)
+    #         print(f"[FileBrowserTab] Sort changed, requesting thumbnails", flush=True)
+    
+    # ★★★ 3. _on_layout_changed スロットを新設 ★★★
+    def _on_layout_changed(self) -> None:
+        """モデルのレイアウト(ソート順含む)が変更されたときに呼び出される"""
+        print("[FileBrowserTab] Layout changed, scheduling thumbnail request.", flush=True)
+        self._restart_thumbnail_requests()
+
+    def _on_scroll(self) -> None:
+        if self._is_active: # アクティブなタブだけがスクロールに応答
+            self._restart_thumbnail_requests()
+            print("_on_scroll(), _thumbnail_request_timer.start()")
+
+    def _restart_thumbnail_requests(self) -> None:
+        """Manually trigger a re-evaluation of visible items for thumbnail requests."""
+        if self._is_active: # アクティブなタブだけがリクエストを再開
+            self._thumbnail_request_timer.stop()
+            self._thumbnail_request_timer.start()
+            print("restart_thumbnail_requests(), _thumbnail_request_timer.start()")
+
     def _request_visible_thumbnails(self) -> None:
         view = self._active_view()
         if not view:
@@ -767,14 +818,17 @@ class FileBrowserTab(QWidget):
                     row += 1
         elif isinstance(view, QListView):
             # QListViewはよりシンプル
+            print("QListView visible area:", view.viewport().rect())
             for i in range(view.model().rowCount(view.rootIndex())):
-                index = view.model().index(i, 0, view.rootIndex())
+                index: QModelIndex = view.model().index(i, 0, view.rootIndex())
                 if view.visualRect(index).intersects(view.viewport().rect()):
                     visible_indexes.append(index)
 
         if visible_indexes:
+            print(f"_request_visible_thumbnails: {len(visible_indexes)} visible items")
+            print(self._model.get_path_list(visible_indexes))
             self._model.prioritize_thumbnail_requests(visible_indexes)
-                    
+
     def current_path(self) -> Path:
         return self._current_path
 
@@ -802,7 +856,7 @@ class FileBrowserTab(QWidget):
 
     def name_column_width(self) -> int:
         return self._name_column_width
-
+    
     # ------------------------------------------------------------------
     # internal slots
     # ------------------------------------------------------------------
@@ -850,6 +904,15 @@ class FileBrowserTab(QWidget):
                 self.requestOpenInNewTab.emit(selected)
                 return
         super().keyPressEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """ウィンドウサイズが変更されたときに呼び出される"""
+        # 親クラスの元のリサイズ処理を必ず呼び出す
+        super().resizeEvent(event)
+        # スクロール時と同じタイマーを開始し、可視範囲のサムネイル要求をスケジュールする
+        if self._is_active: # アクティブなタブだけがリサイズに応答
+            self._restart_thumbnail_requests()
+            print("resizeEvent, _thumbnail_request_timer.start...")
 
     # ------------------------------------------------------------------
     # helpers

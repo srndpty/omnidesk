@@ -19,14 +19,14 @@ class ThumbnailCache(Generic[Key]):
 
     def get(self, key: Key) -> Optional[QIcon]:
         item = self._store.get(key)
-        print(f"[ThumbnailCache] get key={key} -> found={'Y' if item else 'N'}", flush=True)
+        # print(f"[ThumbnailCache] get key={key} -> found={'Y' if item else 'N'}", flush=True)
         if item is not None:
             self._store.move_to_end(key)
             return item[0]  # icon
         return None
 
     def put(self, key: Key, icon: QIcon, pixmap: QPixmap) -> None:
-        print(f"[ThumbnailCache] put key={key} icon={'Y' if icon else 'N'}", flush=True)
+        # print(f"[ThumbnailCache] put key={key} icon={'Y' if icon else 'N'}", flush=True)
         self._store[key] = (icon, pixmap) # タプルを保存
         self._store.move_to_end(key)
         while len(self._store) > self._capacity:
