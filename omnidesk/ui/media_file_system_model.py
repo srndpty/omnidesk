@@ -9,11 +9,13 @@ from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex
 from PyQt6.QtGui import QIcon, QFileSystemModel
 from PyQt6.QtWidgets import QApplication
 
-from ..utils.thumbnail_cache import thumbnail_cache
+from ..utils.thumbnail_cache import folder_preview_cache, file_thumbnail_cache
 from .media_icon_provider import MediaThumbnailProvider
 import shutil
-from PyQt6.QtCore import QMimeData
+from PyQt6.QtCore import QMimeData, QSize
 
+from PyQt6.QtGui import QPainter, QPixmap
+from PyQt6.QtWidgets import QFileIconProvider
 
 
 class MediaFileSystemModel(QFileSystemModel):
@@ -29,6 +31,8 @@ class MediaFileSystemModel(QFileSystemModel):
         self._pending: Set[str] = set()
         self._failed: Set[str] = set()
         self.setReadOnly(False)
+        # ★★★ フォルダアイコン取得用のプロバイダを追加 ★★★
+        self._icon_provider = QFileIconProvider()
 
     # ------------------------------------------------------------------
     @property
@@ -42,19 +46,54 @@ class MediaFileSystemModel(QFileSystemModel):
     def data(self, index, role):
         if role == Qt.ItemDataRole.DecorationRole and index.isValid() and index.column() == 0:
             file_info = self.fileInfo(index)
+            path_str = file_info.absoluteFilePath()
+            key = self._normalise_key(path_str)
+
             if file_info.isFile():
-                path_str = file_info.absoluteFilePath()
-                key = self._normalise_key(path_str)
-                cached = thumbnail_cache.get(key)
+                cached = file_thumbnail_cache.get(key)
                 if cached is not None:
                     return cached
-                # ★★★ 変更点: ここでサムネイル生成を自動で開始しない ★★★
-                # path = Path(key)
-                # suffix = path.suffix.lower()
-                # if suffix in self.media_extensions:
-                #     self._ensure_thumbnail(path, suffix, key)
-        # キャッシュにない場合は、常に super() を呼び、OS標準アイコンを返す
+            elif file_info.isDir():
+                # ★★★ ここを修正 ★★★
+                # フォルダの場合も、ただキャッシュを確認するだけにする
+                cached = folder_preview_cache.get(key)
+                if cached is not None:
+                    return cached
+
+        # リクエストのロジックは prioritize_thumbnail_requests に移譲されたので、
+        # ここではキャッシュになければ常にデフォルトアイコンを返す
         return super().data(index, role)
+    
+    def _find_first_image_in_dir(self, dir_path: Path) -> Path | None:
+        """指定されたディレクトリ内で、名前順で最初の画像ファイルを探す"""
+        try:
+            # pathlibでファイルリストを取得し、名前でソート
+            sorted_entries = sorted(dir_path.iterdir(), key=lambda p: p.name)
+            for entry in sorted_entries:
+                if entry.is_file() and entry.suffix.lower() in self.media_extensions:
+                    return entry  # 最初の画像ファイルが見つかったら即座に返す
+        except OSError:
+            return None
+        return None
+
+    def _ensure_folder_thumbnail(self, path: Path) -> None:
+        """フォルダのプレビューサムネイル生成をリクエストする"""
+        key = self._normalise_key(path)
+        self._pending.add(key) # 先にペンディング状態にする
+        
+        image_path = self._find_first_image_in_dir(path)
+        if image_path:
+            # プレビュー対象の画像が見つかった
+            # ★★★ result_key にフォルダのパスを指定してリクエスト ★★★
+            self._provider.request_thumbnail(
+                image_path,
+                self._thumbnail_edge,
+                result_key=key
+            )
+        else:
+            # 画像がなかったフォルダは失敗として記録し、再検索しない
+            self._pending.discard(key)
+            self._failed.add(key)
 
     # ★★★ 追加: ビューからサムネイル生成をリクエストするための新しいメソッド ★★★
     def prioritize_thumbnail_requests(self, indexes: list[QModelIndex]) -> None:
@@ -62,13 +101,24 @@ class MediaFileSystemModel(QFileSystemModel):
         for index in indexes:
             if not index.isValid():
                 continue
+            
             file_info = self.fileInfo(index)
+            path = Path(file_info.absoluteFilePath())
+            key = self._normalise_key(path)
+
+            if key in self._pending or key in self._failed:
+                continue
+
+            # ★★★ ここからが修正されたロジック ★★★
             if file_info.isFile():
-                path = Path(file_info.absoluteFilePath())
+                # --- ファイルの処理 (変更なし) ---
                 suffix = path.suffix.lower()
                 if suffix in self.media_extensions:
-                    # _ensure_thumbnail をここで呼び出す
                     self._ensure_thumbnail(path, suffix)
+            
+            elif file_info.isDir() and self._thumbnail_edge > 64:
+                # --- フォルダの処理をここに追加 ---
+                self._ensure_folder_thumbnail(path)
 
     # ------------------------------------------------------------------
     def _ensure_thumbnail(self, path: Path, suffix: str, key: str | None = None) -> None:
@@ -88,6 +138,7 @@ class MediaFileSystemModel(QFileSystemModel):
             print(f"[MediaFileSystemModel] job not started for {norm_key}", flush=True)
 
     def _handle_thumbnail_ready(self, path: str, icon: QIcon | None) -> None:
+        print(f"[MediaFileSystemModel] thumbnail ready for {path} icon={'Y' if icon else 'N'}", flush=True)
         key = self._normalise_key(path)
         self._pending.discard(key)
         if icon is None or icon.isNull():
@@ -95,11 +146,54 @@ class MediaFileSystemModel(QFileSystemModel):
             self._failed.add(key)
             return
         self._failed.discard(key)
-        thumbnail_cache.put(key, icon)
+
+        # ★★★ キーがフォルダかどうかで処理を分岐 ★★★
+        target_path = Path(key)
+        if target_path.is_dir():
+            # --- フォルダプレビューの合成処理 ---
+            # 1. ベースとなるフォルダアイコンを取得
+            # 1. 文字列のパス(key)から、対応するQModelIndexを取得する
+            folder_index = self.index(key)
+            if not folder_index.isValid():
+                return # もしインデックスが無効なら、処理を中断
+
+            # 2. 取得したQModelIndexを使って、ファイル情報を取得する
+            folder_info = self.fileInfo(folder_index)
+            base_icon = self._icon_provider.icon(folder_info)
+            base_pixmap = base_icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
+            
+            # 2. サムネイル画像を取得
+            thumb_pixmap = icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
+
+            # 3. Painterを使ってアイコンを合成
+            painter = QPainter(base_pixmap)
+            # 中央に描画
+            target_size = int(self._thumbnail_edge * 1.2) # 少し大きめに
+            scaled_thumb = thumb_pixmap.scaled(
+                target_size, target_size, 
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            x = (base_pixmap.width() - scaled_thumb.width()) // 2
+            y = (base_pixmap.height() - scaled_thumb.height()) // 2 - int(self._thumbnail_edge * 0.05) # 少し上に
+            
+            painter.drawPixmap(x, y, scaled_thumb)
+            painter.end()
+            
+            # 4. 合成したPixmapから新しいQIconを作成してキャッシュ
+            final_icon = QIcon(base_pixmap)
+            print(f"  final_icon valid={'Y' if not final_icon.isNull() else 'N'}", flush=True)
+            folder_preview_cache.put(key, final_icon, base_pixmap)
+            print(f"[MediaFileSystemModel] folder thumbnail created for {key}", flush=True)
+        else:
+            # --- 通常のファイルの処理 (変更なし) ---
+            # QIconから元になったPixmapを取得して渡す
+            pixmap = icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
+            file_thumbnail_cache.put(key, icon, pixmap)
+        
         index = self.index(key)
         if index.isValid():
             self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
-            # これにより、ビューはアイテムの領域全体を正しくクリアしてから再描画するようになる
             self.headerDataChanged.emit(Qt.Orientation.Vertical, index.row(), index.row())
 
     def supportedDropActions(self) -> Qt.DropAction:

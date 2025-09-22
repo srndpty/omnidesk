@@ -8,6 +8,7 @@ from typing import Any
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QMainWindow, QStackedWidget, QToolBar
+from PyQt6.QtCore import QThreadPool
 
 from ..utils.config import load_settings, save_settings
 from ..utils.paths import get_default_start_path
@@ -252,6 +253,7 @@ class MainWindow(QMainWindow):
             self._column_browser.focus_view()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        QThreadPool.globalInstance().waitForDone()
         self._persist_settings()
         super().closeEvent(event)
 

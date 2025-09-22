@@ -53,27 +53,25 @@ class MediaThumbnailProvider(QObject):
     def video_supported(self) -> bool:
         return self._video_support
 
-    def request_thumbnail(self, path: Path, edge: int) -> bool:
+    def request_thumbnail(self, path: Path, edge: int, *, result_key: str | None = None) -> bool:
         suffix = path.suffix.lower()
         key = str(path)
+        
+        # 通知用のキーが指定されていなければ、元のパスをキーとする
+        final_key = result_key or key
         if suffix in self.IMAGE_EXTENSIONS:
             if key in self._image_jobs:
-                # print(f"[MediaThumbnailProvider] image job already queued: {key}", flush=True)
                 return False
-            # print(f"[MediaThumbnailProvider] queue image job: {key} edge={edge}", flush=True)
-            job = _ImageJob(key, path, edge)
+            job = _ImageJob(final_key, path, edge)
             job.signals.finished.connect(self._handle_image_from_worker)
-            self._image_jobs[key] = job
+            self._image_jobs[final_key] = job
             self._thread_pool.start(job)
             return True
         if suffix in self.VIDEO_EXTENSIONS:
             if not self._video_support:
-                # print(f"[MediaThumbnailProvider] video support unavailable for: {key}", flush=True)
                 return False
             if key in self._video_jobs:
-                # print(f"[MediaThumbnailProvider] video job already queued: {key}", flush=True)
                 return False
-            # print(f"[MediaThumbnailProvider] start video job: {key} edge={edge}", flush=True)
             job = _VideoJob(path, edge)
             job.finished.connect(self._on_video_finished)
             self._video_jobs[key] = job
@@ -114,10 +112,10 @@ class MediaThumbnailProvider(QObject):
 class _ImageJob(QRunnable):
     """Runs thumbnail generation for still images in a background thread."""
 
-    def __init__(self, key: str, path: Path, edge: int) -> None:
+    def __init__(self, result_key: str, path: Path, edge: int) -> None:
         super().__init__()
         self.setAutoDelete(True)
-        self._key = key
+        self._result_key = result_key # 内部変数名も変更
         self._path = path
         self._edge = edge
         self.signals = WorkerSignals()
@@ -127,7 +125,7 @@ class _ImageJob(QRunnable):
         image = self._load_image(self._path)
         has_image = isinstance(image, QImage) and not image.isNull() if image is not None else False
         # print(f"[_ImageJob] emitting result for {self._path} image={'Y' if has_image else 'N'}", flush=True)
-        self.signals.finished.emit(self._key, image, self._edge)
+        self.signals.finished.emit(self._result_key, image, self._edge)
 
     @staticmethod
     def _load_image(path: Path) -> QImage | None:
