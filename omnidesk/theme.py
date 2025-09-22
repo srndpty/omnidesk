@@ -74,6 +74,7 @@ QTabBar::tab {
     border: 1px solid #34363c;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
+    min-width: 3em;
 }
 
 QTabBar::tab:selected {

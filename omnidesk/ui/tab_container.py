@@ -6,23 +6,26 @@ from functools import partial
 from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QTabBar, QTabWidget, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent
+from PyQt6.QtGui import QWheelEvent
+from PyQt6.QtCore import QObject
+from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtWidgets import QTabBar, QTabWidget, QVBoxLayout, QWidget, QVBoxLayout, QToolButton, QSizePolicy
 
 from .file_browser_tab import FileBrowserTab
 
 
-class _ClosableTabBar(QTabBar):
-    middleClicked = pyqtSignal(int)
+# class _ClosableTabBar(QTabBar):
+#     middleClicked = pyqtSignal(int)
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.MiddleButton:
-            index = self.tabAt(event.position().toPoint())
-            if index >= 0:
-                self.middleClicked.emit(index)
-                event.accept()
-                return
-        super().mouseReleaseEvent(event)
+#     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+#         if event.button() == Qt.MouseButton.MiddleButton:
+#             index = self.tabAt(event.position().toPoint())
+#             if index >= 0:
+#                 self.middleClicked.emit(index)
+#                 event.accept()
+#                 return
+#         super().mouseReleaseEvent(event)
 
 
 class TabContainer(QWidget):
@@ -40,14 +43,36 @@ class TabContainer(QWidget):
     ) -> None:
         super().__init__(parent)
         self._tabs = QTabWidget(self)
-        tab_bar = _ClosableTabBar(self._tabs)
-        tab_bar.middleClicked.connect(self._close_tab)
-        self._tabs.setTabBar(tab_bar)
+        
+        # 4. QTabWidget自体の設定を行う
         self._tabs.setDocumentMode(True)
         self._tabs.setMovable(True)
         self._tabs.setTabsClosable(True)
+        self._tabs.setUsesScrollButtons(True) # これは QTabWidget のプロパティ
+
+        # 2. デフォルトのタブバーを取得し、設定を適用する
+        default_tab_bar = self._tabs.tabBar()
+        default_tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
+        default_tab_bar.setExpanding(False)
+        
+        # 1. 現在のサイズポリシーを取得
+        policy = default_tab_bar.sizePolicy()
+        # 2. 水平方向のポリシーを「Minimum」に設定
+        #    これにより、タブバーは自身のsizeHint（理想サイズ）よりは縮まなくなる
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Preferred)
+        # 3. 変更したポリシーをタブバーに再設定
+        default_tab_bar.setSizePolicy(policy)
+        # 5. イベントフィルタは、セットした後のタブバーにインストールする
+        bar = self._tabs.tabBar()
+        bar.installEventFilter(self)
+        bar.setStyleSheet("QTabBar::tab { max-width: 220px; }")
+        # (C) ホイールをタブバーで受ける（フォーカス不要でも届くように）
+        bar.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
+        bar.installEventFilter(self)
+
+        # ★★★ 再構築はここまで ★★★
+
         self._tabs.tabCloseRequested.connect(self._close_tab)
-        # self._tabs.currentChanged.connect(self._emit_current_path)
         self._tabs.currentChanged.connect(self._handle_current_tab_changed)
 
         layout = QVBoxLayout(self)
@@ -60,6 +85,73 @@ class TabContainer(QWidget):
             else FileBrowserTab.DEFAULT_NAME_COLUMN_WIDTH
         )
 
+        final_tab_bar = self._tabs.tabBar()
+        print("--- TabBar Final State Check ---")
+        print(f"  isExpanding: {final_tab_bar.expanding()}")
+        print(f"  usesScrollButtons: {self._tabs.usesScrollButtons()}")
+        print(f"  elideMode: {final_tab_bar.elideMode()}")
+        print("------------------------------")
+
+    # ★★★ このメソッドをまるごとTabContainerクラスに追加 ★★★
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if obj is self._tabs.tabBar():
+            if event.type() == QEvent.Type.Wheel:
+                wheel: QWheelEvent = event
+                # --- ステップ数を決める（マウス/トラックパッド両対応） ---
+                steps = 0
+
+                # 1) 角度ベース（マウスホイール）: 1ステップ=15度 (=120)
+                ad = wheel.angleDelta()
+                if ad.x() != 0 or ad.y() != 0:
+                    # 横スクロールを優先。横が0なら縦を使う
+                    delta = ad.x() if abs(ad.x()) >= abs(ad.y()) else ad.y()
+                    steps = int(delta / 120)   # 複数ノッチまとめて
+
+                    # 方向決定（多くの環境で：+は左 / -は右）
+                    go_left = (delta > 0)
+                else:
+                    # 2) ピクセルベース（トラックパッド）: しきい値で擬似ステップ化
+                    pd = wheel.pixelDelta()
+                    px = pd.x() if abs(pd.x()) >= abs(pd.y()) else pd.y()
+                    # 好みでしきい値調整（60px=1ステップ）
+                    steps = int(px / 60)
+                    go_left = (px > 0)
+
+                if steps != 0:
+                    self._scroll_tabstrip(go_left=go_left, count=abs(steps))
+                    event.accept()
+                    return True
+
+            # ここに他の処理（中クリックでクローズ等）があれば続けてOK
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                mouse: QMouseEvent = event
+                if mouse.button() == Qt.MouseButton.MiddleButton:
+                    index = self._tabs.tabBar().tabAt(mouse.position().toPoint())
+                    if index >= 0:
+                        self._close_tab(index)
+                        return True
+
+        return super().eventFilter(obj, event)
+
+
+    def _scroll_tabstrip(self, *, go_left: bool, count: int = 1) -> None:
+        """内部スクローラーボタンを擬似クリックして帯だけをスクロール"""
+        left_btn  = self._tabs.findChild(QToolButton, "qt_tabwidget_scroller_left")
+        right_btn = self._tabs.findChild(QToolButton, "qt_tabwidget_scroller_right")
+
+        # ボタンが見つからない場合のフォールバック（選択タブを動かす）
+        if not left_btn or not right_btn:
+            idx = self._tabs.currentIndex()
+            if go_left:
+                self._tabs.setCurrentIndex(max(0, idx - count))
+            else:
+                self._tabs.setCurrentIndex(min(self._tabs.count() - 1, idx + count))
+            return
+
+        target = left_btn if go_left else right_btn
+        for _ in range(count):
+            target.click()
+            
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
@@ -158,7 +250,7 @@ class TabContainer(QWidget):
                 pass
         self._tabs.removeTab(index)
         self.tabCountChanged.emit(self._tabs.count())
-        self._emit_current_path(self._tabs.currentIndex())
+        # self._emit_current_path(self._tabs.currentIndex())
 
     # def _emit_current_path(self, index: int) -> None:
     #     widget = self._tabs.widget(index)
