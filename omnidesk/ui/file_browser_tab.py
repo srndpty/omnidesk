@@ -9,6 +9,8 @@ from functools import partial
 from itertools import count
 from pathlib import Path
 import os
+import shlex
+import shutil
 
 from PyQt6.QtCore import (
     QDir,
@@ -22,6 +24,7 @@ from PyQt6.QtCore import (
     QMimeData,
     QRect,
     QItemSelection,
+    QProcess,
 )
 from PyQt6.QtGui import (
     QCursor,
@@ -906,14 +909,115 @@ class FileBrowserTab(QWidget):
         self._apply_name_column_width()
 
     def _handle_path_entered(self) -> None:
-        entered = self._path_edit.text().strip()
-        if not entered:
+        text = self._path_edit.text().strip()
+        if not text:
             return
-        target = Path(entered)
-        if target.is_file():
-            self._open_file(target)
+
+        # 環境変数を展開
+        text = os.path.expandvars(text)
+
+        # # URL なら既定アプリで開く
+        # url = QUrl.fromUserInput(text)
+        # print(f"_handle_path_entered: url=`{url.toString()}`, text:`{text}`, url.isValid():{url.isValid()}, url.scheme():`{url.scheme()}`", flush=True)
+        # if url.isValid() and url.scheme():
+        #     QDesktopServices.openUrl(url)
+        #     return
+
+        # パスとして解釈（相対はカレント基準）
+        candidate = Path(text)
+        if not candidate.is_absolute():
+            candidate = (self._current_path / candidate)
+
+        if candidate.exists():
+            if candidate.is_file():
+                self._open_file(candidate)
+            else:
+                self.navigate_to(candidate)
             return
-        self.navigate_to(target)
+
+        # ここまで来たら「コマンド」と見なす
+        self._execute_address_command(text)
+
+    def _execute_address_command(self, cmdline: str) -> None:
+        # 例: 'zapall -f' / 'cmd' / 'powershell -NoExit'
+        try:
+            parts = shlex.split(cmdline, posix=False)
+        except ValueError:
+            QMessageBox.warning(self, "Command", f"Cannot parse command line:\n{cmdline}")
+            return
+        if not parts:
+            return
+
+        program, *args = parts
+        print(f"_execute_address_command: program=`{program}`, args={args}", flush=True)
+
+        # 特例: 'cmd' 単体なら現在のフォルダで起動
+        if program.lower() in ("cmd", "cmd.exe"):
+            comspec = os.environ.get("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
+            QProcess.startDetached(comspec, [], str(self._current_path))
+            return
+
+        # 実行ファイルの解決
+        resolved, is_batch = self._resolve_program_for_windows(program)
+        if not resolved:
+            QMessageBox.warning(self, "Command not found", f"'{program}' is not found in current folder or PATH.")
+            return
+
+        if is_batch:
+            # .bat/.cmd はシェル経由で
+            comspec = os.environ.get("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
+            QProcess.startDetached(comspec, ["/C", resolved, *args], str(self._current_path))
+        else:
+            QProcess.startDetached(resolved, args, str(self._current_path))
+
+    def _resolve_program_for_windows(self, program: str) -> tuple[str | None, bool]:
+        """
+        実行ファイルのフルパスを返す。見つからなければ (None, False)。
+        返り値の第2要素は .bat / .cmd かどうか。
+        """
+        def _exists_file(p: Path) -> bool:
+            try:
+                return p.exists() and p.is_file()
+            except Exception:
+                return False
+
+        pathexts = [e.lower() for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
+
+        # 明示パス/相対パス指定（.\tools\zapall 等）
+        if any(sep in program for sep in ("/", "\\")) or program.startswith("."):
+            p = Path(program)
+            if not p.is_absolute():
+                p = (self._current_path / p)
+            if p.suffix:
+                if _exists_file(p):
+                    ext = p.suffix.lower()
+                    return str(p), ext in (".bat", ".cmd")
+            else:
+                for ext in pathexts:
+                    cand = p.with_suffix(ext)
+                    if _exists_file(cand):
+                        return str(cand), ext in (".bat", ".cmd")
+            return None, False
+
+        # カレントディレクトリ優先（Explorer と同じ感覚）
+        base = self._current_path / program
+        if base.suffix:
+            if _exists_file(base):
+                ext = base.suffix.lower()
+                return str(base), ext in (".bat", ".cmd")
+        else:
+            for ext in pathexts:
+                cand = base.with_suffix(ext)
+                if _exists_file(cand):
+                    return str(cand), ext in (".bat", ".cmd")
+
+        # PATH から検索
+        found = shutil.which(program)
+        if found:
+            ext = Path(found).suffix.lower()
+            return found, ext in (".bat", ".cmd")
+
+        return None, False
 
     def _handle_index_activated(self, index: QModelIndex) -> None:
         file_info = self._model.fileInfo(index)
