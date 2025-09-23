@@ -39,3 +39,18 @@ poetry run python main.py
 ```
 
 必要に応じて `.venv` を利用した仮想環境でも動作します。
+
+## Windows 向けビルド
+
+1. 依存パッケージをインストールします。
+   ```bash
+   pip install -r requirements.txt
+   pip install pyinstaller
+   ```
+2. リポジトリのルートで PyInstaller を実行します。
+   ```bash
+   pyinstaller --clean --noconfirm OmniDesk.spec
+   ```
+   または `build_windows.bat` を実行すると同じ結果が得られます。
+3. 成功すると `dist/OmniDesk/OmniDesk.exe` が生成されます。初回起動時は Windows SmartScreen により警告が表示される場合があります。
+
