@@ -7,6 +7,7 @@ import sys
 from PyQt6.QtWidgets import QApplication
 
 from .theme import apply_dark_theme
+from .ui.icons import application_icon
 from .ui.main_window import MainWindow
 
 
@@ -19,6 +20,7 @@ def create_app(argv: list[str] | None = None) -> QApplication:
     app.setApplicationName("OmniDesk")
     app.setOrganizationName("OmniDesk")
     apply_dark_theme(app)
+    app.setWindowIcon(application_icon())
     return app
 
 

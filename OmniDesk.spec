@@ -7,11 +7,12 @@ block_cipher = None
 app_root = Path.cwd()
 
 a = Analysis(
-    ['main.py'],
+    ["main.py"],
     pathex=[str(app_root)],
     binaries=[],
     datas=[
-        (str(app_root / 'omnidesk'), 'omnidesk'),
+        (str(app_root / "omnidesk"), "omnidesk"),
+        (str(app_root / "resources"), "resources"),
     ],
     hiddenimports=[],
     hookspath=[],
@@ -32,7 +33,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='OmniDesk',
+    name="OmniDesk",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -42,4 +43,6 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     target_arch=None,
+    icon=str(app_root / "resources" / "icons" / "app_icon.ico"),
 )
+

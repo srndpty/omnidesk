@@ -10,6 +10,7 @@ from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QMainWindow, QStackedWidget, QToolBar
 from PyQt6.QtCore import QThreadPool
 
+from .icons import application_icon
 from ..utils.config import load_settings, save_settings
 from ..utils.paths import get_default_start_path
 from ..utils.windows_theme import apply_dark_title_bar
@@ -22,6 +23,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+        self.setWindowIcon(application_icon())
         self.setWindowTitle("OmniDesk")
         self.resize(1200, 720)
 
@@ -256,4 +258,5 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().waitForDone()
         self._persist_settings()
         super().closeEvent(event)
+
 
