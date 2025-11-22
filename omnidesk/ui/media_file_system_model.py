@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Set
 
-from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex
+from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex, QThreadPool, QRunnable, QObject
 from PyQt6.QtGui import QIcon, QFileSystemModel
 from PyQt6.QtWidgets import QApplication
 
@@ -33,6 +33,8 @@ class MediaFileSystemModel(QFileSystemModel):
         self.setReadOnly(False)
         # ★★★ フォルダアイコン取得用のプロバイダを追加 ★★★
         self._icon_provider = QFileIconProvider()
+        self._folder_scans: dict[str, _FolderScanJob] = {}
+        self._scan_pool = QThreadPool.globalInstance()
 
     # ------------------------------------------------------------------
     @property
@@ -64,14 +66,14 @@ class MediaFileSystemModel(QFileSystemModel):
         # ここではキャッシュになければ常にデフォルトアイコンを返す
         return super().data(index, role)
     
-    def _find_first_image_in_dir(self, dir_path: Path) -> Path | None:
+    @staticmethod
+    def _find_first_image_in_dir(dir_path: Path, extensions: set[str]) -> Path | None:
         """指定されたディレクトリ内で、名前順で最初の画像ファイルを探す"""
         try:
-            # pathlibでファイルリストを取得し、名前でソート
             sorted_entries = sorted(dir_path.iterdir(), key=lambda p: p.name)
             for entry in sorted_entries:
-                if entry.is_file() and entry.suffix.lower() in self.media_extensions:
-                    return entry  # 最初の画像ファイルが見つかったら即座に返す
+                if entry.is_file() and entry.suffix.lower() in extensions:
+                    return entry
         except OSError:
             return None
         return None
@@ -79,21 +81,32 @@ class MediaFileSystemModel(QFileSystemModel):
     def _ensure_folder_thumbnail(self, path: Path) -> None:
         """フォルダのプレビューサムネイル生成をリクエストする"""
         key = self._normalise_key(path)
-        self._pending.add(key) # 先にペンディング状態にする
-        
-        image_path = self._find_first_image_in_dir(path)
+        if key in self._folder_scans:
+            return
+
+        self._pending.add(key)  # 先にペンディング状態にする
+
+        job = _FolderScanJob(key, path, self.media_extensions)
+        job.signals.found.connect(self._handle_folder_scan_result)
+        self._folder_scans[key] = job
+        self._scan_pool.start(job)
+
+    def _handle_folder_scan_result(self, key: str, image_path: Path | None) -> None:
+        self._folder_scans.pop(key, None)
+
         if image_path:
-            # プレビュー対象の画像が見つかった
-            # ★★★ result_key にフォルダのパスを指定してリクエスト ★★★
-            self._provider.request_thumbnail(
+            started = self._provider.request_thumbnail(
                 image_path,
                 self._thumbnail_edge,
-                result_key=key
+                result_key=key,
             )
-        else:
-            # 画像がなかったフォルダは失敗として記録し、再検索しない
-            self._pending.discard(key)
-            self._failed.add(key)
+            if not started:
+                self._pending.discard(key)
+                self._failed.add(key)
+            return
+
+        self._pending.discard(key)
+        self._failed.add(key)
 
     # ★★★ 追加: ビューからサムネイル生成をリクエストするための新しいメソッド ★★★
     def prioritize_thumbnail_requests(self, indexes: list[QModelIndex]) -> None:
@@ -306,3 +319,25 @@ class MediaFileSystemModel(QFileSystemModel):
                 print(f"[MediaFileSystemModel] move failed: {e}")
 
         return moved
+
+
+class _FolderScanSignals(QObject):
+    """フォルダ内の最初の画像検索結果を通知するシグナル"""
+
+    found = pyqtSignal(str, object)  # key, Path | None
+
+
+class _FolderScanJob(QRunnable):
+    """フォルダ内の最初の画像をバックグラウンドで探索するジョブ"""
+
+    def __init__(self, key: str, path: Path, extensions: set[str]) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._key = key
+        self._path = path
+        self._extensions = extensions
+        self.signals = _FolderScanSignals()
+
+    def run(self) -> None:  # noqa: D401 - QRunnable contract
+        image_path = MediaFileSystemModel._find_first_image_in_dir(self._path, self._extensions)
+        self.signals.found.emit(self._key, image_path)
