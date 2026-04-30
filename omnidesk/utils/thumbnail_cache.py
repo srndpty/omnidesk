@@ -43,6 +43,10 @@ class ThumbnailCache(Generic[Key]):
             return item[0]  # icon
         return None
 
+    def put_memory(self, key: Key, icon: QIcon, pixmap: QPixmap) -> None:
+        """Store an icon in memory without touching disk."""
+        self.put(key, icon, pixmap)
+
     def put(self, key: Key, icon: QIcon, pixmap: QPixmap) -> None:
         self._store[key] = (icon, pixmap)
         self._store.move_to_end(key)
@@ -103,6 +107,21 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         material = f"{self.VERSION}|{skey}|{mtime}|{size}|{kind}"
         name = _stable_hash(material) + ".png"
         return self._root / name
+
+    def disk_path(self, key: Key) -> Path:
+        """Return the PNG cache path for this key without loading it."""
+        return self._disk_key(key)
+
+    def get_memory(self, key: Key) -> Optional[QIcon]:
+        """Return only the in-memory item; never read from disk on the UI thread."""
+        return ThumbnailCache.get(self, key)
+
+    def put_memory(self, key: Key, icon: QIcon, pixmap: QPixmap) -> None:
+        """Store an icon in memory without writing the disk cache."""
+        ThumbnailCache.put(self, key, icon, pixmap)
+
+    def enforce_disk_budget(self) -> None:
+        self._enforce_disk_budget()
 
     # ---------- メモリ+ディスク: get ----------
     def get(self, key: Key) -> Optional[QIcon]:
