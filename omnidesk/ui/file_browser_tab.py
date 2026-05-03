@@ -22,6 +22,7 @@ from PyQt6.QtCore import (
     pyqtSignal,
     QTimer,
     QMimeData,
+    QPoint,
     QRect,
     QItemSelection,
     QProcess,
@@ -440,13 +441,20 @@ class FileBrowserTab(QWidget):
         self._apply_name_column_width()
         self._apply_media_mode()
 
-        # ★★★ 追加: スクロールイベントを遅延処理するためのタイマー ★★★
-        self._thumbnail_request_timer = QTimer(self)
-        self._thumbnail_request_timer.setInterval(200)  # 200ミリ秒待ってから実行
-        self._thumbnail_request_timer.setSingleShot(True)
-        self._thumbnail_request_timer.timeout.connect(self._request_visible_thumbnails)
+        self._is_scrolling_for_thumbnails = False
 
-        # ★★★ 追加: 各ビューのスクロールバーにハンドラを接続 ★★★
+        self._thumbnail_request_timer = QTimer(self)
+        self._thumbnail_request_timer.setInterval(30)
+        self._thumbnail_request_timer.setSingleShot(True)
+        self._thumbnail_request_timer.timeout.connect(
+            lambda: self._request_visible_thumbnails(scrolling=True)
+        )
+
+        self._thumbnail_scroll_settle_timer = QTimer(self)
+        self._thumbnail_scroll_settle_timer.setInterval(160)
+        self._thumbnail_scroll_settle_timer.setSingleShot(True)
+        self._thumbnail_scroll_settle_timer.timeout.connect(self._request_settled_thumbnails)
+
         self._tree_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self._tile_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self._tree_view.horizontalScrollBar().valueChanged.connect(self._on_scroll)
@@ -802,6 +810,8 @@ class FileBrowserTab(QWidget):
         self._is_active = False
         # 保留中のサムネイル要求があればキャンセルする
         self._thumbnail_request_timer.stop()
+        self._thumbnail_scroll_settle_timer.stop()
+        self._model.clear_visible_thumbnail_targets()
     
     # 場所は _on_directory_loaded や _on_scroll の近くが分かりやすい
     # def _on_sort_changed(self, logical_index: int, order: Qt.SortOrder) -> None:
@@ -815,52 +825,95 @@ class FileBrowserTab(QWidget):
     # ★★★ 3. _on_layout_changed スロットを新設 ★★★
     def _on_layout_changed(self) -> None:
         """モデルのレイアウト(ソート順含む)が変更されたときに呼び出される"""
-        print("[FileBrowserTab] Layout changed, scheduling thumbnail request.", flush=True)
         self._restart_thumbnail_requests()
 
     def _on_scroll(self) -> None:
         if self._is_active: # アクティブなタブだけがスクロールに応答
-            self._restart_thumbnail_requests()
-            print("_on_scroll(), _thumbnail_request_timer.start()")
+            self._is_scrolling_for_thumbnails = True
+            if not self._thumbnail_request_timer.isActive():
+                self._thumbnail_request_timer.start()
+            self._thumbnail_scroll_settle_timer.start()
 
     def _restart_thumbnail_requests(self) -> None:
         """Manually trigger a re-evaluation of visible items for thumbnail requests."""
         if self._is_active: # アクティブなタブだけがリクエストを再開
             self._thumbnail_request_timer.stop()
             self._thumbnail_request_timer.start()
-            print("restart_thumbnail_requests(), _thumbnail_request_timer.start()")
+            self._thumbnail_scroll_settle_timer.start()
 
-    def _request_visible_thumbnails(self) -> None:
+    def _request_settled_thumbnails(self) -> None:
+        self._is_scrolling_for_thumbnails = False
+        self._request_visible_thumbnails(scrolling=False)
+
+    def _request_visible_thumbnails(self, *, scrolling: bool = False) -> None:
         view = self._active_view()
         if not view:
             return
 
-        visible_indexes = []
-        # QTreeView と QListView で表示領域のインデックスを取得する方法
+        visible_indexes: list[QModelIndex] = []
         if isinstance(view, QTreeView):
-            top_index = view.indexAt(view.rect().topLeft())
-            bottom_index = view.indexAt(view.rect().bottomLeft())
-            if top_index.isValid():
-                row = top_index.row()
-                while row <= bottom_index.row() and row != -1:
-                    index = top_index.siblingAtRow(row)
-                    if index.isValid():
-                        # 全てのカラムのインデックスを追加（将来のため）
-                        for col in range(self._model.columnCount()):
-                           visible_indexes.append(index.siblingAtColumn(col))
-                    row += 1
+            visible_indexes = self._visible_tree_indexes(view)
         elif isinstance(view, QListView):
-            # QListViewはよりシンプル
-            print("QListView visible area:", view.viewport().rect())
-            for i in range(view.model().rowCount(view.rootIndex())):
-                index: QModelIndex = view.model().index(i, 0, view.rootIndex())
-                if view.visualRect(index).intersects(view.viewport().rect()):
-                    visible_indexes.append(index)
+            visible_indexes = self._visible_tile_indexes(view)
 
-        if visible_indexes:
-            print(f"_request_visible_thumbnails: {len(visible_indexes)} visible items")
-            # print(self._model.get_path_list(visible_indexes))
-            self._model.prioritize_thumbnail_requests(visible_indexes)
+        request_limit = 6 if scrolling else None
+        self._model.set_visible_thumbnail_targets(visible_indexes, request_limit=request_limit)
+
+    def _visible_tree_indexes(self, view: QTreeView) -> list[QModelIndex]:
+        indexes: list[QModelIndex] = []
+        viewport = view.viewport()
+        height = max(1, view.sizeHintForRow(0))
+        y = 0
+        seen_rows: set[int] = set()
+        while y < viewport.height():
+            index = view.indexAt(QPoint(0, y))
+            if index.isValid() and index.row() not in seen_rows:
+                seen_rows.add(index.row())
+                indexes.append(index.siblingAtColumn(0))
+            y += height
+        bottom = view.indexAt(QPoint(0, max(0, viewport.height() - 1)))
+        if bottom.isValid() and bottom.row() not in seen_rows:
+            indexes.append(bottom.siblingAtColumn(0))
+        return indexes
+
+    def _visible_tile_indexes(self, view: QListView) -> list[QModelIndex]:
+        indexes: list[QModelIndex] = []
+        viewport = view.viewport()
+        rect = viewport.rect()
+        # QListView::indexAt only returns an item when the probe point is inside
+        # the painted item rect. A tile-sized stride can skip every item if the
+        # probes fall in gutters, so use a small viewport-local stride instead
+        # of scanning model rows.
+        step = max(16, min(32, view.iconSize().width() // 3 or 24))
+        seen: set[tuple[int, int, int]] = set()
+
+        y = rect.top()
+        while y <= rect.bottom():
+            x = rect.left()
+            while x <= rect.right():
+                index = view.indexAt(QPoint(x, y))
+                if index.isValid():
+                    key = (index.row(), index.column(), index.internalId())
+                    if key not in seen:
+                        seen.add(key)
+                        indexes.append(index.siblingAtColumn(0))
+                x += step
+            y += step
+
+        for point in (
+            rect.topLeft(),
+            rect.topRight(),
+            rect.bottomLeft(),
+            rect.bottomRight(),
+            rect.center(),
+        ):
+            index = view.indexAt(point)
+            if index.isValid():
+                key = (index.row(), index.column(), index.internalId())
+                if key not in seen:
+                    seen.add(key)
+                    indexes.append(index.siblingAtColumn(0))
+        return indexes
 
     def current_path(self) -> Path:
         return self._current_path

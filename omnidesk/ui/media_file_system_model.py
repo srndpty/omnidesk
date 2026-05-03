@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 from typing import Set
 
-from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex
+from PyQt6.QtCore import Qt, QModelIndex, QThreadPool
 from PyQt6.QtGui import QIcon, QFileSystemModel
-from PyQt6.QtWidgets import QApplication
 
 from ..utils.thumbnail_cache import folder_preview_cache, file_thumbnail_cache
 from .media_icon_provider import MediaThumbnailProvider
-import shutil
+from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
 from PyQt6.QtCore import QMimeData, QSize
 
 from PyQt6.QtGui import QPainter, QPixmap
@@ -30,9 +31,21 @@ class MediaFileSystemModel(QFileSystemModel):
         self._provider.thumbnailReady.connect(self._handle_thumbnail_ready)
         self._pending: Set[str] = set()
         self._failed: Set[str] = set()
+        self._visible_keys: set[str] = set()
+        self._tokens: dict[str, CancellationToken] = {}
+        self._generations: dict[str, int] = {}
         self.setReadOnly(False)
         # ★★★ フォルダアイコン取得用のプロバイダを追加 ★★★
         self._icon_provider = QFileIconProvider()
+        self._folder_scans: dict[str, FolderScanJob] = {}
+        self._scan_pool = QThreadPool.globalInstance()
+        self._cache_jobs: dict[str, CacheLoadJob] = {}
+        self._debug_thumbnails = os.environ.get("OMNIDESK_THUMB_DEBUG", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     # ------------------------------------------------------------------
     @property
@@ -42,6 +55,10 @@ class MediaFileSystemModel(QFileSystemModel):
     def set_thumbnail_edge(self, edge: int) -> None:
         self._thumbnail_edge = max(16, edge)
 
+    def _debug(self, event: str, key: str, detail: object = "") -> None:
+        if self._debug_thumbnails:
+            print(f"[thumb:{event}] {key} {detail}", flush=True)
+
     # ------------------------------------------------------------------
     def data(self, index, role):
         if role == Qt.ItemDataRole.DecorationRole and index.isValid() and index.column() == 0:
@@ -50,13 +67,11 @@ class MediaFileSystemModel(QFileSystemModel):
             key = self._normalise_key(path_str)
 
             if file_info.isFile():
-                cached = file_thumbnail_cache.get(key)
+                cached = file_thumbnail_cache.get_memory(key)
                 if cached is not None:
                     return cached
             elif file_info.isDir():
-                # ★★★ ここを修正 ★★★
-                # フォルダの場合も、ただキャッシュを確認するだけにする
-                cached = folder_preview_cache.get(key)
+                cached = folder_preview_cache.get_memory(key)
                 if cached is not None:
                     return cached
 
@@ -64,68 +79,153 @@ class MediaFileSystemModel(QFileSystemModel):
         # ここではキャッシュになければ常にデフォルトアイコンを返す
         return super().data(index, role)
     
-    def _find_first_image_in_dir(self, dir_path: Path) -> Path | None:
-        """指定されたディレクトリ内で、名前順で最初の画像ファイルを探す"""
-        try:
-            # pathlibでファイルリストを取得し、名前でソート
-            sorted_entries = sorted(dir_path.iterdir(), key=lambda p: p.name)
-            for entry in sorted_entries:
-                if entry.is_file() and entry.suffix.lower() in self.media_extensions:
-                    return entry  # 最初の画像ファイルが見つかったら即座に返す
-        except OSError:
-            return None
-        return None
+    def _new_token(self, key: str) -> CancellationToken:
+        generation = self._generations.get(key, 0) + 1
+        self._generations[key] = generation
+        token = CancellationToken(generation)
+        self._tokens[key] = token
+        return token
+
+    def _is_current_request(self, key: str, generation: int) -> bool:
+        return key in self._visible_keys and self._generations.get(key) == generation
+
+    def _cancel_thumbnail_key(self, key: str) -> None:
+        self._debug("cancel", key)
+        token = self._tokens.pop(key, None)
+        if token is not None:
+            token.cancel()
+        self._pending.discard(key)
+        self._folder_scans.pop(key, None)
+        self._cache_jobs.pop(key, None)
+        self._provider.cancel_thumbnail(key)
+
+    def clear_visible_thumbnail_targets(self) -> None:
+        for key in list(self._visible_keys):
+            self._cancel_thumbnail_key(key)
+        self._visible_keys.clear()
+
+    def _cache_for_info(self, is_dir: bool):
+        return folder_preview_cache if is_dir else file_thumbnail_cache
+
+    def set_visible_thumbnail_targets(self, indexes: list[QModelIndex], *, request_limit: int | None = None) -> None:
+        """Request thumbnails only for currently visible model indexes."""
+        ordered: list[tuple[str, Path, bool]] = []
+        seen: set[str] = set()
+        for index in indexes:
+            if not index.isValid():
+                continue
+            source = index.siblingAtColumn(0)
+            file_info = self.fileInfo(source)
+            path = Path(file_info.absoluteFilePath())
+            key = self._normalise_key(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append((key, path, file_info.isDir()))
+
+        new_visible = seen
+        for key in self._visible_keys - new_visible:
+            self._cancel_thumbnail_key(key)
+        self._visible_keys = new_visible
+        self._debug(
+            "visible",
+            str(len(new_visible)),
+            f"limit={request_limit} pending={len(self._pending)} failed={len(self._failed)}",
+        )
+
+        requested = 0
+        for key, path, is_dir in ordered:
+            if request_limit is not None and requested >= request_limit:
+                break
+            if self._request_visible_key(key, path, is_dir):
+                requested += 1
+
+    def _request_visible_key(self, key: str, path: Path, is_dir: bool) -> bool:
+        if key in self._pending or key in self._failed:
+            self._debug("skip", key, "pending" if key in self._pending else "failed")
+            return False
+        cache = self._cache_for_info(is_dir)
+        if cache.get_memory(key) is not None:
+            self._debug("memory-hit", key)
+            index = self.index(key)
+            if index.isValid():
+                self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+            return False
+
+        disk_path = cache.disk_path(key)
+        if disk_path.exists():
+            self._debug("disk-load", key, disk_path)
+            token = self._new_token(key)
+            job = CacheLoadJob(key, disk_path, token)
+            job.signals.loaded.connect(
+                lambda loaded_key, generation, image, is_dir=is_dir: self._handle_cache_loaded(
+                    loaded_key,
+                    generation,
+                    image,
+                    is_dir,
+                )
+            )
+            self._cache_jobs[key] = job
+            self._pending.add(key)
+            self._scan_pool.start(job)
+            return True
+
+        if is_dir:
+            if self._thumbnail_edge <= 64:
+                return False
+            self._debug("folder-scan-start", key)
+            self._ensure_folder_thumbnail(path)
+            return True
+
+        suffix = path.suffix.lower()
+        if suffix not in self.media_extensions:
+            return False
+        self._debug("image-start", key)
+        self._ensure_thumbnail(path, suffix, key)
+        return True
 
     def _ensure_folder_thumbnail(self, path: Path) -> None:
         """フォルダのプレビューサムネイル生成をリクエストする"""
         key = self._normalise_key(path)
-        self._pending.add(key) # 先にペンディング状態にする
-        
-        image_path = self._find_first_image_in_dir(path)
+        if key in self._folder_scans:
+            return
+
+        token = self._new_token(key)
+        self._pending.add(key)
+
+        job = FolderScanJob(key, path, self.media_extensions, token)
+        job.signals.found.connect(self._handle_folder_scan_result)
+        self._folder_scans[key] = job
+        self._scan_pool.start(job)
+
+    def _handle_folder_scan_result(self, key: str, generation: int, image_path: Path | None) -> None:
+        self._folder_scans.pop(key, None)
+        if not self._is_current_request(key, generation):
+            self._debug("folder-stale", key, generation)
+            return
+
         if image_path:
-            # プレビュー対象の画像が見つかった
-            # ★★★ result_key にフォルダのパスを指定してリクエスト ★★★
-            self._provider.request_thumbnail(
+            self._debug("folder-found", key, image_path)
+            started = self._provider.request_thumbnail(
                 image_path,
                 self._thumbnail_edge,
-                result_key=key
+                result_key=key,
+                token=self._tokens.get(key),
             )
-        else:
-            # 画像がなかったフォルダは失敗として記録し、再検索しない
-            self._pending.discard(key)
-            self._failed.add(key)
+            if not started:
+                self._pending.discard(key)
+                self._failed.add(key)
+                self._debug("folder-image-not-started", key, image_path)
+            return
+
+        self._pending.discard(key)
+        self._failed.add(key)
+        self._debug("folder-none", key)
 
     # ★★★ 追加: ビューからサムネイル生成をリクエストするための新しいメソッド ★★★
     def prioritize_thumbnail_requests(self, indexes: list[QModelIndex]) -> None:
         """Given a list of visible indexes, request thumbnails for them."""
-        for index in indexes:
-            if not index.isValid():
-                continue
-            
-            file_info = self.fileInfo(index)
-            path = Path(file_info.absoluteFilePath())
-            key = self._normalise_key(path)
-
-            if key in self._pending or key in self._failed:
-                continue
-
-            # ★★★ ここからが修正されたロジック ★★★
-            if file_info.isFile():
-                # ★ 追加: ここでも軽くガード（get() はディスクからの復元を伴う）
-                if file_thumbnail_cache.get(key) is not None:
-                    self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
-                    continue
-                # --- ファイルの処理 (変更なし) ---
-                suffix = path.suffix.lower()
-                if suffix in self.media_extensions:
-                    self._ensure_thumbnail(path, suffix)
-            
-            elif file_info.isDir() and self._thumbnail_edge > 64:
-                if folder_preview_cache.get(key) is not None:
-                    self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
-                    continue
-                # --- フォルダの処理をここに追加 ---
-                self._ensure_folder_thumbnail(path)
+        self.set_visible_thumbnail_targets(indexes)
 
     def get_path_list(self, indexes: list[QModelIndex]) -> list[str]:
         """Given a list of indexes, return their absolute file paths."""
@@ -139,8 +239,7 @@ class MediaFileSystemModel(QFileSystemModel):
     def _ensure_thumbnail(self, path: Path, suffix: str, key: str | None = None) -> None:
         norm_key = key or self._normalise_key(path)
    
-        # ★ 追加: すでにキャッシュにあればジョブを投げない（ディスク→メモリ復元もここで済む）
-        if file_thumbnail_cache.get(norm_key) is not None:
+        if file_thumbnail_cache.get_memory(norm_key) is not None:
             idx = self.index(norm_key)
             if idx.isValid():
                 self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
@@ -153,28 +252,55 @@ class MediaFileSystemModel(QFileSystemModel):
             # print(f"[MediaFileSystemModel] video not supported, marking failed: {norm_key}", flush=True)
             self._failed.add(norm_key)
             return
-        started = self._provider.request_thumbnail(path, self._thumbnail_edge)
+        token = self._tokens.get(norm_key) or self._new_token(norm_key)
+        started = self._provider.request_thumbnail(
+            path,
+            self._thumbnail_edge,
+            result_key=norm_key,
+            token=token,
+        )
         if started:
             # print(f"[MediaFileSystemModel] job started for {norm_key}", flush=True)
             self._pending.add(norm_key)
         else:
             print(f"[MediaFileSystemModel] job not started for {norm_key}", flush=True)
+            self._debug("image-not-started", norm_key)
 
-    def _handle_thumbnail_ready(self, path: str, icon: QIcon | None) -> None:
+    def _handle_cache_loaded(self, key: str, generation: int, image: object, is_dir: bool) -> None:
+        if not self._is_current_request(key, generation):
+            self._debug("cache-stale", key, generation)
+            return
+        self._cache_jobs.pop(key, None)
+        self._pending.discard(key)
+        self._tokens.pop(key, None)
+        if image is None or image.isNull():
+            self._debug("cache-miss", key)
+            path = Path(key)
+            if is_dir:
+                self._ensure_folder_thumbnail(path)
+            else:
+                self._ensure_thumbnail(path, path.suffix.lower(), key)
+            return
+        pixmap = QPixmap.fromImage(image)
+        icon = QIcon(pixmap)
+        self._cache_for_info(is_dir).put_memory(key, icon, pixmap)
+        self._debug("cache-ready", key)
+        self._emit_thumbnail_changed(key)
+
+    def _handle_thumbnail_ready(self, path: str, icon: QIcon | None, generation: int) -> None:
         # print(f"[MediaFileSystemModel] thumbnail ready for {path} icon={'Y' if icon else 'N'}", flush=True)
         key = self._normalise_key(path)
 
-        # ★ 追加: フォルダのプレビューがキャッシュにあれば生成しない
-        if folder_preview_cache.get(key) is not None:
-            idx = self.index(key)
-            if idx.isValid():
-                self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
+        if not self._is_current_request(key, generation):
+            self._debug("stale", key, generation)
             return
 
         self._pending.discard(key)
+        self._tokens.pop(key, None)
         if icon is None or icon.isNull():
             # print(f"[MediaFileSystemModel] thumbnail failed for {key}", flush=True)
             self._failed.add(key)
+            self._debug("failed", key)
             return
         self._failed.discard(key)
 
@@ -213,15 +339,27 @@ class MediaFileSystemModel(QFileSystemModel):
             
             # 4. 合成したPixmapから新しいQIconを作成してキャッシュ
             final_icon = QIcon(base_pixmap)
-            # print(f"  final_icon valid={'Y' if not final_icon.isNull() else 'N'}", flush=True)
-            folder_preview_cache.put(key, final_icon, base_pixmap)
-            # print(f"[MediaFileSystemModel] folder thumbnail created for {key}", flush=True)
+            folder_preview_cache.put_memory(key, final_icon, base_pixmap)
+            self._save_cache_async(folder_preview_cache, key, base_pixmap)
         else:
             # --- 通常のファイルの処理 (変更なし) ---
             # QIconから元になったPixmapを取得して渡す
             pixmap = icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
-            file_thumbnail_cache.put(key, icon, pixmap)
+            file_thumbnail_cache.put_memory(key, icon, pixmap)
+            self._save_cache_async(file_thumbnail_cache, key, pixmap)
         
+        self._debug("ready", key)
+        self._emit_thumbnail_changed(key)
+
+    def _save_cache_async(self, cache, key: str, pixmap: QPixmap) -> None:
+        image = pixmap.toImage()
+        if image.isNull():
+            return
+        self._scan_pool.start(
+            CacheSaveJob(cache.disk_path(key), image, cache.enforce_disk_budget)
+        )
+
+    def _emit_thumbnail_changed(self, key: str) -> None:
         index = self.index(key)
         if index.isValid():
             self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])

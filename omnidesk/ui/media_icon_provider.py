@@ -8,6 +8,8 @@ from typing import Dict
 from PyQt6.QtCore import QObject, Qt, QUrl, QRunnable, QThreadPool, pyqtSignal, QTimer
 from PyQt6.QtGui import QImage, QImageReader, QIcon, QPixmap
 
+from .thumbnail_jobs import CancellationToken
+
 try:
     from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
 except ImportError:  # pragma: no cover - optional dependency
@@ -20,13 +22,13 @@ except ImportError:  # pragma: no cover - optional dependency
 class WorkerSignals(QObject):
     """Signals emitted by background thumbnail jobs."""
 
-    finished = pyqtSignal(str, object, int)  # key, QImage | None, edge
+    finished = pyqtSignal(str, object, int, int)  # key, QImage | None, edge, generation
 
 
 class MediaThumbnailProvider(QObject):
     """Coordinates thumbnail extraction and emits results asynchronously."""
 
-    thumbnailReady = pyqtSignal(str, object)  # path, QIcon | None
+    thumbnailReady = pyqtSignal(str, object, int)  # path, QIcon | None, generation
 
     IMAGE_EXTENSIONS = {
         ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".svg",
@@ -41,7 +43,14 @@ class MediaThumbnailProvider(QObject):
         # これにより、メインスレッドへのシグナルの殺到を防ぎ、UIの応答性を保つ
         self._thread_pool.setMaxThreadCount(4)
         self._image_jobs: Dict[str, _ImageJob] = {}
+        self._image_tokens: Dict[str, CancellationToken] = {}
+        
+        # Video job management
         self._video_jobs: Dict[str, _VideoJob] = {}
+        self._video_queue: list[tuple[str, Path, int, CancellationToken]] = []
+        self._active_video_jobs = 0
+        self.MAX_CONCURRENT_VIDEO_JOBS = 1
+        
         self._video_support = QMediaPlayer is not None and QVideoSink is not None
 
     # ------------------------------------------------------------------
@@ -53,79 +62,132 @@ class MediaThumbnailProvider(QObject):
     def video_supported(self) -> bool:
         return self._video_support
 
-    def request_thumbnail(self, path: Path, edge: int, *, result_key: str | None = None) -> bool:
+    def request_thumbnail(
+        self,
+        path: Path,
+        edge: int,
+        *,
+        result_key: str | None = None,
+        token: CancellationToken | None = None,
+    ) -> bool:
         suffix = path.suffix.lower()
-        key = str(path)
         
         # 通知用のキーが指定されていなければ、元のパスをキーとする
-        final_key = result_key or key
+        final_key = result_key or str(path)
+        token = token or CancellationToken(0)
         if suffix in self.IMAGE_EXTENSIONS:
-            if key in self._image_jobs:
+            if final_key in self._image_jobs:
                 return False
-            job = _ImageJob(final_key, path, edge)
+            job = _ImageJob(final_key, path, edge, token)
             job.signals.finished.connect(self._handle_image_from_worker)
             self._image_jobs[final_key] = job
+            self._image_tokens[final_key] = token
             self._thread_pool.start(job)
             return True
         if suffix in self.VIDEO_EXTENSIONS:
             if not self._video_support:
                 return False
-            if key in self._video_jobs:
+            if final_key in self._video_jobs:
                 return False
-            job = _VideoJob(path, edge)
-            job.finished.connect(self._on_video_finished)
-            self._video_jobs[key] = job
-            job.start()
+            
+            # Check if we can start immediately
+            if self._active_video_jobs < self.MAX_CONCURRENT_VIDEO_JOBS:
+                self._start_video_job(final_key, path, edge, token)
+            else:
+                self._video_queue.append((final_key, path, edge, token))
+                
             return True
         return False
 
-    # ------------------------------------------------------------------
-    def _handle_image_from_worker(self, key: str, image: object, edge: int) -> None:
-        qimage = image if isinstance(image, QImage) else None
-        self._on_image_finished(key, qimage, edge)
+    def cancel_thumbnail(self, key: str) -> None:
+        token = self._image_tokens.get(key)
+        if token is not None:
+            token.cancel()
+        self._video_queue = [
+            item for item in self._video_queue if item[0] != key
+        ]
 
-    def _on_image_finished(self, key: str, image: QImage | None, edge: int) -> None:
+    def _start_video_job(self, key: str, path: Path, edge: int, token: CancellationToken) -> None:
+        job = _VideoJob(key, path, edge, token)
+        job.finished.connect(self._on_video_finished)
+        self._video_jobs[key] = job
+        self._active_video_jobs += 1
+        job.start()
+
+    # ------------------------------------------------------------------
+    def _handle_image_from_worker(self, key: str, image: object, edge: int, generation: int) -> None:
+        qimage = image if isinstance(image, QImage) else None
+        self._on_image_finished(key, qimage, edge, generation)
+
+    def _on_image_finished(self, key: str, image: QImage | None, edge: int, generation: int) -> None:
+        self._image_jobs.pop(key, None)
+        token = self._image_tokens.pop(key, None)
+        if token is not None and token.cancelled:
+            return
         icon: QIcon | None = None
         if image is not None and not image.isNull():
-            pixmap = QPixmap.fromImage(image).scaled(
-                edge,
-                edge,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+            # Image is already scaled by _ImageJob
+            pixmap = QPixmap.fromImage(image)
             icon = QIcon(pixmap)
             # print(f"[MediaThumbnailProvider] created pixmap for {key} size={pixmap.width()}x{pixmap.height()}", flush=True)
         else:
             print(f"[MediaThumbnailProvider] image job finished with no image: {key}", flush=True)
-        # print(f"[MediaThumbnailProvider] image job finished: {key} icon={'Y' if icon else 'N'}", flush=True)
-        self._image_jobs.pop(key, None)
-        self.thumbnailReady.emit(key, icon)
+        self.thumbnailReady.emit(key, icon, generation)
 
-    def _on_video_finished(self, key: str, icon: QIcon | None) -> None:
+    def _on_video_finished(self, key: str, icon: QIcon | None, generation: int) -> None:
         job = self._video_jobs.pop(key, None)
         if job is not None:
             job.deleteLater()
         # print(f"[MediaThumbnailProvider] video job finished: {key} icon={'Y' if icon else 'N'}", flush=True)
-        self.thumbnailReady.emit(key, icon)
+        self.thumbnailReady.emit(key, icon, generation)
+        
+        self._active_video_jobs -= 1
+        self._process_video_queue()
+
+    def _process_video_queue(self) -> None:
+        while self._active_video_jobs < self.MAX_CONCURRENT_VIDEO_JOBS and self._video_queue:
+            key, path, edge, token = self._video_queue.pop(0)
+            if token.cancelled:
+                continue
+            if key in self._video_jobs: # Should not happen usually
+                continue
+            self._start_video_job(key, path, edge, token)
 
 
 class _ImageJob(QRunnable):
     """Runs thumbnail generation for still images in a background thread."""
 
-    def __init__(self, result_key: str, path: Path, edge: int) -> None:
+    def __init__(self, result_key: str, path: Path, edge: int, token: CancellationToken) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._result_key = result_key # 内部変数名も変更
         self._path = path
         self._edge = edge
+        self._token = token
         self.signals = WorkerSignals()
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
         # print(f"[_ImageJob] processing image: {self._path}", flush=True)
+        if self._token.cancelled:
+            return
         image = self._load_image(self._path)
-        has_image = isinstance(image, QImage) and not image.isNull() if image is not None else False
-        # print(f"[_ImageJob] emitting result for {self._path} image={'Y' if has_image else 'N'}", flush=True)
-        self.signals.finished.emit(self._result_key, image, self._edge)
+        
+        # Scale here in background thread
+        if image is not None and not image.isNull() and not self._token.cancelled:
+            image = image.scaled(
+                self._edge,
+                self._edge,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            
+        if not self._token.cancelled:
+            self.signals.finished.emit(
+                self._result_key,
+                image,
+                self._edge,
+                self._token.generation,
+            )
 
     @staticmethod
     def _load_image(path: Path) -> QImage | None:
@@ -142,12 +204,14 @@ class _ImageJob(QRunnable):
 class _VideoJob(QObject):
     """Captures the first available frame of a video file asynchronously."""
 
-    finished = pyqtSignal(str, object)
+    finished = pyqtSignal(str, object, int)
 
-    def __init__(self, path: Path, edge: int) -> None:
+    def __init__(self, key: str, path: Path, edge: int, token: CancellationToken) -> None:
         super().__init__()
+        self._key = key
         self._path = path
         self._edge = edge
+        self._token = token
         self._player = QMediaPlayer(self)
         self._audio = QAudioOutput(self) if QAudioOutput is not None else None
         if self._audio is not None:
@@ -163,7 +227,10 @@ class _VideoJob(QObject):
 
     def start(self) -> None:
         if QMediaPlayer is None or QVideoSink is None:
-            self.finished.emit(str(self._path), None)
+            self.finished.emit(self._key, None, self._token.generation)
+            return
+        if self._token.cancelled:
+            self._finish(None)
             return
         print(f"[_VideoJob] start: {self._path}", flush=True)
         self._player.setSource(QUrl.fromLocalFile(str(self._path)))
@@ -172,7 +239,7 @@ class _VideoJob(QObject):
         self._timeout.start(2000)
 
     def _handle_frame(self, frame) -> None:  # type: ignore[override]
-        if self._complete or not frame.isValid():
+        if self._complete or self._token.cancelled or not frame.isValid():
             return
         image = frame.toImage()
         if image.isNull():
@@ -204,5 +271,5 @@ class _VideoJob(QObject):
             self._audio.deleteLater()
         self._player.deleteLater()
         print(f"[_VideoJob] finish: {self._path} icon={'Y' if icon else 'N'}", flush=True)
-        self.finished.emit(str(self._path), icon)
+        self.finished.emit(self._key, None if self._token.cancelled else icon, self._token.generation)
         self.deleteLater()
