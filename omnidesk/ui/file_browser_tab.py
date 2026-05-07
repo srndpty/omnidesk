@@ -58,6 +58,39 @@ from PyQt6.QtWidgets import (
 from .media_file_system_model import MediaFileSystemModel
 
 
+def deletion_replacement_path(
+    ordered_paths: list[Path],
+    selected_rows: set[int],
+    deleted_paths: set[Path],
+) -> Path | None:
+    """Return the item to select after deleting rows from an ordered directory."""
+    if not selected_rows:
+        return None
+
+    def candidate_at(row: int) -> Path | None:
+        if row < 0 or row >= len(ordered_paths):
+            return None
+        candidate = ordered_paths[row]
+        try:
+            if candidate.resolve() in deleted_paths:
+                return None
+        except Exception:
+            return None
+        return candidate
+
+    for row in range(min(selected_rows) - 1, -1, -1):
+        candidate = candidate_at(row)
+        if candidate is not None:
+            return candidate
+
+    for row in range(max(selected_rows) + 1, len(ordered_paths)):
+        candidate = candidate_at(row)
+        if candidate is not None:
+            return candidate
+
+    return None
+
+
 class _BaseFileViewMixin:
     """Adds reusable drag-and-drop and context menu behaviours."""
 
@@ -1225,32 +1258,15 @@ class FileBrowserTab(QWidget):
         if not selected_rows:
             return None
 
-        deleted = {path.resolve() for path in deleted_paths}
-
-        def path_for_row(row: int) -> Path | None:
-            index = model.index(row, 0, root_index)
-            if not index.isValid():
-                return None
-            candidate = Path(self._model.filePath(index))
-            try:
-                if candidate.resolve() in deleted:
-                    return None
-            except Exception:
-                return None
-            return candidate
-
-        for row in range(min(selected_rows) - 1, -1, -1):
-            candidate = path_for_row(row)
-            if candidate is not None:
-                return candidate
-
+        ordered_paths: list[Path] = []
         row_count = model.rowCount(root_index)
-        for row in range(max(selected_rows) + 1, row_count):
-            candidate = path_for_row(row)
-            if candidate is not None:
-                return candidate
+        for row in range(row_count):
+            index = model.index(row, 0, root_index)
+            if index.isValid():
+                ordered_paths.append(Path(self._model.filePath(index)))
 
-        return None
+        deleted = {path.resolve() for path in deleted_paths}
+        return deletion_replacement_path(ordered_paths, selected_rows, deleted)
 
     def _handle_thumbnail_updated(self, index: QModelIndex) -> None:
         """Force repaint when a thumbnail icon is ready."""

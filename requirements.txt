@@ -11,6 +11,8 @@ pyqt6-plugins==6.4.2.2.3
 PyQt6-Qt6==6.4.3
 pyqt6-tools==6.4.2.3.3
 PyQt6_sip==13.10.2
+pytest==8.3.5
+pytest-qt==4.4.0
 python-dotenv==1.1.1
 pywin32-ctypes==0.2.3
 qt6-applications==6.4.3.2.3

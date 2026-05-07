@@ -40,6 +40,17 @@ poetry run python main.py
 
 必要に応じて `.venv` を利用した仮想環境でも動作します。
 
+## テスト
+
+pytest と pytest-qt を使った自動テストを用意しています。
+
+```bash
+pip install -r requirements.txt
+python -m pytest
+```
+
+古い非同期サムネイル確認スクリプトは `tests/manual/verify_async_behavior.py` に移動しています。
+
 ## Windows 向けビルド
 
 1. 依存パッケージをインストールします。
