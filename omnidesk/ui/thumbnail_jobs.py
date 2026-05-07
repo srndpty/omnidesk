@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from PyQt6.QtCore import QObject, QRunnable, Qt, pyqtSignal
 from PyQt6.QtGui import QImage

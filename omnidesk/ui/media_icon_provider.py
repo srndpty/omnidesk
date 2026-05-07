@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
 
-from PyQt6.QtCore import QObject, Qt, QUrl, QRunnable, QThreadPool, pyqtSignal, QTimer
-from PyQt6.QtGui import QImage, QImageReader, QIcon, QPixmap
+from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QIcon, QImage, QImageReader, QPixmap
 
 from .thumbnail_jobs import CancellationToken
 
@@ -42,11 +41,11 @@ class MediaThumbnailProvider(QObject):
         self._thread_pool = QThreadPool.globalInstance()
         # これにより、メインスレッドへのシグナルの殺到を防ぎ、UIの応答性を保つ
         self._thread_pool.setMaxThreadCount(4)
-        self._image_jobs: Dict[str, _ImageJob] = {}
-        self._image_tokens: Dict[str, CancellationToken] = {}
+        self._image_jobs: dict[str, _ImageJob] = {}
+        self._image_tokens: dict[str, CancellationToken] = {}
         
         # Video job management
-        self._video_jobs: Dict[str, _VideoJob] = {}
+        self._video_jobs: dict[str, _VideoJob] = {}
         self._video_queue: list[tuple[str, Path, int, CancellationToken]] = []
         self._active_video_jobs = 0
         self.MAX_CONCURRENT_VIDEO_JOBS = 1

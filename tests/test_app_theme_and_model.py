@@ -6,6 +6,7 @@ from PyQt6.QtCore import QMimeData, QSize, Qt, QUrl
 from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication
 
+import omnidesk.ui.media_file_system_model as model_module
 from omnidesk import app as app_module
 from omnidesk.theme import DARK_STYLESHEET, apply_dark_theme
 from omnidesk.ui.icons import application_icon
@@ -15,7 +16,6 @@ from omnidesk.ui.media_file_system_model import (
     folder_preview_cache,
     folder_thumbnail_rect,
 )
-import omnidesk.ui.media_file_system_model as model_module
 
 
 def test_apply_dark_theme_sets_fusion_style_and_stylesheet(qapp: QApplication) -> None:

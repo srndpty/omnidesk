@@ -5,18 +5,14 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Set
 
-from PyQt6.QtCore import Qt, QModelIndex, QThreadPool
-from PyQt6.QtGui import QIcon, QFileSystemModel
+from PyQt6.QtCore import QMimeData, QModelIndex, QSize, Qt, QThreadPool
+from PyQt6.QtGui import QFileSystemModel, QIcon, QPainter, QPixmap
+from PyQt6.QtWidgets import QFileIconProvider
 
-from ..utils.thumbnail_cache import folder_preview_cache, file_thumbnail_cache
+from ..utils.thumbnail_cache import file_thumbnail_cache, folder_preview_cache
 from .media_icon_provider import MediaThumbnailProvider
 from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
-from PyQt6.QtCore import QMimeData, QSize
-
-from PyQt6.QtGui import QPainter, QPixmap
-from PyQt6.QtWidgets import QFileIconProvider
 
 
 def folder_thumbnail_rect(base_size: QSize, thumb_size: QSize, edge: int) -> tuple[int, int]:
@@ -36,8 +32,8 @@ class MediaFileSystemModel(QFileSystemModel):
         self._thumbnail_edge = 96
         self._provider = MediaThumbnailProvider(self)
         self._provider.thumbnailReady.connect(self._handle_thumbnail_ready)
-        self._pending: Set[str] = set()
-        self._failed: Set[str] = set()
+        self._pending: set[str] = set()
+        self._failed: set[str] = set()
         self._visible_keys: set[str] = set()
         self._tokens: dict[str, CancellationToken] = {}
         self._generations: dict[str, int] = {}
@@ -418,15 +414,15 @@ class MediaFileSystemModel(QFileSystemModel):
         print
         """ドラッグ＆ドロップによるファイル移動を処理"""
         if action == Qt.DropAction.IgnoreAction:
-            print(f"[MediaFileSystemModel] drop ignored")
+            print("[MediaFileSystemModel] drop ignored")
             return True
 
         if not data.hasUrls():
-            print(f"[MediaFileSystemModel] drop has no URLs")
+            print("[MediaFileSystemModel] drop has no URLs")
             return False
 
         if not parent.isValid() or not self.isDir(parent):
-            print(f"[MediaFileSystemModel] drop target is not a valid directory")
+            print("[MediaFileSystemModel] drop target is not a valid directory")
             return False
 
         dest_dir = Path(self.filePath(parent))

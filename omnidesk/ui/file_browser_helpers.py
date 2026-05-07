@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable, Mapping
 from itertools import count
 from pathlib import Path
-from typing import Callable, Mapping
 
 
 def deletion_replacement_path(

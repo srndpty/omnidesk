@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QPoint, QEvent, QUrl
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, QPoint, Qt, QUrl, pyqtSignal
 from PyQt6.QtWidgets import QWidget
 
 import omnidesk.ui.tab_container as tab_container_module

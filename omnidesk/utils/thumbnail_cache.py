@@ -6,10 +6,11 @@ from __future__ import annotations
 import hashlib
 import os
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Generic, Optional, TypeVar
+from typing import Generic, TypeVar
 
-from PyQt6.QtCore import QStandardPaths, QSaveFile
+from PyQt6.QtCore import QSaveFile, QStandardPaths
 from PyQt6.QtGui import QIcon, QPixmap
 
 Key = TypeVar("Key")
@@ -36,7 +37,7 @@ class ThumbnailCache(Generic[Key]):
         self._capacity = capacity
         self._store: OrderedDict[Key, tuple[QIcon, QPixmap]] = OrderedDict()
 
-    def get(self, key: Key) -> Optional[QIcon]:
+    def get(self, key: Key) -> QIcon | None:
         item = self._store.get(key)
         if item is not None:
             self._store.move_to_end(key)
@@ -53,7 +54,7 @@ class ThumbnailCache(Generic[Key]):
         while len(self._store) > self._capacity:
             self._store.popitem(last=False)
 
-    def get_or_create(self, key: Key, factory: Callable[[], Optional[QIcon]]) -> Optional[QIcon]:
+    def get_or_create(self, key: Key, factory: Callable[[], QIcon | None]) -> QIcon | None:
         icon = self.get(key)
         if icon is not None:
             return icon
@@ -112,7 +113,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         """Return the PNG cache path for this key without loading it."""
         return self._disk_key(key)
 
-    def get_memory(self, key: Key) -> Optional[QIcon]:
+    def get_memory(self, key: Key) -> QIcon | None:
         """Return only the in-memory item; never read from disk on the UI thread."""
         return ThumbnailCache.get(self, key)
 
@@ -124,7 +125,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         self._enforce_disk_budget()
 
     # ---------- メモリ+ディスク: get ----------
-    def get(self, key: Key) -> Optional[QIcon]:
+    def get(self, key: Key) -> QIcon | None:
         icon = super().get(key)
         if icon is not None:
             return icon

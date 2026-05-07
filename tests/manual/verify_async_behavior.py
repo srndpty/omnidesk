@@ -7,7 +7,7 @@ for ad-hoc local debugging when watching printed progress is useful.
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QEventLoop, QTimer, pyqtSignal
+from PyQt6.QtCore import QEventLoop, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QApplication
 

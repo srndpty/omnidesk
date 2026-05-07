@@ -5,16 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThreadPool
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QMainWindow, QStackedWidget, QToolBar
-from PyQt6.QtCore import QThreadPool
 
-from .icons import application_icon
 from ..utils.config import load_settings, save_settings
 from ..utils.paths import get_default_start_path
 from ..utils.windows_theme import apply_dark_title_bar
 from .column_browser import ColumnBrowser
+from .icons import application_icon
 from .tab_container import TabContainer
 
 

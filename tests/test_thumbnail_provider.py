@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtGui import QImage, QIcon
+from PyQt6.QtGui import QIcon, QImage
 
 from omnidesk.ui import media_icon_provider
 from omnidesk.ui.media_icon_provider import MediaThumbnailProvider, _ImageJob, _VideoJob
@@ -212,7 +212,7 @@ class _FakeAudioOutput:
 
 
 class _FakePlayer:
-    instances: list["_FakePlayer"] = []
+    instances: list[_FakePlayer] = []
 
     def __init__(self, _parent=None) -> None:
         self.audio_output = None
@@ -247,7 +247,7 @@ class _FakePlayer:
 
 
 class _FakeVideoSink:
-    instances: list["_FakeVideoSink"] = []
+    instances: list[_FakeVideoSink] = []
 
     def __init__(self, _parent=None) -> None:
         self.videoFrameChanged = _FakeSignal()
@@ -255,7 +255,7 @@ class _FakeVideoSink:
 
 
 class _FakeTimer:
-    instances: list["_FakeTimer"] = []
+    instances: list[_FakeTimer] = []
 
     def __init__(self, _parent=None) -> None:
         self.timeout = _FakeSignal()

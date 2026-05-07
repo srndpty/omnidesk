@@ -2,62 +2,53 @@
 
 from __future__ import annotations
 
-from functools import partial
-from pathlib import Path
 import os
 import shlex
+from functools import partial
+from pathlib import Path
 
 from PyQt6.QtCore import (
     QDir,
-    QItemSelectionModel,
-    QModelIndex,
-    QSize,
-    QUrl,
-    Qt,
-    pyqtSignal,
-    QTimer,
-    QMimeData,
-    QPoint,
-    QRect,
     QItemSelection,
+    QItemSelectionModel,
+    QMimeData,
+    QModelIndex,
+    QPoint,
     QProcess,
+    QRect,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QCursor,
+    QAction,
     QDesktopServices,
     QDrag,
     QKeyEvent,
     QKeySequence,
-    QAction,
     QShortcut,
 )
 from PyQt6.QtWidgets import (
-    QApplication,
     QAbstractItemView,
+    QApplication,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLineEdit,
     QListView,
     QMenu,
     QMessageBox,
-    QInputDialog,
+    QRubberBand,
     QStackedWidget,
     QToolButton,
     QTreeView,
     QVBoxLayout,
     QWidget,
-    QRubberBand,
 )
 
-
-from .media_file_system_model import MediaFileSystemModel
-from .file_browser_helpers import (
-    delete_paths,
-    deletion_replacement_path,
-    perform_copy_or_move,
-    resolve_destination,
-    resolve_windows_program,
-)
+from .file_browser_actions import file_action_states
 from .file_browser_drop import (
     drop_action_for_modifiers,
     drop_target_directory,
@@ -65,7 +56,13 @@ from .file_browser_drop import (
     local_paths_from_urls,
     should_move_from_drop_action,
 )
-from .file_browser_actions import file_action_states
+from .file_browser_helpers import (
+    delete_paths,
+    deletion_replacement_path,
+    perform_copy_or_move,
+    resolve_destination,
+    resolve_windows_program,
+)
 from .file_browser_media_mode import (
     calculate_grid_size,
     is_media_heavy_directory,
@@ -79,12 +76,13 @@ from .file_browser_navigation import (
 )
 from .file_browser_selection import has_selection_path_in_directory, pending_selection_action
 from .file_browser_visible import index_identity, tile_probe_points, tile_probe_step
+from .media_file_system_model import MediaFileSystemModel
 
 
 class _BaseFileViewMixin:
     """Adds reusable drag-and-drop and context menu behaviours."""
 
-    def _init_file_view(self, tab: "FileBrowserTab") -> None:
+    def _init_file_view(self, tab: FileBrowserTab) -> None:
         self._tab = tab
         self._drag_start_pos = None
         self._drag_on_item = False 
@@ -219,14 +217,14 @@ class _BaseFileViewMixin:
             try:
                 # 移動（リネーム）
                 os.rename(src_path, dest_path)
-            except Exception as e:
+            except Exception:
                 # 必要ならメッセージなど
                 return False
 
         return True
 
 class _FileTreeView(_BaseFileViewMixin, QTreeView):
-    def __init__(self, tab: "FileBrowserTab") -> None:
+    def __init__(self, tab: FileBrowserTab) -> None:
         super().__init__(tab)
         self._init_file_view(tab)
         
@@ -328,7 +326,7 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
             selection_model.select(current_selection_in_band, QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
 class _FileTileView(_BaseFileViewMixin, QListView):
-    def __init__(self, tab: "FileBrowserTab") -> None:
+    def __init__(self, tab: FileBrowserTab) -> None:
         super().__init__(tab)
         self._init_file_view(tab)
         self.setViewMode(QListView.ViewMode.IconMode)

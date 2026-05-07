@@ -2,31 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import Callable
 
-from PyQt6.QtCore import Qt, pyqtSignal, QEvent
-from PyQt6.QtGui import QWheelEvent
-from PyQt6.QtCore import QObject
-from PyQt6.QtGui import QMouseEvent
-from PyQt6.QtWidgets import QTabBar, QTabWidget, QVBoxLayout, QWidget, QVBoxLayout, QToolButton, QSizePolicy
+from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QMouseEvent, QWheelEvent
+from PyQt6.QtWidgets import QSizePolicy, QTabWidget, QToolButton, QVBoxLayout, QWidget
 
 from .file_browser_tab import FileBrowserTab
 from .tab_bar_helpers import local_paths_from_urls, tab_drop_action, wheel_scroll_request
 
-
-# class _ClosableTabBar(QTabBar):
-#     middleClicked = pyqtSignal(int)
-
-#     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-#         if event.button() == Qt.MouseButton.MiddleButton:
-#             index = self.tabAt(event.position().toPoint())
-#             if index >= 0:
-#                 self.middleClicked.emit(index)
-#                 event.accept()
-#                 return
-#         super().mouseReleaseEvent(event)
 
 
 class TabContainer(QWidget):

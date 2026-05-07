@@ -7,8 +7,8 @@ from pathlib import Path
 from PyQt6.QtCore import (
     QDir,
     QModelIndex,
-    QUrl,
     Qt,
+    QUrl,
     pyqtSignal,
 )
 from PyQt6.QtGui import (
@@ -26,7 +26,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
 
 _COLUMN_VIEW_STYLESHEET = """
 QColumnView,
