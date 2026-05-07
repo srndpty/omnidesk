@@ -59,6 +59,18 @@ from .file_browser_helpers import (
     resolve_destination,
     resolve_windows_program,
 )
+from .file_browser_media_mode import (
+    calculate_grid_size,
+    is_media_heavy_directory,
+    media_mode_button_text,
+)
+from .file_browser_navigation import (
+    navigation_target,
+    path_to_focus_after_go_up,
+    resolve_address_path,
+    should_record_history,
+)
+from .file_browser_selection import has_selection_path_in_directory, pending_selection_action
 
 
 class _BaseFileViewMixin:
@@ -729,14 +741,10 @@ class FileBrowserTab(QWidget):
             return
         
         current = self._current_path
-        
-        # 通常のナビゲーション（履歴からではない）の場合のみ、履歴を記録
-        if not from_history:
-            # 移動先が現在の場所と異なる場合のみ履歴に追加
-            if current.resolve() != path.resolve():
-                self._navigation_history.append(current)
+        if should_record_history(current, path, from_history=from_history):
+            self._navigation_history.append(current)
 
-        target = path if path.is_dir() else path.parent
+        target = navigation_target(path)
         self._current_path = target
         self._path_edit.setText(str(target))
         root_index = self._model.setRootPath(str(target))
@@ -884,17 +892,12 @@ class FileBrowserTab(QWidget):
     def go_up(self) -> None:
         """Navigate to the parent directory."""
         
-        # ★★★ フォーカスすべきパスを、現在のパスとして記憶しておく ★★★
-        path_to_focus = self._current_path
-        
-        parent = self._current_path.parent
-        if parent != self._current_path:
-            # ★★★ from_history=True を付けて navigate_to を呼び出す ★★★
-            self.navigate_to(parent, from_history=True)
-            
-            # ★★★ 移動後に、記憶しておいたパスを選択する ★★★
-            # 少し遅延させてから選択を実行するのが確実
-            QTimer.singleShot(0, lambda p=path_to_focus: self._select_path(p))
+        target = path_to_focus_after_go_up(self._current_path)
+        if target is None:
+            return
+        parent, path_to_focus = target
+        self.navigate_to(parent, from_history=True)
+        QTimer.singleShot(0, lambda p=path_to_focus: self._select_path(p))
 
     def focus_view(self) -> None:
         self._active_view().setFocus(Qt.FocusReason.OtherFocusReason)
@@ -925,20 +928,7 @@ class FileBrowserTab(QWidget):
         if not text:
             return
 
-        # 環境変数を展開
-        text = os.path.expandvars(text)
-
-        # # URL なら既定アプリで開く
-        # url = QUrl.fromUserInput(text)
-        # print(f"_handle_path_entered: url=`{url.toString()}`, text:`{text}`, url.isValid():{url.isValid()}, url.scheme():`{url.scheme()}`", flush=True)
-        # if url.isValid() and url.scheme():
-        #     QDesktopServices.openUrl(url)
-        #     return
-
-        # パスとして解釈（相対はカレント基準）
-        candidate = Path(text)
-        if not candidate.is_absolute():
-            candidate = (self._current_path / candidate)
+        candidate = resolve_address_path(text, self._current_path)
 
         if candidate.exists():
             if candidate.is_file():
@@ -1097,16 +1087,23 @@ class FileBrowserTab(QWidget):
                 )
 
     def _select_pending_or_first_row(self) -> None:
-        if self._pending_selection_path is not None:
-            pending = self._pending_selection_path
-            if pending.exists() and self._select_path(pending):
-                self._pending_selection_path = None
-                return
-            if pending.exists():
-                return
+        pending = self._pending_selection_path
+        pending_exists = bool(pending and pending.exists())
+        selected_pending = bool(pending and pending_exists and self._select_path(pending))
+        action = pending_selection_action(
+            pending,
+            pending_exists=pending_exists,
+            selected_in_current_directory=self._has_current_selection_in_current_directory(),
+            pending_select_succeeded=selected_pending,
+        )
+        if action == "selected_pending":
             self._pending_selection_path = None
-        if self._has_current_selection_in_current_directory():
             return
+        if action == "wait_for_pending":
+            return
+        if action == "keep_current":
+            return
+        self._pending_selection_path = None
         self._select_first_row()
 
     def _has_current_selection_in_current_directory(self) -> bool:
@@ -1116,11 +1113,7 @@ class FileBrowserTab(QWidget):
         index = selection_model.currentIndex()
         if not index.isValid():
             return False
-        path = Path(self._model.filePath(index))
-        try:
-            return path.exists() and path.parent.resolve() == self._current_path.resolve()
-        except Exception:
-            return False
+        return has_selection_path_in_directory(Path(self._model.filePath(index)), self._current_path)
 
     def _selection_path_before_deleted_items(self, deleted_paths: list[Path]) -> Path | None:
         view = self._active_view()
@@ -1217,45 +1210,22 @@ class FileBrowserTab(QWidget):
         self._apply_media_mode()
 
     def _update_view_toggle_button(self) -> None:
-        current = self._media_icon_mode
-        if current:
-            self._toggle_view_button.setText("List View")
-            self._toggle_view_button.setToolTip("Switch to list view (details)")
-        else:
-            self._toggle_view_button.setText("Tile View")
-            self._toggle_view_button.setToolTip("Switch to tile view (thumbnails)")
+        text, tooltip = media_mode_button_text(self._media_icon_mode)
+        self._toggle_view_button.setText(text)
+        self._toggle_view_button.setToolTip(tooltip)
 
     def _calculate_grid_size(self, edge: int) -> QSize:
         fm = self._tile_view.fontMetrics()
-        text_height = fm.lineSpacing() * 2
-        padding = 24
-        width = edge + padding
-        height = edge + padding + text_height
-        return QSize(width, height)
+        return calculate_grid_size(edge, fm.lineSpacing())
 
     def _is_media_heavy(self, directory: Path) -> bool:
-        try:
-            iterator = directory.iterdir()
-        except OSError:
-            return False
-        total_files = 0
-        media_files = 0
-        extensions = self._model.media_extensions
-        for entry in iterator:
-            if entry.is_file():
-                total_files += 1
-                if entry.suffix.lower() in extensions:
-                    media_files += 1
-            if total_files >= self.MEDIA_SCAN_LIMIT:
-                break
-        if media_files == 0:
-            return False
-        if total_files <= self.MEDIA_MIN_COUNT:
-            return True
-        if media_files < self.MEDIA_MIN_COUNT:
-            return False
-        ratio = media_files / total_files
-        return ratio >= self.MEDIA_RATIO_THRESHOLD
+        return is_media_heavy_directory(
+            directory,
+            self._model.media_extensions,
+            ratio_threshold=self.MEDIA_RATIO_THRESHOLD,
+            min_count=self.MEDIA_MIN_COUNT,
+            scan_limit=self.MEDIA_SCAN_LIMIT,
+        )
 
     def _handle_selection_changed(self, *_args) -> None:
         self._update_action_states()

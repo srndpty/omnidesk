@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication
 
 from omnidesk import app as app_module
@@ -99,3 +99,87 @@ def test_media_file_system_model_cache_for_info_and_rejections(tmp_path: Path) -
     model._ensure_thumbnail(video, ".mp4", str(video))
 
     assert str(video) in model._failed
+
+
+def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    key = str(tmp_path)
+    image_path = tmp_path / "image.jpg"
+    image_path.write_text("fake", encoding="utf-8")
+    started: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        model._provider,
+        "request_thumbnail",
+        lambda path, edge, result_key=None, token=None: started.append((result_key, path)) or True,
+    )
+
+    model._handle_folder_scan_result(key, generation=99, image_path=image_path)
+    assert started == []
+
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    model._handle_folder_scan_result(key, token.generation, image_path)
+    assert started == [(key, image_path)]
+
+    empty_key = str(tmp_path / "empty")
+    token = model._new_token(empty_key)
+    model._visible_keys.add(empty_key)
+    model._pending.add(empty_key)
+    model._handle_folder_scan_result(empty_key, token.generation, None)
+    assert empty_key in model._failed
+    assert empty_key not in model._pending
+
+
+def test_media_file_system_model_cache_loaded_branches(monkeypatch, tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    key = str(tmp_path / "image.png")
+    started: list[str] = []
+    monkeypatch.setattr(model, "_ensure_thumbnail", lambda path, suffix, key=None: started.append(str(path)))
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda changed_key: started.append(f"emit:{changed_key}"))
+
+    model._handle_cache_loaded(key, generation=99, image=None, is_dir=False)
+    assert started == []
+
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    model._tokens[key] = token
+    model._handle_cache_loaded(key, token.generation, QImage(), is_dir=False)
+    assert started == [key]
+    assert key not in model._pending
+
+    image = QImage(10, 10, QImage.Format.Format_RGB32)
+    image.fill(0xFF00FF)
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    model._tokens[key] = token
+    model._handle_cache_loaded(key, token.generation, image, is_dir=False)
+    assert f"emit:{key}" in started
+
+
+def test_media_file_system_model_thumbnail_ready_failure_and_file_success(monkeypatch, tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    key = str(tmp_path / "image.png")
+    emitted: list[str] = []
+    monkeypatch.setattr(model, "_save_cache_async", lambda cache, key, pixmap: None)
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda changed_key: emitted.append(changed_key))
+
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    model._handle_thumbnail_ready(key, None, token.generation)
+    assert key in model._failed
+
+    pixmap = QPixmap(16, 16)
+    pixmap.fill()
+    icon = QIcon(pixmap)
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    model._failed.add(key)
+    model._handle_thumbnail_ready(key, icon, token.generation)
+
+    assert key not in model._failed
+    assert emitted == [key]

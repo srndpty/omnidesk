@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PyQt6.QtGui import QImage
 
-from omnidesk.ui.media_icon_provider import MediaThumbnailProvider
+from omnidesk.ui.media_icon_provider import MediaThumbnailProvider, _ImageJob
 from omnidesk.ui.thumbnail_jobs import CancellationToken
 
 
@@ -142,3 +142,44 @@ def test_on_video_finished_starts_next_queued_job(monkeypatch, qtbot) -> None:
     assert blocker.args == ["done", None, 9]
     assert provider._active_video_jobs == 0
     assert started == ["next"]
+
+
+def test_image_job_load_image_success_and_failure(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.png"
+    bad_path = tmp_path / "bad.png"
+    _save_image(image_path, size=24)
+    bad_path.write_text("not an image", encoding="utf-8")
+
+    loaded = _ImageJob._load_image(image_path)
+
+    assert loaded is not None
+    assert not loaded.isNull()
+    assert _ImageJob._load_image(bad_path) is None
+
+
+def test_image_job_run_emits_scaled_image(qtbot, tmp_path: Path) -> None:
+    image_path = tmp_path / "image.png"
+    _save_image(image_path, size=200)
+    token = CancellationToken(11)
+    job = _ImageJob("job-key", image_path, 40, token)
+
+    with qtbot.waitSignal(job.signals.finished, timeout=1000) as blocker:
+        job.run()
+
+    key, image, edge, generation = blocker.args
+    assert key == "job-key"
+    assert edge == 40
+    assert generation == 11
+    assert image.width() <= 40
+    assert image.height() <= 40
+
+
+def test_image_job_run_does_not_emit_when_cancelled(qtbot, tmp_path: Path) -> None:
+    image_path = tmp_path / "image.png"
+    _save_image(image_path, size=200)
+    token = CancellationToken(12)
+    token.cancel()
+    job = _ImageJob("job-key", image_path, 40, token)
+
+    with qtbot.assertNotEmitted(job.signals.finished, wait=100):
+        job.run()
