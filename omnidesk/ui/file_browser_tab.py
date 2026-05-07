@@ -54,10 +54,16 @@ from .media_file_system_model import MediaFileSystemModel
 from .file_browser_helpers import (
     delete_paths,
     deletion_replacement_path,
-    is_within,
     perform_copy_or_move,
     resolve_destination,
     resolve_windows_program,
+)
+from .file_browser_drop import (
+    drop_action_for_modifiers,
+    drop_target_directory,
+    has_blocked_self_move,
+    local_paths_from_urls,
+    should_move_from_drop_action,
 )
 from .file_browser_media_mode import (
     calculate_grid_size,
@@ -155,11 +161,7 @@ class _BaseFileViewMixin:
     def dragMoveEvent(self, event) -> None:  # noqa: N802
         if event.mimeData().hasUrls():
             print
-            action = (
-                Qt.DropAction.CopyAction
-                if event.modifiers() & Qt.KeyboardModifier.ControlModifier
-                else Qt.DropAction.MoveAction
-            )
+            action = drop_action_for_modifiers(event.modifiers())
             event.setDropAction(action)
             event.acceptProposedAction()
         else:
@@ -169,7 +171,7 @@ class _BaseFileViewMixin:
         if not event.mimeData().hasUrls():
             event.ignore()
             return
-        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+        paths = local_paths_from_urls(event.mimeData().urls())
         if not paths:
             event.ignore()
             return
@@ -178,13 +180,14 @@ class _BaseFileViewMixin:
         target_dir = self._tab._current_path
         if index.isValid():
             file_info = self._tab._model.fileInfo(index)
-            if file_info.isDir():
-                target_dir = Path(file_info.absoluteFilePath())
-            else:
-                target_dir = Path(file_info.absolutePath())
-        move = (
-            event.dropAction() == Qt.DropAction.MoveAction
-            and not event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            target_dir = drop_target_directory(
+                self._tab._current_path,
+                Path(file_info.absoluteFilePath()),
+                item_is_dir=file_info.isDir(),
+            )
+        move = should_move_from_drop_action(
+            event.dropAction(),
+            event.modifiers(),
         )
         self._tab._handle_external_drop(paths, target_dir, move)
         event.setDropAction(Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction)
@@ -711,22 +714,18 @@ class FileBrowserTab(QWidget):
 
     @staticmethod
     def _is_within(path: Path, potential_parent: Path) -> bool:
-        return is_within(path, potential_parent)
+        try:
+            return path.resolve().is_relative_to(potential_parent.resolve())
+        except Exception:
+            return False
 
     def _handle_external_drop(self, paths: list[Path], target_dir: Path, move: bool) -> None:
         if not target_dir.exists():
             QMessageBox.warning(self, "Drop failed", f"Destination {target_dir} does not exist.")
             return
-        if move:
-            for path in paths:
-                try:
-                    src_resolved = path.resolve()
-                    dest_resolved = target_dir.resolve()
-                except Exception:  # pragma: no cover - Windows UNC etc.
-                    continue
-                if src_resolved == dest_resolved or self._is_within(dest_resolved, src_resolved):
-                    QMessageBox.warning(self, "Drop failed", "Cannot move a folder into itself.")
-                    return
+        if move and has_blocked_self_move(paths, target_dir):
+            QMessageBox.warning(self, "Drop failed", "Cannot move a folder into itself.")
+            return
         self._perform_copy_or_move(paths, target_dir, move=move)
         self.refresh()
 

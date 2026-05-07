@@ -208,3 +208,73 @@ def test_file_browser_tab_activate_deactivate_thumbnail_state(qtbot) -> None:
     assert not tab._is_active
     assert not tab._thumbnail_request_timer.isActive()
     assert not tab._thumbnail_scroll_settle_timer.isActive()
+
+
+def test_file_browser_tab_external_drop_warns_for_missing_destination(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    warnings: list[tuple[str, str]] = []
+    copied: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+    monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: copied.append(True))
+
+    tab._handle_external_drop([tmp_path / "source.txt"], tmp_path / "missing", move=False)
+
+    assert warnings == [("Drop failed", f"Destination {tmp_path / 'missing'} does not exist.")]
+    assert copied == []
+
+
+def test_file_browser_tab_external_drop_blocks_moving_folder_into_itself(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    warnings: list[tuple[str, str]] = []
+    copied: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+    monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: copied.append(True))
+
+    tab._handle_external_drop([source], nested, move=True)
+
+    assert warnings == [("Drop failed", "Cannot move a folder into itself.")]
+    assert copied == []
+
+
+def test_file_browser_tab_external_drop_performs_operation_and_refreshes(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.txt"
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    operations: list[tuple[list[Path], Path, bool]] = []
+    refreshed: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        tab,
+        "_perform_copy_or_move",
+        lambda paths, target_dir, move: operations.append((paths, target_dir, move)),
+    )
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+
+    tab._handle_external_drop([source], dest, move=False)
+
+    assert operations == [([source], dest, False)]
+    assert refreshed == [True]
