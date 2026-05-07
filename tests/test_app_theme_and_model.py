@@ -15,6 +15,7 @@ from omnidesk.ui.media_file_system_model import (
     folder_preview_cache,
     folder_thumbnail_rect,
 )
+import omnidesk.ui.media_file_system_model as model_module
 
 
 def test_apply_dark_theme_sets_fusion_style_and_stylesheet(qapp: QApplication) -> None:
@@ -233,3 +234,143 @@ def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) ->
     assert directory_flags & Qt.ItemFlag.ItemIsDragEnabled
     assert directory_flags & Qt.ItemFlag.ItemIsDropEnabled
     assert invalid_flags is not None
+
+
+class _FakeCache:
+    def __init__(self, disk_path: Path, memory_icon: QIcon | None = None) -> None:
+        self._disk_path = disk_path
+        self._memory_icon = memory_icon
+        self.memory_puts: list[tuple[str, QIcon, QPixmap]] = []
+
+    def get_memory(self, _key: str) -> QIcon | None:
+        return self._memory_icon
+
+    def disk_path(self, _key: str) -> Path:
+        return self._disk_path
+
+    def put_memory(self, key: str, icon: QIcon, pixmap: QPixmap) -> None:
+        self.memory_puts.append((key, icon, pixmap))
+
+
+def test_media_file_system_model_request_visible_loads_disk_cache(monkeypatch, tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    disk_cache = tmp_path / "cache.png"
+    disk_cache.write_bytes(b"cache")
+    fake_cache = _FakeCache(disk_cache)
+    started: list[object] = []
+    monkeypatch.setattr(model, "_cache_for_info", lambda is_dir: fake_cache)
+    monkeypatch.setattr(model._scan_pool, "start", started.append)
+
+    assert model._request_visible_key("cache-key", tmp_path / "image.png", is_dir=False)
+
+    assert "cache-key" in model._pending
+    assert "cache-key" in model._cache_jobs
+    assert len(started) == 1
+
+
+def test_media_file_system_model_request_visible_skips_small_folder_preview(tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(64)
+
+    assert not model._request_visible_key(str(tmp_path), tmp_path, is_dir=True)
+    assert str(tmp_path) not in model._pending
+
+
+def test_media_file_system_model_request_visible_starts_folder_scan(monkeypatch, tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    started: list[Path] = []
+    monkeypatch.setattr(model, "_ensure_folder_thumbnail", started.append)
+
+    assert model._request_visible_key(str(tmp_path), tmp_path, is_dir=True)
+
+    assert started == [tmp_path]
+
+
+def test_media_file_system_model_ensure_folder_thumbnail_ignores_duplicate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    started: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", started.append)
+
+    model._ensure_folder_thumbnail(tmp_path)
+    model._ensure_folder_thumbnail(tmp_path)
+
+    key = model._normalise_key(tmp_path)
+    assert key in model._pending
+    assert key in model._folder_scans
+    assert len(started) == 1
+
+
+def test_media_file_system_model_ensure_thumbnail_skips_memory_pending_failed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    key = str(tmp_path / "image.png")
+    pixmap = QPixmap(16, 16)
+    icon = QIcon(pixmap)
+    fake_cache = _FakeCache(tmp_path / "unused.png", memory_icon=icon)
+    requested: list[str] = []
+    monkeypatch.setattr(model_module, "file_thumbnail_cache", fake_cache)
+    monkeypatch.setattr(
+        model._provider,
+        "request_thumbnail",
+        lambda path, edge, result_key=None, token=None: requested.append(result_key) or True,
+    )
+
+    model._ensure_thumbnail(Path(key), ".png", key)
+    model._pending.add(key)
+    model._ensure_thumbnail(Path(key), ".png", key)
+    model._pending.discard(key)
+    model._failed.add(key)
+    model._ensure_thumbnail(Path(key), ".png", key)
+
+    assert requested == []
+
+
+def test_media_file_system_model_ensure_thumbnail_marks_not_started(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    key = str(tmp_path / "image.png")
+    monkeypatch.setattr(
+        model._provider,
+        "request_thumbnail",
+        lambda path, edge, result_key=None, token=None: False,
+    )
+
+    model._ensure_thumbnail(Path(key), ".png", key)
+
+    assert key not in model._pending
+    assert key in model._tokens
+
+
+def test_media_file_system_model_cache_loaded_dir_miss_restarts_folder_scan(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    key = str(tmp_path)
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    restarted: list[Path] = []
+    monkeypatch.setattr(model, "_ensure_folder_thumbnail", restarted.append)
+
+    model._handle_cache_loaded(key, token.generation, QImage(), is_dir=True)
+
+    assert restarted == [tmp_path]
+    assert key not in model._pending
+
+
+def test_media_file_system_model_save_cache_async_ignores_null_pixmap(monkeypatch) -> None:
+    model = MediaFileSystemModel()
+    started: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", started.append)
+
+    model._save_cache_async(file_thumbnail_cache, "key", QPixmap())
+
+    assert started == []

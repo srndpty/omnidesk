@@ -131,7 +131,11 @@ class ColumnBrowser(QWidget):
 
     def refresh(self) -> None:
         index = self._model.index(str(self._current_path))
-        self._model.refresh(index)
+        refresh = getattr(self._model, "refresh", None)
+        if callable(refresh):
+            refresh(index)
+            return
+        self._view.setRootIndex(self._model.setRootPath(str(self._current_path)))
 
     def focus_view(self) -> None:
         self._view.setFocus(Qt.FocusReason.OtherFocusReason)
