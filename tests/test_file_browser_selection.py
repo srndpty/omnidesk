@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from omnidesk.ui.file_browser_tab import deletion_replacement_path
+from omnidesk.ui.file_browser_helpers import deletion_replacement_path
 
 
 def _paths(tmp_path: Path, names: list[str]) -> list[Path]:

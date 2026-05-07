@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import shutil
 from functools import partial
-from itertools import count
 from pathlib import Path
 import os
 import shlex
-import shutil
 
 from PyQt6.QtCore import (
     QDir,
@@ -56,39 +51,14 @@ from PyQt6.QtWidgets import (
 
 
 from .media_file_system_model import MediaFileSystemModel
-
-
-def deletion_replacement_path(
-    ordered_paths: list[Path],
-    selected_rows: set[int],
-    deleted_paths: set[Path],
-) -> Path | None:
-    """Return the item to select after deleting rows from an ordered directory."""
-    if not selected_rows:
-        return None
-
-    def candidate_at(row: int) -> Path | None:
-        if row < 0 or row >= len(ordered_paths):
-            return None
-        candidate = ordered_paths[row]
-        try:
-            if candidate.resolve() in deleted_paths:
-                return None
-        except Exception:
-            return None
-        return candidate
-
-    for row in range(min(selected_rows) - 1, -1, -1):
-        candidate = candidate_at(row)
-        if candidate is not None:
-            return candidate
-
-    for row in range(max(selected_rows) + 1, len(ordered_paths)):
-        candidate = candidate_at(row)
-        if candidate is not None:
-            return candidate
-
-    return None
+from .file_browser_helpers import (
+    delete_paths,
+    deletion_replacement_path,
+    is_within,
+    perform_copy_or_move,
+    resolve_destination,
+    resolve_windows_program,
+)
 
 
 class _BaseFileViewMixin:
@@ -712,15 +682,7 @@ class FileBrowserTab(QWidget):
             != QMessageBox.StandardButton.Yes
         ):
             return
-        errors: list[str] = []
-        for path in paths:
-            try:
-                if path.is_dir():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-            except Exception as exc:  # pragma: no cover - filesystem dependent
-                errors.append(f"{path}: {exc}")
+        errors = delete_paths(paths)
         if errors:
             QMessageBox.warning(self, "Delete failed", "\n".join(errors))
         self._pending_selection_path = select_after_delete
@@ -728,56 +690,16 @@ class FileBrowserTab(QWidget):
         self._update_action_states()
 
     def _perform_copy_or_move(self, sources: list[Path], dest_dir: Path, *, move: bool) -> None:
-        errors: list[str] = []
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        for src in sources:
-            if not src.exists():
-                errors.append(f"Missing: {src}")
-                continue
-            try:
-                if move and src.parent.resolve() == dest_dir.resolve():
-                    continue
-            except Exception:  # pragma: no cover - resolution failure on some systems
-                pass
-            try:
-                target = self._resolve_destination(dest_dir, src.name, move)
-            except ValueError as exc:
-                errors.append(str(exc))
-                continue
-            try:
-                if move:
-                    shutil.move(str(src), str(target))
-                else:
-                    if src.is_dir():
-                        shutil.copytree(src, target)
-                    else:
-                        shutil.copy2(src, target)
-            except Exception as exc:  # pragma: no cover - filesystem dependent
-                errors.append(f"{src} -> {target}: {exc}")
+        errors = perform_copy_or_move(sources, dest_dir, move=move)
         if errors:
             QMessageBox.warning(self, "Operation issues", "\n".join(errors))
 
     def _resolve_destination(self, dest_dir: Path, name: str, move: bool) -> Path:
-        target = dest_dir / name
-        if not target.exists():
-            return target
-        if move and target.exists():
-            raise ValueError(f"Destination already has {name}")
-        stem = target.stem
-        suffix = target.suffix
-        for n in count(1):
-            candidate = dest_dir / f"{stem} - Copy {n}{suffix}"
-            if not candidate.exists():
-                return candidate
-        raise ValueError("Unable to resolve destination")
+        return resolve_destination(dest_dir, name, move)
 
     @staticmethod
     def _is_within(path: Path, potential_parent: Path) -> bool:
-        try:
-            path.relative_to(potential_parent)
-            return True
-        except ValueError:
-            return False
+        return is_within(path, potential_parent)
 
     def _handle_external_drop(self, paths: list[Path], target_dir: Path, move: bool) -> None:
         if not target_dir.exists():
@@ -1065,49 +987,7 @@ class FileBrowserTab(QWidget):
         実行ファイルのフルパスを返す。見つからなければ (None, False)。
         返り値の第2要素は .bat / .cmd かどうか。
         """
-        def _exists_file(p: Path) -> bool:
-            try:
-                return p.exists() and p.is_file()
-            except Exception:
-                return False
-
-        pathexts = [e.lower() for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
-
-        # 明示パス/相対パス指定（.\tools\zapall 等）
-        if any(sep in program for sep in ("/", "\\")) or program.startswith("."):
-            p = Path(program)
-            if not p.is_absolute():
-                p = (self._current_path / p)
-            if p.suffix:
-                if _exists_file(p):
-                    ext = p.suffix.lower()
-                    return str(p), ext in (".bat", ".cmd")
-            else:
-                for ext in pathexts:
-                    cand = p.with_suffix(ext)
-                    if _exists_file(cand):
-                        return str(cand), ext in (".bat", ".cmd")
-            return None, False
-
-        # カレントディレクトリ優先（Explorer と同じ感覚）
-        base = self._current_path / program
-        if base.suffix:
-            if _exists_file(base):
-                ext = base.suffix.lower()
-                return str(base), ext in (".bat", ".cmd")
-        else:
-            for ext in pathexts:
-                cand = base.with_suffix(ext)
-                if _exists_file(cand):
-                    return str(cand), ext in (".bat", ".cmd")
-
-        # PATH から検索
-        found = shutil.which(program)
-        if found:
-            ext = Path(found).suffix.lower()
-            return found, ext in (".bat", ".cmd")
-
-        return None, False
+        return resolve_windows_program(program, self._current_path)
 
     def _handle_index_activated(self, index: QModelIndex) -> None:
         file_info = self._model.fileInfo(index)
