@@ -71,13 +71,17 @@ def test_handle_selection_changed_ignores_invalid_index(qtbot) -> None:
     assert browser.current_path() == original
 
 
-def test_refresh_and_focus_view_delegate_to_child_widgets(monkeypatch, qtbot, tmp_path: Path) -> None:
+def test_refresh_and_focus_view_delegate_to_child_widgets(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
     browser = ColumnBrowser()
     qtbot.addWidget(browser)
     browser.set_root_path(tmp_path)
     refreshed: list[object] = []
     focused: list[object] = []
-    monkeypatch.setattr(browser._model, "refresh", lambda index: refreshed.append(index), raising=False)
+    monkeypatch.setattr(
+        browser._model, "refresh", lambda index: refreshed.append(index), raising=False
+    )
     monkeypatch.setattr(browser._view, "setFocus", lambda reason: focused.append(reason))
 
     browser.refresh()
@@ -134,7 +138,9 @@ def test_handle_activated_opens_file(monkeypatch, qtbot, tmp_path: Path) -> None
     assert [Path(url.toLocalFile()) for url in opened] == [target]
 
 
-def test_refresh_falls_back_to_resetting_root_when_model_has_no_refresh(qtbot, tmp_path: Path) -> None:
+def test_refresh_falls_back_to_resetting_root_when_model_has_no_refresh(
+    qtbot, tmp_path: Path
+) -> None:
     browser = ColumnBrowser()
     qtbot.addWidget(browser)
     browser.set_root_path(tmp_path)
@@ -174,7 +180,9 @@ def test_handle_selection_changed_emits_for_directory(monkeypatch, qtbot, tmp_pa
     assert browser.current_path() == target
 
 
-def test_handle_selection_changed_updates_file_without_emitting(monkeypatch, qtbot, tmp_path: Path) -> None:
+def test_handle_selection_changed_updates_file_without_emitting(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
     browser = ColumnBrowser()
     qtbot.addWidget(browser)
     target = tmp_path / "selected.txt"

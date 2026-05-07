@@ -141,8 +141,12 @@ def test_media_file_system_model_cache_loaded_branches(monkeypatch, tmp_path: Pa
     model = MediaFileSystemModel()
     key = str(tmp_path / "image.png")
     started: list[str] = []
-    monkeypatch.setattr(model, "_ensure_thumbnail", lambda path, suffix, key=None: started.append(str(path)))
-    monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda changed_key: started.append(f"emit:{changed_key}"))
+    monkeypatch.setattr(
+        model, "_ensure_thumbnail", lambda path, suffix, key=None: started.append(str(path))
+    )
+    monkeypatch.setattr(
+        model, "_emit_thumbnail_changed", lambda changed_key: started.append(f"emit:{changed_key}")
+    )
 
     model._handle_cache_loaded(key, generation=99, image=None, is_dir=False)
     assert started == []
@@ -165,12 +169,16 @@ def test_media_file_system_model_cache_loaded_branches(monkeypatch, tmp_path: Pa
     assert f"emit:{key}" in started
 
 
-def test_media_file_system_model_thumbnail_ready_failure_and_file_success(monkeypatch, tmp_path: Path) -> None:
+def test_media_file_system_model_thumbnail_ready_failure_and_file_success(
+    monkeypatch, tmp_path: Path
+) -> None:
     model = MediaFileSystemModel()
     key = str(tmp_path / "image.png")
     emitted: list[str] = []
     monkeypatch.setattr(model, "_save_cache_async", lambda cache, key, pixmap: None)
-    monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda changed_key: emitted.append(changed_key))
+    monkeypatch.setattr(
+        model, "_emit_thumbnail_changed", lambda changed_key: emitted.append(changed_key)
+    )
 
     token = model._new_token(key)
     model._visible_keys.add(key)
@@ -252,7 +260,9 @@ class _FakeCache:
         self.memory_puts.append((key, icon, pixmap))
 
 
-def test_media_file_system_model_request_visible_loads_disk_cache(monkeypatch, tmp_path: Path) -> None:
+def test_media_file_system_model_request_visible_loads_disk_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
     model = MediaFileSystemModel()
     disk_cache = tmp_path / "cache.png"
     disk_cache.write_bytes(b"cache")
@@ -276,7 +286,9 @@ def test_media_file_system_model_request_visible_skips_small_folder_preview(tmp_
     assert str(tmp_path) not in model._pending
 
 
-def test_media_file_system_model_request_visible_starts_folder_scan(monkeypatch, tmp_path: Path) -> None:
+def test_media_file_system_model_request_visible_starts_folder_scan(
+    monkeypatch, tmp_path: Path
+) -> None:
     model = MediaFileSystemModel()
     started: list[Path] = []
     monkeypatch.setattr(model, "_ensure_folder_thumbnail", started.append)

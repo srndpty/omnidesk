@@ -81,7 +81,7 @@ class MediaFileSystemModel(QFileSystemModel):
         # リクエストのロジックは prioritize_thumbnail_requests に移譲されたので、
         # ここではキャッシュになければ常にデフォルトアイコンを返す
         return super().data(index, role)
-    
+
     def _new_token(self, key: str) -> CancellationToken:
         generation = self._generations.get(key, 0) + 1
         self._generations[key] = generation
@@ -110,7 +110,9 @@ class MediaFileSystemModel(QFileSystemModel):
     def _cache_for_info(self, is_dir: bool):
         return folder_preview_cache if is_dir else file_thumbnail_cache
 
-    def set_visible_thumbnail_targets(self, indexes: list[QModelIndex], *, request_limit: int | None = None) -> None:
+    def set_visible_thumbnail_targets(
+        self, indexes: list[QModelIndex], *, request_limit: int | None = None
+    ) -> None:
         """Request thumbnails only for currently visible model indexes."""
         ordered: list[tuple[str, Path, bool]] = []
         seen: set[str] = set()
@@ -201,7 +203,9 @@ class MediaFileSystemModel(QFileSystemModel):
         self._folder_scans[key] = job
         self._scan_pool.start(job)
 
-    def _handle_folder_scan_result(self, key: str, generation: int, image_path: Path | None) -> None:
+    def _handle_folder_scan_result(
+        self, key: str, generation: int, image_path: Path | None
+    ) -> None:
         self._folder_scans.pop(key, None)
         if not self._is_current_request(key, generation):
             self._debug("folder-stale", key, generation)
@@ -238,16 +242,17 @@ class MediaFileSystemModel(QFileSystemModel):
                 file_info = self.fileInfo(index)
                 paths.append(file_info.absoluteFilePath())
         return paths
+
     # ------------------------------------------------------------------
     def _ensure_thumbnail(self, path: Path, suffix: str, key: str | None = None) -> None:
         norm_key = key or self._normalise_key(path)
-   
+
         if file_thumbnail_cache.get_memory(norm_key) is not None:
             idx = self.index(norm_key)
             if idx.isValid():
                 self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
             return
-        
+
         if norm_key in self._pending or norm_key in self._failed:
             # print(f"[MediaFileSystemModel] skip existing job for {norm_key}", flush=True)
             return
@@ -315,30 +320,33 @@ class MediaFileSystemModel(QFileSystemModel):
             # 1. 文字列のパス(key)から、対応するQModelIndexを取得する
             folder_index = self.index(key)
             if not folder_index.isValid():
-                return # もしインデックスが無効なら、処理を中断
+                return  # もしインデックスが無効なら、処理を中断
 
             # 2. 取得したQModelIndexを使って、ファイル情報を取得する
             folder_info = self.fileInfo(folder_index)
             base_icon = self._icon_provider.icon(folder_info)
             base_pixmap = base_icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
-            
+
             # 2. サムネイル画像を取得
             thumb_pixmap = icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
 
             # 3. Painterを使ってアイコンを合成
             painter = QPainter(base_pixmap)
             # 中央に描画
-            target_size = int(self._thumbnail_edge * 1.2) # 少し大きめに
+            target_size = int(self._thumbnail_edge * 1.2)  # 少し大きめに
             scaled_thumb = thumb_pixmap.scaled(
-                target_size, target_size,
+                target_size,
+                target_size,
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
+                Qt.TransformationMode.SmoothTransformation,
             )
-            x, y = folder_thumbnail_rect(base_pixmap.size(), scaled_thumb.size(), self._thumbnail_edge)
+            x, y = folder_thumbnail_rect(
+                base_pixmap.size(), scaled_thumb.size(), self._thumbnail_edge
+            )
 
             painter.drawPixmap(x, y, scaled_thumb)
             painter.end()
-            
+
             # 4. 合成したPixmapから新しいQIconを作成してキャッシュ
             final_icon = QIcon(base_pixmap)
             folder_preview_cache.put_memory(key, final_icon, base_pixmap)
@@ -349,7 +357,7 @@ class MediaFileSystemModel(QFileSystemModel):
             pixmap = icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
             file_thumbnail_cache.put_memory(key, icon, pixmap)
             self._save_cache_async(file_thumbnail_cache, key, pixmap)
-        
+
         self._debug("ready", key)
         self._emit_thumbnail_changed(key)
 
@@ -357,9 +365,7 @@ class MediaFileSystemModel(QFileSystemModel):
         image = pixmap.toImage()
         if image.isNull():
             return
-        self._scan_pool.start(
-            CacheSaveJob(cache.disk_path(key), image, cache.enforce_disk_budget)
-        )
+        self._scan_pool.start(CacheSaveJob(cache.disk_path(key), image, cache.enforce_disk_budget))
 
     def _emit_thumbnail_changed(self, key: str) -> None:
         index = self.index(key)
@@ -371,7 +377,7 @@ class MediaFileSystemModel(QFileSystemModel):
         """このモデルがサポートするドロップアクションを宣言します。"""
         # コピーと移動の両方をサポートすることをビューに伝える
         return Qt.DropAction.CopyAction | Qt.DropAction.MoveAction
-    
+
     def supportedDragActions(self) -> Qt.DropAction:
         """このモデルがサポートするドロップアクションを宣言します。"""
         # コピーと移動の両方をサポートすることをビューに伝える
@@ -393,7 +399,7 @@ class MediaFileSystemModel(QFileSystemModel):
             default_flags |= Qt.ItemFlag.ItemIsDropEnabled
 
         return default_flags
-    
+
     # ------------------------------------------------------------------
     @staticmethod
     def _normalise_key(path: Path | str) -> str:
@@ -402,14 +408,9 @@ class MediaFileSystemModel(QFileSystemModel):
             return str(candidate.resolve(strict=False))
         except OSError:
             return str(candidate)
-        
+
     def dropMimeData(
-        self,
-        data: QMimeData,
-        action: Qt.DropAction,
-        row: int,
-        column: int,
-        parent: QModelIndex
+        self, data: QMimeData, action: Qt.DropAction, row: int, column: int, parent: QModelIndex
     ) -> bool:
         print
         """ドラッグ＆ドロップによるファイル移動を処理"""

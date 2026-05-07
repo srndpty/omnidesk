@@ -214,6 +214,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
             except Exception:
                 pass
 
+
 # 既存呼び出し側はそのままで OK
 folder_preview_cache = PersistentThumbnailCache[str](
     capacity=512, namespace="folders", disk_max_items=5000, disk_max_bytes=400_000_000

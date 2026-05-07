@@ -256,5 +256,3 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().waitForDone()
         self._persist_settings()
         super().closeEvent(event)
-
-

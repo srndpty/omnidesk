@@ -32,7 +32,9 @@ def test_load_settings_returns_empty_for_read_error(monkeypatch, tmp_path: Path)
     settings_file = tmp_path / "settings.json"
     settings_file.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
-    monkeypatch.setattr(Path, "read_text", lambda self, encoding=None: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(
+        Path, "read_text", lambda self, encoding=None: (_ for _ in ()).throw(OSError())
+    )
 
     assert config.load_settings() == {}
 
@@ -51,7 +53,9 @@ def test_save_settings_ignores_os_errors(monkeypatch, tmp_path: Path) -> None:
     settings_file = tmp_path / "settings.json"
     monkeypatch.setattr(config, "DEFAULT_CONFIG_DIR", tmp_path)
     monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
-    monkeypatch.setattr(Path, "write_text", lambda self, *args, **kwargs: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(
+        Path, "write_text", lambda self, *args, **kwargs: (_ for _ in ()).throw(OSError())
+    )
 
     config.save_settings({"ignored": True})
 
@@ -65,7 +69,9 @@ def test_resolve_for_navigation_resolves_existing_path(tmp_path: Path) -> None:
     assert paths.resolve_for_navigation(target) == target.resolve()
 
 
-def test_resolve_for_navigation_returns_unresolved_path_on_os_error(monkeypatch, tmp_path: Path) -> None:
+def test_resolve_for_navigation_returns_unresolved_path_on_os_error(
+    monkeypatch, tmp_path: Path
+) -> None:
     target = tmp_path / "unavailable"
     monkeypatch.setattr(Path, "resolve", lambda self: (_ for _ in ()).throw(OSError()))
 

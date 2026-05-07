@@ -85,7 +85,7 @@ class _BaseFileViewMixin:
     def _init_file_view(self, tab: FileBrowserTab) -> None:
         self._tab = tab
         self._drag_start_pos = None
-        self._drag_on_item = False 
+        self._drag_on_item = False
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
@@ -133,7 +133,7 @@ class _BaseFileViewMixin:
         button = event.button()
         if button == Qt.MouseButton.BackButton:
             print("[_BaseFileViewMixin] Back button pressed, telling tab to go up.", flush=True)
-            self._tab.go_up() # 親であるタブのgo_up()を呼び出す
+            self._tab.go_up()  # 親であるタブのgo_up()を呼び出す
             event.accept()
         elif button == Qt.MouseButton.ForwardButton:
             # 将来の「進む」機能のために、ここに処理を追加できる
@@ -223,28 +223,29 @@ class _BaseFileViewMixin:
 
         return True
 
+
 class _FileTreeView(_BaseFileViewMixin, QTreeView):
     def __init__(self, tab: FileBrowserTab) -> None:
         super().__init__(tab)
         self._init_file_view(tab)
-        
+
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
         self._rubber_band_origin = None
-        
+
         # ★★★ リアルタイム選択更新のための状態変数を追加 ★★★
         self._last_selection = QItemSelection()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        super().mousePressEvent(event) # Mixinの処理を先に呼ぶ
+        super().mousePressEvent(event)  # Mixinの処理を先に呼ぶ
 
         if not self._drag_on_item and event.button() == Qt.MouseButton.LeftButton:
             self._rubber_band_origin = event.pos()
             self._rubber_band.setGeometry(QRect(self._rubber_band_origin, QSize()))
             self._rubber_band.show()
-            
+
             # ★★★ 既存の選択状態を保存しておく ★★★
             self._last_selection = QItemSelection(self.selectionModel().selection())
-            
+
             event.accept()
             return
 
@@ -252,26 +253,26 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
         if self._rubber_band.isVisible():
             rect = QRect(self._rubber_band_origin, event.pos()).normalized()
             self._rubber_band.setGeometry(rect)
-            
+
             # ★★★ mouseMoveイベント内で直接、選択更新処理を呼び出す ★★★
             self._update_rubber_band_selection(event.modifiers())
-            
+
             event.accept()
             return
-        
-        super().mouseMoveEvent(event) # MixinのD&D処理
+
+        super().mouseMoveEvent(event)  # MixinのD&D処理
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if self._rubber_band.isVisible():
             self._rubber_band.hide()
-            
+
             # ★★★ 状態変数をリセット ★★★
             self._last_selection = QItemSelection()
-            
+
             event.accept()
             return
 
-        super().mouseReleaseEvent(event) # Mixinの処理
+        super().mouseReleaseEvent(event)  # Mixinの処理
 
     def _update_rubber_band_selection(self, modifiers: Qt.KeyboardModifier) -> None:
         """ラバーバンド内のアイテムをリアルタイムで選択するメソッド"""
@@ -293,7 +294,7 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
             #    最初のカラムの矩形と最後のカラムの矩形を結合する
             last_col_index = model.index(row, column_count - 1, root)
             full_row_rect = self.visualRect(first_col_index).united(self.visualRect(last_col_index))
-            
+
             # 高速化のため、行がビューポート外ならチェックをスキップ
             if not full_row_rect.intersects(self.viewport().rect()):
                 continue
@@ -301,7 +302,9 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
             # 3. ラバーバンドが行全体の矩形と交差するかどうかをチェック
             if selection_rect.intersects(full_row_rect):
                 row_selection = QItemSelection(first_col_index, last_col_index)
-                current_selection_in_band.merge(row_selection, QItemSelectionModel.SelectionFlag.Select)
+                current_selection_in_band.merge(
+                    row_selection, QItemSelectionModel.SelectionFlag.Select
+                )
 
         # ★★★ ここから下の選択ロジックは変更なし ★★★
         selection_model = self.selectionModel()
@@ -320,10 +323,15 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
                     end_index = model.index(row, column_count - 1, root)
                     final_selection.select(start_index, end_index)
                     processed_rows.add(row)
-            
-            selection_model.select(final_selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+
+            selection_model.select(
+                final_selection, QItemSelectionModel.SelectionFlag.ClearAndSelect
+            )
         else:
-            selection_model.select(current_selection_in_band, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+            selection_model.select(
+                current_selection_in_band, QItemSelectionModel.SelectionFlag.ClearAndSelect
+            )
+
 
 class _FileTileView(_BaseFileViewMixin, QListView):
     def __init__(self, tab: FileBrowserTab) -> None:
@@ -339,7 +347,6 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setWordWrap(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionRectVisible(True)
-
 
 
 class FileBrowserTab(QWidget):
@@ -364,7 +371,7 @@ class FileBrowserTab(QWidget):
         self._media_icon_mode = False
         self._current_path = Path.home()
         self._navigation_history: list[Path] = []
-        self._is_active = False 
+        self._is_active = False
 
         self._model = MediaFileSystemModel(self)
         self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
@@ -374,7 +381,7 @@ class FileBrowserTab(QWidget):
 
         # モデルのレイアウトが変更されたら、サムネイル要求をトリガーする
         self._model.layoutChanged.connect(self._on_layout_changed)
-        
+
         self._tree_view = _FileTreeView(self)
         self._tree_view.setModel(self._model)
         self._tree_view.setAlternatingRowColors(True)
@@ -392,7 +399,7 @@ class FileBrowserTab(QWidget):
         header.setMinimumSectionSize(80)
         header.sectionResized.connect(self._handle_section_resized)
         # NOTE: _tree_view.sortByColumn()よりも先に来なければならない！ 順序変更注意！
-        # header.sortIndicatorChanged.connect(self._on_sort_changed) 
+        # header.sortIndicatorChanged.connect(self._on_sort_changed)
         self._header = header
 
         self._tree_view.setSortingEnabled(True)
@@ -419,7 +426,6 @@ class FileBrowserTab(QWidget):
         self._toggle_view_button.setToolTip("Toggle between tile and list views")
         self._toggle_view_button.clicked.connect(self._handle_view_toggle_clicked)
         self._update_view_toggle_button()
-
 
         self._path_edit = QLineEdit(self)
         self._path_edit.setClearButtonEnabled(True)
@@ -480,7 +486,6 @@ class FileBrowserTab(QWidget):
         self._tile_view.horizontalScrollBar().valueChanged.connect(self._on_scroll)
 
         self._model.directoryLoaded.connect(self._on_directory_loaded)
-        
 
     def _create_actions(self) -> None:
         self._copy_action = QAction("Copy", self)
@@ -733,7 +738,6 @@ class FileBrowserTab(QWidget):
         self._perform_copy_or_move(paths, target_dir, move=move)
         self.refresh()
 
-
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
@@ -742,7 +746,7 @@ class FileBrowserTab(QWidget):
         if not path.exists():
             QMessageBox.warning(self, "Cannot navigate", f"{path} does not exist.")
             return
-        
+
         current = self._current_path
         if should_record_history(current, path, from_history=from_history):
             self._navigation_history.append(current)
@@ -782,7 +786,7 @@ class FileBrowserTab(QWidget):
         self._thumbnail_request_timer.stop()
         self._thumbnail_scroll_settle_timer.stop()
         self._model.clear_visible_thumbnail_targets()
-    
+
     # 場所は _on_directory_loaded や _on_scroll の近くが分かりやすい
     # def _on_sort_changed(self, logical_index: int, order: Qt.SortOrder) -> None:
     #     print(f"_on_sort_changed(logical_index={logical_index}, order={order})")
@@ -791,14 +795,14 @@ class FileBrowserTab(QWidget):
     #     if self._is_active:
     #         QTimer.singleShot(1000, self._restart_thumbnail_requests)
     #         print(f"[FileBrowserTab] Sort changed, requesting thumbnails", flush=True)
-    
+
     # ★★★ 3. _on_layout_changed スロットを新設 ★★★
     def _on_layout_changed(self) -> None:
         """モデルのレイアウト(ソート順含む)が変更されたときに呼び出される"""
         self._restart_thumbnail_requests()
 
     def _on_scroll(self) -> None:
-        if self._is_active: # アクティブなタブだけがスクロールに応答
+        if self._is_active:  # アクティブなタブだけがスクロールに応答
             self._is_scrolling_for_thumbnails = True
             if not self._thumbnail_request_timer.isActive():
                 self._thumbnail_request_timer.start()
@@ -806,7 +810,7 @@ class FileBrowserTab(QWidget):
 
     def _restart_thumbnail_requests(self) -> None:
         """Manually trigger a re-evaluation of visible items for thumbnail requests."""
-        if self._is_active: # アクティブなタブだけがリクエストを再開
+        if self._is_active:  # アクティブなタブだけがリクエストを再開
             self._thumbnail_request_timer.stop()
             self._thumbnail_request_timer.start()
             self._thumbnail_scroll_settle_timer.start()
@@ -875,7 +879,7 @@ class FileBrowserTab(QWidget):
 
     def go_up(self) -> None:
         """Navigate to the parent directory."""
-        
+
         target = path_to_focus_after_go_up(self._current_path)
         if target is None:
             return
@@ -897,7 +901,7 @@ class FileBrowserTab(QWidget):
 
     def name_column_width(self) -> int:
         return self._name_column_width
-    
+
     # ------------------------------------------------------------------
     # internal slots
     # ------------------------------------------------------------------
@@ -946,7 +950,9 @@ class FileBrowserTab(QWidget):
         # 実行ファイルの解決
         resolved, is_batch = self._resolve_program_for_windows(program)
         if not resolved:
-            QMessageBox.warning(self, "Command not found", f"'{program}' is not found in current folder or PATH.")
+            QMessageBox.warning(
+                self, "Command not found", f"'{program}' is not found in current folder or PATH."
+            )
             return
 
         if is_batch:
@@ -987,7 +993,10 @@ class FileBrowserTab(QWidget):
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         print(f"keyPressEvent: key={event.key()}, modifiers={event.modifiers()}", flush=True)
         # Ctrl+Enter で選択中のフォルダを新しいタブで開く
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        if (
+            event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
             print("Ctrl+Enter detected")
             selected = self._selected_index_path()
             if selected and selected.is_dir():
@@ -999,7 +1008,7 @@ class FileBrowserTab(QWidget):
         """ウィンドウサイズが変更されたときに呼び出される"""
         # 親クラスの元のリサイズ処理を必ず呼び出す
         # スクロール時と同じタイマーを開始し、可視範囲のサムネイル要求をスケジュールする
-        if self._is_active: # アクティブなタブだけがリサイズに応答
+        if self._is_active:  # アクティブなタブだけがリサイズに応答
             self._restart_thumbnail_requests()
             print("resizeEvent, _thumbnail_request_timer.start...")
             return
@@ -1010,16 +1019,15 @@ class FileBrowserTab(QWidget):
     #     # 親クラスのイベント処理をまず呼び出す
 
     #     print(f"mouseReleaseEvent: button={event.button()}", flush=True)
-        
+
     #     # どのボタンが離されたかチェック
     #     if event.button() == Qt.MouseButton.BackButton:
     #         print("[FileBrowserTab] Back button pressed, going up.", flush=True)
     #         self.go_up()
     #         event.accept() # イベントが処理されたことをQtに伝える
     #         return
-        
+
     #     super().mouseReleaseEvent(event)
-        
 
     # ------------------------------------------------------------------
     # helpers
@@ -1097,7 +1105,9 @@ class FileBrowserTab(QWidget):
         index = selection_model.currentIndex()
         if not index.isValid():
             return False
-        return has_selection_path_in_directory(Path(self._model.filePath(index)), self._current_path)
+        return has_selection_path_in_directory(
+            Path(self._model.filePath(index)), self._current_path
+        )
 
     def _selection_path_before_deleted_items(self, deleted_paths: list[Path]) -> Path | None:
         view = self._active_view()
@@ -1145,7 +1155,9 @@ class FileBrowserTab(QWidget):
             except TypeError:
                 pass
             try:
-                self._bound_selection_model.selectionChanged.disconnect(self._handle_selection_changed)
+                self._bound_selection_model.selectionChanged.disconnect(
+                    self._handle_selection_changed
+                )
             except TypeError:
                 pass
         self._bound_selection_model = selection_model
@@ -1213,4 +1225,3 @@ class FileBrowserTab(QWidget):
 
     def _handle_selection_changed(self, *_args) -> None:
         self._update_action_states()
-

@@ -67,7 +67,9 @@ class StubPosition:
 
 
 class StubEvent:
-    def __init__(self, event_type, *, urls=None, modifiers=Qt.KeyboardModifier.NoModifier, button=None):
+    def __init__(
+        self, event_type, *, urls=None, modifiers=Qt.KeyboardModifier.NoModifier, button=None
+    ):
         self._type = event_type
         self._mime = StubMimeData(urls)
         self._modifiers = modifiers
@@ -124,7 +126,9 @@ def test_close_current_tab_uses_shared_close_path(qtbot) -> None:
     assert container._tabs.tabText(0) == "one"
 
 
-def test_open_tabs_and_navigation_methods_use_current_tab(monkeypatch, qtbot, tmp_path: Path) -> None:
+def test_open_tabs_and_navigation_methods_use_current_tab(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
     monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
     container = TabContainer(name_column_width=333)
     qtbot.addWidget(container)

@@ -53,42 +53,60 @@ def test_resolve_address_path_expands_env_and_relative_paths(monkeypatch, tmp_pa
     monkeypatch.setenv("OMNIDESK_TEST_FOLDER", "expanded")
 
     assert resolve_address_path("relative.txt", tmp_path) == tmp_path / "relative.txt"
-    assert resolve_address_path("%OMNIDESK_TEST_FOLDER%\\file.txt", tmp_path) == tmp_path / "expanded" / "file.txt"
+    assert (
+        resolve_address_path("%OMNIDESK_TEST_FOLDER%\\file.txt", tmp_path)
+        == tmp_path / "expanded" / "file.txt"
+    )
 
 
 def test_pending_selection_action_covers_all_branches(tmp_path: Path) -> None:
     pending = tmp_path / "pending"
 
-    assert pending_selection_action(
-        pending,
-        pending_exists=True,
-        selected_in_current_directory=False,
-        pending_select_succeeded=True,
-    ) == "selected_pending"
-    assert pending_selection_action(
-        pending,
-        pending_exists=True,
-        selected_in_current_directory=False,
-        pending_select_succeeded=False,
-    ) == "wait_for_pending"
-    assert pending_selection_action(
-        pending,
-        pending_exists=False,
-        selected_in_current_directory=True,
-        pending_select_succeeded=False,
-    ) == "select_first"
-    assert pending_selection_action(
-        None,
-        pending_exists=False,
-        selected_in_current_directory=True,
-        pending_select_succeeded=False,
-    ) == "keep_current"
-    assert pending_selection_action(
-        None,
-        pending_exists=False,
-        selected_in_current_directory=False,
-        pending_select_succeeded=False,
-    ) == "select_first"
+    assert (
+        pending_selection_action(
+            pending,
+            pending_exists=True,
+            selected_in_current_directory=False,
+            pending_select_succeeded=True,
+        )
+        == "selected_pending"
+    )
+    assert (
+        pending_selection_action(
+            pending,
+            pending_exists=True,
+            selected_in_current_directory=False,
+            pending_select_succeeded=False,
+        )
+        == "wait_for_pending"
+    )
+    assert (
+        pending_selection_action(
+            pending,
+            pending_exists=False,
+            selected_in_current_directory=True,
+            pending_select_succeeded=False,
+        )
+        == "select_first"
+    )
+    assert (
+        pending_selection_action(
+            None,
+            pending_exists=False,
+            selected_in_current_directory=True,
+            pending_select_succeeded=False,
+        )
+        == "keep_current"
+    )
+    assert (
+        pending_selection_action(
+            None,
+            pending_exists=False,
+            selected_in_current_directory=False,
+            pending_select_succeeded=False,
+        )
+        == "select_first"
+    )
 
 
 def test_has_selection_path_in_directory(tmp_path: Path) -> None:

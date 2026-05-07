@@ -27,8 +27,7 @@ def test_local_paths_from_urls_filters_non_local_urls(tmp_path: Path) -> None:
 def test_drop_action_for_modifiers_uses_ctrl_for_copy() -> None:
     assert drop_action_for_modifiers(Qt.KeyboardModifier.NoModifier) == Qt.DropAction.MoveAction
     assert (
-        drop_action_for_modifiers(Qt.KeyboardModifier.ControlModifier)
-        == Qt.DropAction.CopyAction
+        drop_action_for_modifiers(Qt.KeyboardModifier.ControlModifier) == Qt.DropAction.CopyAction
     )
 
 
@@ -70,7 +69,9 @@ def test_blocks_self_move_detects_same_or_child_destination(tmp_path: Path) -> N
     assert has_blocked_self_move([other, source], nested)
 
 
-def test_blocks_self_move_treats_unresolvable_paths_as_not_blocked(monkeypatch, tmp_path: Path) -> None:
+def test_blocks_self_move_treats_unresolvable_paths_as_not_blocked(
+    monkeypatch, tmp_path: Path
+) -> None:
     def raise_os_error(self) -> Path:
         raise OSError("unresolvable")
 

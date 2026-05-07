@@ -14,7 +14,6 @@ from .file_browser_tab import FileBrowserTab
 from .tab_bar_helpers import local_paths_from_urls, tab_drop_action, wheel_scroll_request
 
 
-
 class TabContainer(QWidget):
     """Container for multiple FileBrowserTab widgets."""
 
@@ -30,18 +29,18 @@ class TabContainer(QWidget):
     ) -> None:
         super().__init__(parent)
         self._tabs = QTabWidget(self)
-        
+
         # 4. QTabWidget自体の設定を行う
         self._tabs.setDocumentMode(True)
         self._tabs.setMovable(True)
         self._tabs.setTabsClosable(False)
-        self._tabs.setUsesScrollButtons(True) # これは QTabWidget のプロパティ
+        self._tabs.setUsesScrollButtons(True)  # これは QTabWidget のプロパティ
 
         # 2. デフォルトのタブバーを取得し、設定を適用する
         default_tab_bar = self._tabs.tabBar()
         default_tab_bar.setElideMode(Qt.TextElideMode.ElideRight)
         default_tab_bar.setExpanding(False)
-        
+
         # 1. 現在のサイズポリシーを取得
         policy = default_tab_bar.sizePolicy()
         # 2. 水平方向のポリシーを「Minimum」に設定
@@ -116,8 +115,9 @@ class TabContainer(QWidget):
                             move = tab_drop_action(event.modifiers()) == Qt.DropAction.MoveAction
                             dest_dir = target_tab.current_path()
                             target_tab._handle_external_drop(paths, dest_dir, move)
-                            event.setDropAction(Qt.DropAction.MoveAction if move
-                                                else Qt.DropAction.CopyAction)
+                            event.setDropAction(
+                                Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction
+                            )
                             event.acceptProposedAction()
                             return True
                 return False
@@ -143,10 +143,9 @@ class TabContainer(QWidget):
 
         return super().eventFilter(obj, event)
 
-
     def _scroll_tabstrip(self, *, go_left: bool, count: int = 1) -> None:
         """内部スクローラーボタンを擬似クリックして帯だけをスクロール"""
-        left_btn  = self._tabs.findChild(QToolButton, "qt_tabwidget_scroller_left")
+        left_btn = self._tabs.findChild(QToolButton, "qt_tabwidget_scroller_left")
         right_btn = self._tabs.findChild(QToolButton, "qt_tabwidget_scroller_right")
 
         # ボタンが見つからない場合のフォールバック（選択タブを動かす）
@@ -161,7 +160,7 @@ class TabContainer(QWidget):
         target = left_btn if go_left else right_btn
         for _ in range(count):
             target.click()
-            
+
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
@@ -265,7 +264,7 @@ class TabContainer(QWidget):
     #     widget = self._tabs.widget(index)
     #     if isinstance(widget, FileBrowserTab):
     #         self.currentPathChanged.emit(widget.current_path())
-    
+
     # ★★★ 3. _emit_current_path を _handle_current_tab_changed に統合・置換 ★★★
     def _handle_current_tab_changed(self, index: int) -> None:
         """タブが切り替わったときに呼び出される中央ハンドラ"""
@@ -274,7 +273,7 @@ class TabContainer(QWidget):
             widget = self._tabs.widget(i)
             if not isinstance(widget, FileBrowserTab):
                 continue
-            
+
             # 新しくカレントになったタブを activate する
             if i == index:
                 widget.activate()
@@ -293,6 +292,7 @@ class TabContainer(QWidget):
             self._tabs.setTabText(tab_index, self._label_for(root_path))
             if tab_index == self._tabs.currentIndex():
                 self.currentPathChanged.emit(path)
+
         return handler
 
     def _handle_name_column_width_changed(self, width: int, *, source: FileBrowserTab) -> None:
@@ -302,7 +302,9 @@ class TabContainer(QWidget):
         self.nameColumnWidthChanged.emit(width)
         self._apply_name_column_width(width, exclude=source)
 
-    def _apply_name_column_width(self, width: int, *, exclude: FileBrowserTab | None = None) -> None:
+    def _apply_name_column_width(
+        self, width: int, *, exclude: FileBrowserTab | None = None
+    ) -> None:
         for index in range(self._tabs.count()):
             widget = self._tabs.widget(index)
             if not isinstance(widget, FileBrowserTab) or widget is exclude:
@@ -313,4 +315,3 @@ class TabContainer(QWidget):
     def _label_for(path: Path) -> str:
         label = path.name or path.drive or str(path)
         return label
-

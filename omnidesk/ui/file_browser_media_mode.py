@@ -7,7 +7,9 @@ from pathlib import Path
 from PyQt6.QtCore import QSize
 
 
-def calculate_grid_size(edge: int, line_spacing: int, *, text_lines: int = 2, padding: int = 24) -> QSize:
+def calculate_grid_size(
+    edge: int, line_spacing: int, *, text_lines: int = 2, padding: int = 24
+) -> QSize:
     """Return a stable tile grid size for icon edge and font metrics."""
     text_height = line_spacing * text_lines
     return QSize(edge + padding, edge + padding + text_height)

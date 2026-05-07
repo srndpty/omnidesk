@@ -79,7 +79,9 @@ def test_file_browser_tab_name_column_width_and_view_toggle(qtbot) -> None:
     assert tab._toggle_view_button.text() in {"List View", "Tile View"}
 
 
-def test_file_browser_tab_address_bar_opens_existing_file(monkeypatch, qtbot, tmp_path: Path) -> None:
+def test_file_browser_tab_address_bar_opens_existing_file(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
     file_path = tmp_path / "file.txt"
     file_path.write_text("file", encoding="utf-8")
     opened: list[Path] = []
@@ -94,7 +96,9 @@ def test_file_browser_tab_address_bar_opens_existing_file(monkeypatch, qtbot, tm
     assert opened == [file_path]
 
 
-def test_file_browser_tab_address_bar_runs_unknown_command(monkeypatch, qtbot, tmp_path: Path) -> None:
+def test_file_browser_tab_address_bar_runs_unknown_command(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
     commands: list[str] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
@@ -107,7 +111,9 @@ def test_file_browser_tab_address_bar_runs_unknown_command(monkeypatch, qtbot, t
     assert commands == ["not-a-path --flag"]
 
 
-def test_file_browser_tab_delete_cancel_does_not_refresh(monkeypatch, qtbot, tmp_path: Path) -> None:
+def test_file_browser_tab_delete_cancel_does_not_refresh(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
     file_path = tmp_path / "file.txt"
     file_path.write_text("file", encoding="utf-8")
     refreshed: list[bool] = []
@@ -154,7 +160,9 @@ def test_file_browser_tab_execute_command_warns_when_missing(monkeypatch, qtbot)
 
     tab._execute_address_command("missing-tool --flag")
 
-    assert warnings == [("Command not found", "'missing-tool' is not found in current folder or PATH.")]
+    assert warnings == [
+        ("Command not found", "'missing-tool' is not found in current folder or PATH.")
+    ]
 
 
 def test_file_browser_tab_execute_command_starts_direct_and_batch(monkeypatch, qtbot) -> None:
@@ -166,10 +174,14 @@ def test_file_browser_tab_execute_command_starts_direct_and_batch(monkeypatch, q
         lambda program, args, cwd: starts.append((program, list(args), cwd)) or True,
     )
 
-    monkeypatch.setattr(tab, "_resolve_program_for_windows", lambda program: ("C:/bin/tool.exe", False))
+    monkeypatch.setattr(
+        tab, "_resolve_program_for_windows", lambda program: ("C:/bin/tool.exe", False)
+    )
     tab._execute_address_command("tool --flag")
 
-    monkeypatch.setattr(tab, "_resolve_program_for_windows", lambda program: ("C:/bin/script.cmd", True))
+    monkeypatch.setattr(
+        tab, "_resolve_program_for_windows", lambda program: ("C:/bin/script.cmd", True)
+    )
     monkeypatch.setenv("COMSPEC", "C:/Windows/System32/cmd.exe")
     tab._execute_address_command("script arg")
 

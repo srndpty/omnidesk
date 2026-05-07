@@ -17,7 +17,6 @@ except ImportError:  # pragma: no cover - optional dependency
     QVideoSink = None  # type: ignore[assignment]
 
 
-
 class WorkerSignals(QObject):
     """Signals emitted by background thumbnail jobs."""
 
@@ -30,10 +29,26 @@ class MediaThumbnailProvider(QObject):
     thumbnailReady = pyqtSignal(str, object, int)  # path, QIcon | None, generation
 
     IMAGE_EXTENSIONS = {
-        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".svg",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".bmp",
+        ".webp",
+        ".tif",
+        ".tiff",
+        ".svg",
     }
     VIDEO_EXTENSIONS = {
-        ".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".mpg", ".mpeg",
+        ".mp4",
+        ".m4v",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".webm",
+        ".wmv",
+        ".mpg",
+        ".mpeg",
     }
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -43,13 +58,13 @@ class MediaThumbnailProvider(QObject):
         self._thread_pool.setMaxThreadCount(4)
         self._image_jobs: dict[str, _ImageJob] = {}
         self._image_tokens: dict[str, CancellationToken] = {}
-        
+
         # Video job management
         self._video_jobs: dict[str, _VideoJob] = {}
         self._video_queue: list[tuple[str, Path, int, CancellationToken]] = []
         self._active_video_jobs = 0
         self.MAX_CONCURRENT_VIDEO_JOBS = 1
-        
+
         self._video_support = QMediaPlayer is not None and QVideoSink is not None
 
     # ------------------------------------------------------------------
@@ -70,7 +85,7 @@ class MediaThumbnailProvider(QObject):
         token: CancellationToken | None = None,
     ) -> bool:
         suffix = path.suffix.lower()
-        
+
         # 通知用のキーが指定されていなければ、元のパスをキーとする
         final_key = result_key or str(path)
         token = token or CancellationToken(0)
@@ -88,13 +103,13 @@ class MediaThumbnailProvider(QObject):
                 return False
             if final_key in self._video_jobs:
                 return False
-            
+
             # Check if we can start immediately
             if self._active_video_jobs < self.MAX_CONCURRENT_VIDEO_JOBS:
                 self._start_video_job(final_key, path, edge, token)
             else:
                 self._video_queue.append((final_key, path, edge, token))
-                
+
             return True
         return False
 
@@ -102,9 +117,7 @@ class MediaThumbnailProvider(QObject):
         token = self._image_tokens.get(key)
         if token is not None:
             token.cancel()
-        self._video_queue = [
-            item for item in self._video_queue if item[0] != key
-        ]
+        self._video_queue = [item for item in self._video_queue if item[0] != key]
 
     def _start_video_job(self, key: str, path: Path, edge: int, token: CancellationToken) -> None:
         job = _VideoJob(key, path, edge, token)
@@ -114,11 +127,15 @@ class MediaThumbnailProvider(QObject):
         job.start()
 
     # ------------------------------------------------------------------
-    def _handle_image_from_worker(self, key: str, image: object, edge: int, generation: int) -> None:
+    def _handle_image_from_worker(
+        self, key: str, image: object, edge: int, generation: int
+    ) -> None:
         qimage = image if isinstance(image, QImage) else None
         self._on_image_finished(key, qimage, edge, generation)
 
-    def _on_image_finished(self, key: str, image: QImage | None, edge: int, generation: int) -> None:
+    def _on_image_finished(
+        self, key: str, image: QImage | None, edge: int, generation: int
+    ) -> None:
         self._image_jobs.pop(key, None)
         token = self._image_tokens.pop(key, None)
         if token is not None and token.cancelled:
@@ -139,7 +156,7 @@ class MediaThumbnailProvider(QObject):
             job.deleteLater()
         # print(f"[MediaThumbnailProvider] video job finished: {key} icon={'Y' if icon else 'N'}", flush=True)
         self.thumbnailReady.emit(key, icon, generation)
-        
+
         self._active_video_jobs -= 1
         self._process_video_queue()
 
@@ -148,7 +165,7 @@ class MediaThumbnailProvider(QObject):
             key, path, edge, token = self._video_queue.pop(0)
             if token.cancelled:
                 continue
-            if key in self._video_jobs: # Should not happen usually
+            if key in self._video_jobs:  # Should not happen usually
                 continue
             self._start_video_job(key, path, edge, token)
 
@@ -159,7 +176,7 @@ class _ImageJob(QRunnable):
     def __init__(self, result_key: str, path: Path, edge: int, token: CancellationToken) -> None:
         super().__init__()
         self.setAutoDelete(True)
-        self._result_key = result_key # 内部変数名も変更
+        self._result_key = result_key  # 内部変数名も変更
         self._path = path
         self._edge = edge
         self._token = token
@@ -170,7 +187,7 @@ class _ImageJob(QRunnable):
         if self._token.cancelled:
             return
         image = self._load_image(self._path)
-        
+
         # Scale here in background thread
         if image is not None and not image.isNull() and not self._token.cancelled:
             image = image.scaled(
@@ -179,7 +196,7 @@ class _ImageJob(QRunnable):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            
+
         if not self._token.cancelled:
             self.signals.finished.emit(
                 self._result_key,
@@ -270,5 +287,7 @@ class _VideoJob(QObject):
             self._audio.deleteLater()
         self._player.deleteLater()
         print(f"[_VideoJob] finish: {self._path} icon={'Y' if icon else 'N'}", flush=True)
-        self.finished.emit(self._key, None if self._token.cancelled else icon, self._token.generation)
+        self.finished.emit(
+            self._key, None if self._token.cancelled else icon, self._token.generation
+        )
         self.deleteLater()
