@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import QMessageBox
 
+import omnidesk.ui.file_browser_tab as file_browser_tab_module
 from omnidesk.ui.file_browser_tab import FileBrowserTab
 
 
@@ -290,3 +293,303 @@ def test_file_browser_tab_external_drop_performs_operation_and_refreshes(
 
     assert operations == [([source], dest, False)]
     assert refreshed == [True]
+
+
+def test_file_browser_tab_rename_selected_success(monkeypatch, qtbot, tmp_path: Path) -> None:
+    original = tmp_path / "old.txt"
+    original.write_text("old", encoding="utf-8")
+    refreshed: list[bool] = []
+    selected: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [original])
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QInputDialog.getText",
+        lambda *args, **kwargs: ("new.txt", True),
+    )
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
+
+    tab._rename_selected()
+
+    assert not original.exists()
+    assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "old"
+    assert refreshed == [True]
+    assert selected == [tmp_path / "new.txt"]
+
+
+def test_file_browser_tab_rename_selected_warns_for_conflict(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "old.txt"
+    target = tmp_path / "target.txt"
+    original.write_text("old", encoding="utf-8")
+    target.write_text("target", encoding="utf-8")
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [original])
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QInputDialog.getText",
+        lambda *args, **kwargs: ("target.txt", True),
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._rename_selected()
+
+    assert warnings == [("Rename failed", f"{target} already exists.")]
+    assert original.exists()
+
+
+def test_file_browser_tab_create_new_file_and_folder_success(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    refreshed: list[bool] = []
+    selected: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
+    names = iter([("created.txt", True), ("created-folder", True)])
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QInputDialog.getText",
+        lambda *args, **kwargs: next(names),
+    )
+
+    tab._create_new_file()
+    tab._create_new_folder()
+
+    assert (tmp_path / "created.txt").is_file()
+    assert (tmp_path / "created-folder").is_dir()
+    assert refreshed == [True, True]
+    assert selected == [tmp_path / "created.txt", tmp_path / "created-folder"]
+
+
+def test_file_browser_tab_paste_copy_and_move_updates_clipboard_and_actions(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    copied = tmp_path / "copy.txt"
+    moved = tmp_path / "move.txt"
+    copied.write_text("copy", encoding="utf-8")
+    moved.write_text("move", encoding="utf-8")
+    operations: list[tuple[list[Path], Path, bool]] = []
+    refreshed: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(
+        tab,
+        "_perform_copy_or_move",
+        lambda paths, dest_dir, move: operations.append((paths, dest_dir, move)),
+    )
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+
+    tab._clipboard = {"paths": [copied], "mode": "copy"}
+    tab._paste_into_current()
+    tab._clipboard = {"paths": [moved], "mode": "move"}
+    tab._paste_into_current()
+
+    assert operations == [([copied], tmp_path, False), ([moved], tmp_path, True)]
+    assert refreshed == [True, True]
+    assert tab._clipboard is None
+
+
+def test_file_browser_tab_perform_copy_or_move_warns_on_errors(monkeypatch, qtbot) -> None:
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.perform_copy_or_move",
+        lambda sources, dest_dir, move: ["copy failed"],
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._perform_copy_or_move([Path("source.txt")], Path("dest"), move=False)
+
+    assert warnings == [("Operation issues", "copy failed")]
+
+
+def test_file_browser_tab_section_resize_emits_name_width(monkeypatch, qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._media_icon_mode = False
+
+    with qtbot.waitSignal(tab.nameColumnWidthChanged, timeout=1000) as blocker:
+        tab._handle_section_resized(0, 100, 512)
+
+    assert blocker.args == [512]
+    assert tab.name_column_width() == 512
+
+
+def test_file_browser_tab_ctrl_enter_opens_selected_folder(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_selected_index_path", lambda: selected)
+    event = QKeyEvent(
+        QKeyEvent.Type.KeyPress,
+        Qt.Key.Key_Return,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+
+    with qtbot.waitSignal(tab.requestOpenInNewTab, timeout=1000) as blocker:
+        tab.keyPressEvent(event)
+
+    assert blocker.args == [selected]
+
+
+def test_file_browser_tab_copy_and_cut_selected_update_clipboard(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [source])
+
+    tab._copy_selected()
+    assert tab._clipboard == {"paths": [source], "mode": "copy"}
+
+    tab._cut_selected()
+    assert tab._clipboard == {"paths": [source], "mode": "move"}
+
+
+def test_file_browser_tab_delete_selected_confirms_deletes_and_refreshes(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    refreshed: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [source])
+    monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: tmp_path)
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    tab._delete_selected()
+
+    assert not source.exists()
+    assert tab._pending_selection_path == tmp_path
+    assert refreshed == [True]
+
+
+def test_file_browser_tab_delete_selected_warns_when_delete_reports_errors(
+    monkeypatch,
+    qtbot,
+) -> None:
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [Path("missing.txt")])
+    monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: None)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(file_browser_tab_module, "delete_paths", lambda paths: ["delete failed"])
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._delete_selected()
+
+    assert warnings == [("Delete failed", "delete failed")]
+
+
+def test_file_browser_tab_execute_command_warns_when_start_fails(monkeypatch, qtbot) -> None:
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        tab,
+        "_resolve_program_for_windows",
+        lambda program: ("C:/bin/tool.exe", False),
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QProcess.startDetached",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._execute_address_command("tool --flag")
+
+    assert warnings == [("Command", "Failed to start:\ntool --flag")]
+
+
+def test_file_browser_tab_request_settled_thumbnails_resets_scrolling(
+    monkeypatch,
+    qtbot,
+) -> None:
+    calls: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._is_scrolling_for_thumbnails = True
+    monkeypatch.setattr(
+        tab,
+        "_request_visible_thumbnails",
+        lambda scrolling=False: calls.append(scrolling),
+    )
+
+    tab._request_settled_thumbnails()
+
+    assert not tab._is_scrolling_for_thumbnails
+    assert calls == [False]
+
+
+class _FakeFileInfo:
+    def __init__(self, path: Path, *, is_dir: bool) -> None:
+        self._path = path
+        self._is_dir = is_dir
+
+    def isDir(self) -> bool:
+        return self._is_dir
+
+    def absoluteFilePath(self) -> str:
+        return str(self._path)
+
+
+def test_file_browser_tab_handle_current_changed_emits_for_directory(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        tab._model,
+        "fileInfo",
+        lambda _index: _FakeFileInfo(tmp_path, is_dir=True),
+    )
+
+    with qtbot.waitSignal(tab.directoryChanged, timeout=1000) as blocker:
+        tab._handle_current_changed(tab._model.index(str(tmp_path)), tab._model.index(""))
+
+    assert blocker.args == [tmp_path]
