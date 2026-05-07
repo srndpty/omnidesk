@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PyQt6.QtCore import QPoint, QEvent, QUrl
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QWidget
@@ -46,6 +47,59 @@ class FakeBrowserTab(QWidget):
 
     def set_name_column_width(self, width: int) -> None:
         self.name_column_width = width
+
+    def _handle_external_drop(self, paths: list[Path], dest_dir: Path, move: bool) -> None:
+        self.calls.append(f"drop:{paths}:{dest_dir}:{move}")
+
+
+class StubMimeData:
+    def __init__(self, urls=None):
+        self._urls = urls or []
+
+    def hasUrls(self):
+        return bool(self._urls)
+
+    def urls(self):
+        return self._urls
+
+
+class StubPosition:
+    def toPoint(self):
+        return QPoint(5, 5)
+
+
+class StubEvent:
+    def __init__(self, event_type, *, urls=None, modifiers=Qt.KeyboardModifier.NoModifier, button=None):
+        self._type = event_type
+        self._mime = StubMimeData(urls)
+        self._modifiers = modifiers
+        self._button = button
+        self.accepted = False
+        self.drop_action = None
+
+    def type(self):
+        return self._type
+
+    def mimeData(self):
+        return self._mime
+
+    def modifiers(self):
+        return self._modifiers
+
+    def setDropAction(self, action):
+        self.drop_action = action
+
+    def accept(self):
+        self.accepted = True
+
+    def acceptProposedAction(self):
+        self.accepted = True
+
+    def position(self):
+        return StubPosition()
+
+    def button(self):
+        return self._button
 
 
 def test_tab_bar_is_not_closable_and_elides_from_right(qtbot) -> None:
@@ -139,3 +193,47 @@ def test_scroll_tabstrip_fallback_changes_current_index(qtbot) -> None:
 
     container._scroll_tabstrip(go_left=False, count=5)
     assert container._tabs.currentIndex() == 2
+
+
+def test_event_filter_drag_move_and_drop(monkeypatch, qtbot, tmp_path: Path) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    tab = container.open_in_new_tab(tmp_path)
+    tab_bar = container._tabs.tabBar()
+    monkeypatch.setattr(tab_bar, "tabAt", lambda _point: 0)
+    local_file = tmp_path / "drag.txt"
+    local_file.write_text("drag", encoding="utf-8")
+    urls = [QUrl.fromLocalFile(str(local_file))]
+
+    drag_move = StubEvent(
+        QEvent.Type.DragMove,
+        urls=urls,
+        modifiers=Qt.KeyboardModifier.ControlModifier,
+    )
+    assert container.eventFilter(tab_bar, drag_move)
+    assert drag_move.drop_action == Qt.DropAction.CopyAction
+    assert drag_move.accepted
+
+    drop = StubEvent(QEvent.Type.Drop, urls=urls)
+    assert container.eventFilter(tab_bar, drop)
+    assert drop.drop_action == Qt.DropAction.MoveAction
+    assert any(call.startswith("drop:") for call in tab.calls)
+
+
+def test_event_filter_drag_enter_and_middle_click(monkeypatch, qtbot, tmp_path: Path) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one")
+    container.open_in_new_tab(tmp_path / "two")
+    tab_bar = container._tabs.tabBar()
+    monkeypatch.setattr(tab_bar, "tabAt", lambda _point: 1)
+
+    drag_enter = StubEvent(QEvent.Type.DragEnter, urls=[QUrl.fromLocalFile(str(tmp_path))])
+    assert container.eventFilter(tab_bar, drag_enter)
+    assert drag_enter.accepted
+
+    middle = StubEvent(QEvent.Type.MouseButtonRelease, button=Qt.MouseButton.MiddleButton)
+    assert container.eventFilter(tab_bar, middle)
+    assert container.tab_count() == 1

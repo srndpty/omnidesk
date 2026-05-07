@@ -2,14 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QMimeData, Qt, QUrl
+from PyQt6.QtCore import QMimeData, QSize, Qt, QUrl
 from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication
 
 from omnidesk import app as app_module
 from omnidesk.theme import DARK_STYLESHEET, apply_dark_theme
 from omnidesk.ui.icons import application_icon
-from omnidesk.ui.media_file_system_model import MediaFileSystemModel, file_thumbnail_cache, folder_preview_cache
+from omnidesk.ui.media_file_system_model import (
+    MediaFileSystemModel,
+    file_thumbnail_cache,
+    folder_preview_cache,
+    folder_thumbnail_rect,
+)
 
 
 def test_apply_dark_theme_sets_fusion_style_and_stylesheet(qapp: QApplication) -> None:
@@ -212,3 +217,19 @@ def test_media_file_system_model_drop_mime_data_moves_file(monkeypatch, tmp_path
     assert model.dropMimeData(data, Qt.DropAction.MoveAction, 0, 0, parent)
     assert not source.exists()
     assert (dest / "source.txt").read_text(encoding="utf-8") == "move"
+
+
+def test_folder_thumbnail_rect_centers_and_offsets_preview() -> None:
+    assert folder_thumbnail_rect(QSize(160, 160), QSize(80, 60), 160) == (40, 42)
+
+
+def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) -> None:
+    model = MediaFileSystemModel()
+    invalid_flags = model.flags(model.index(""))
+
+    monkeypatch.setattr(model, "isDir", lambda index: True)
+    directory_flags = model.flags(model.index("C:/"))
+
+    assert directory_flags & Qt.ItemFlag.ItemIsDragEnabled
+    assert directory_flags & Qt.ItemFlag.ItemIsDropEnabled
+    assert invalid_flags is not None

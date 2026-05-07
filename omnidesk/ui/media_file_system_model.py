@@ -19,6 +19,13 @@ from PyQt6.QtGui import QPainter, QPixmap
 from PyQt6.QtWidgets import QFileIconProvider
 
 
+def folder_thumbnail_rect(base_size: QSize, thumb_size: QSize, edge: int) -> tuple[int, int]:
+    """Return the top-left point for a folder preview thumbnail overlay."""
+    x = (base_size.width() - thumb_size.width()) // 2
+    y = (base_size.height() - thumb_size.height()) // 2 - int(edge * 0.05)
+    return x, y
+
+
 class MediaFileSystemModel(QFileSystemModel):
     """Extends QFileSystemModel to provide cached media thumbnails."""
 
@@ -327,13 +334,12 @@ class MediaFileSystemModel(QFileSystemModel):
             # 中央に描画
             target_size = int(self._thumbnail_edge * 1.2) # 少し大きめに
             scaled_thumb = thumb_pixmap.scaled(
-                target_size, target_size, 
-                Qt.AspectRatioMode.KeepAspectRatio, 
+                target_size, target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
-            x = (base_pixmap.width() - scaled_thumb.width()) // 2
-            y = (base_pixmap.height() - scaled_thumb.height()) // 2 - int(self._thumbnail_edge * 0.05) # 少し上に
-            
+            x, y = folder_thumbnail_rect(base_pixmap.size(), scaled_thumb.size(), self._thumbnail_edge)
+
             painter.drawPixmap(x, y, scaled_thumb)
             painter.end()
             
