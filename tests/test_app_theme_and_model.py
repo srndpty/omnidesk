@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QMimeData, Qt, QUrl
 from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication
 
@@ -183,3 +183,32 @@ def test_media_file_system_model_thumbnail_ready_failure_and_file_success(monkey
 
     assert key not in model._failed
     assert emitted == [key]
+
+
+def test_media_file_system_model_drop_mime_data_rejects_invalid_inputs(tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    data = QMimeData()
+
+    assert model.dropMimeData(data, Qt.DropAction.IgnoreAction, 0, 0, model.index("")) is True
+    assert model.dropMimeData(data, Qt.DropAction.MoveAction, 0, 0, model.index("")) is False
+
+    data.setUrls([QUrl.fromLocalFile(str(tmp_path / "source.txt"))])
+    assert model.dropMimeData(data, Qt.DropAction.MoveAction, 0, 0, model.index("")) is False
+
+
+def test_media_file_system_model_drop_mime_data_moves_file(monkeypatch, tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    source = tmp_path / "source.txt"
+    dest = tmp_path / "dest"
+    source.write_text("move", encoding="utf-8")
+    dest.mkdir()
+    parent = model.index(str(dest))
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(str(source))])
+
+    monkeypatch.setattr(model, "isDir", lambda index: True)
+    monkeypatch.setattr(model, "filePath", lambda index: str(dest))
+
+    assert model.dropMimeData(data, Qt.DropAction.MoveAction, 0, 0, parent)
+    assert not source.exists()
+    assert (dest / "source.txt").read_text(encoding="utf-8") == "move"

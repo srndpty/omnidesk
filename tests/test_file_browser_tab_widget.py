@@ -125,3 +125,57 @@ def test_file_browser_tab_delete_cancel_does_not_refresh(monkeypatch, qtbot, tmp
 
     assert refreshed == []
     assert file_path.exists()
+
+
+def test_file_browser_tab_execute_command_handles_parse_error(monkeypatch, qtbot) -> None:
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._execute_address_command('"unterminated')
+
+    assert warnings
+    assert warnings[0][0] == "Command"
+
+
+def test_file_browser_tab_execute_command_warns_when_missing(monkeypatch, qtbot) -> None:
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_resolve_program_for_windows", lambda program: (None, False))
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._execute_address_command("missing-tool --flag")
+
+    assert warnings == [("Command not found", "'missing-tool' is not found in current folder or PATH.")]
+
+
+def test_file_browser_tab_execute_command_starts_direct_and_batch(monkeypatch, qtbot) -> None:
+    starts: list[tuple[str, list[str], str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QProcess.startDetached",
+        lambda program, args, cwd: starts.append((program, list(args), cwd)) or True,
+    )
+
+    monkeypatch.setattr(tab, "_resolve_program_for_windows", lambda program: ("C:/bin/tool.exe", False))
+    tab._execute_address_command("tool --flag")
+
+    monkeypatch.setattr(tab, "_resolve_program_for_windows", lambda program: ("C:/bin/script.cmd", True))
+    monkeypatch.setenv("COMSPEC", "C:/Windows/System32/cmd.exe")
+    tab._execute_address_command("script arg")
+
+    assert starts[0] == ("C:/bin/tool.exe", ["--flag"], str(tab.current_path()))
+    assert starts[1] == (
+        "C:/Windows/System32/cmd.exe",
+        ["/C", "C:/bin/script.cmd", "arg"],
+        str(tab.current_path()),
+    )
