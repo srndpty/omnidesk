@@ -65,6 +65,7 @@ from .file_browser_drop import (
     local_paths_from_urls,
     should_move_from_drop_action,
 )
+from .file_browser_actions import file_action_states
 from .file_browser_media_mode import (
     calculate_grid_size,
     is_media_heavy_directory,
@@ -77,6 +78,7 @@ from .file_browser_navigation import (
     should_record_history,
 )
 from .file_browser_selection import has_selection_path_in_directory, pending_selection_action
+from .file_browser_visible import index_identity, tile_probe_points, tile_probe_step
 
 
 class _BaseFileViewMixin:
@@ -532,15 +534,19 @@ class FileBrowserTab(QWidget):
 
     def _update_action_states(self) -> None:
         paths = self._selected_paths()
-        has_selection = bool(paths)
         clipboard_ready = isinstance(self._clipboard, dict) and bool(self._clipboard.get("paths"))
-        self._copy_action.setEnabled(has_selection)
-        self._cut_action.setEnabled(has_selection)
-        self._delete_action.setEnabled(has_selection)
-        self._rename_action.setEnabled(len(paths) == 1)
-        self._paste_action.setEnabled(clipboard_ready and self._current_path.exists())
-        self._new_file_action.setEnabled(self._current_path.exists())
-        self._new_folder_action.setEnabled(self._current_path.exists())
+        states = file_action_states(
+            len(paths),
+            clipboard_has_paths=clipboard_ready,
+            current_path_exists=self._current_path.exists(),
+        )
+        self._copy_action.setEnabled(states["copy"])
+        self._cut_action.setEnabled(states["cut"])
+        self._delete_action.setEnabled(states["delete"])
+        self._rename_action.setEnabled(states["rename"])
+        self._paste_action.setEnabled(states["paste"])
+        self._new_file_action.setEnabled(states["new_file"])
+        self._new_folder_action.setEnabled(states["new_folder"])
 
     def _paths_from_indexes(self, indexes: list[QModelIndex]) -> list[Path]:
         paths: list[Path] = []
@@ -850,32 +856,13 @@ class FileBrowserTab(QWidget):
         # the painted item rect. A tile-sized stride can skip every item if the
         # probes fall in gutters, so use a small viewport-local stride instead
         # of scanning model rows.
-        step = max(16, min(32, view.iconSize().width() // 3 or 24))
+        step = tile_probe_step(view.iconSize().width())
         seen: set[tuple[int, int, int]] = set()
 
-        y = rect.top()
-        while y <= rect.bottom():
-            x = rect.left()
-            while x <= rect.right():
-                index = view.indexAt(QPoint(x, y))
-                if index.isValid():
-                    key = (index.row(), index.column(), index.internalId())
-                    if key not in seen:
-                        seen.add(key)
-                        indexes.append(index.siblingAtColumn(0))
-                x += step
-            y += step
-
-        for point in (
-            rect.topLeft(),
-            rect.topRight(),
-            rect.bottomLeft(),
-            rect.bottomRight(),
-            rect.center(),
-        ):
+        for point in tile_probe_points(rect, step):
             index = view.indexAt(point)
             if index.isValid():
-                key = (index.row(), index.column(), index.internalId())
+                key = index_identity(index.row(), index.column(), index.internalId())
                 if key not in seen:
                     seen.add(key)
                     indexes.append(index.siblingAtColumn(0))
