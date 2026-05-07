@@ -36,33 +36,47 @@ OmniDesk is a dark-themed, multi-tab file manager for Windows powered by PyQt6. 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 python main.py
 ```
 
 ログは既定で `~/.omnidesk/logs/omnidesk.log` に保存されます。詳細ログが必要な場合は `OMNIDESK_LOG_LEVEL=DEBUG` を設定してください。
 
+すでに `.venv` を作成済みで `python -m pyright` が見つからない場合は、依存を更新してください。
+
+```powershell
+python -m pip install -r requirements-dev.txt
+```
+
 ## テスト
 
 pytest と pytest-qt を使った自動テストを用意しています。
 
-```bash
-pip install -r requirements-dev.txt
-python -m pytest
-```
-
-lint / format確認:
+CI相当の品質確認は次のスクリプトで一括実行できます。
 
 ```powershell
+.\scripts\check.ps1
+```
+
+このスクリプトは以下を順番に実行し、失敗した時点で停止します。
+
+- `pytest -q`
+- `python -m ruff check . --no-cache`
+- `python -m ruff format . --check`
+- `python -m pyright`
+- `git diff --check`
+
+個別に実行する場合:
+
+```powershell
+python -m pytest
 python -m ruff check . --no-cache
 python -m ruff format . --check
-```
-
-型検査はまず副作用の薄いヘルパー層だけを対象にしています。
-
-```powershell
 python -m pyright
+git diff --check
 ```
+
+型検査はまず副作用の薄いヘルパー層だけを対象にしています。対象は `pyproject.toml` の `[tool.pyright]` で段階的に広げます。
 
 カバレッジを確認する場合:
 
@@ -89,15 +103,13 @@ pre-commit run --all-files
    ```bash
    pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist OmniDesk.spec
    ```
-   または `build_windows.bat` を実行すると、Ruff・pytest・PyInstaller の順に実行します。
+   または `build_windows.bat` を実行すると、Ruff・Pyright・pytest・PyInstaller の順に実行します。
 3. 成功すると `dist/OmniDesk.exe` が生成されます。初回起動時は Windows SmartScreen により警告が表示される場合があります。
 
 ## リリース手順
 
-1. `python -m ruff check . --no-cache`
-2. `python -m ruff format . --check`
-3. `python -m pyright`
-4. `python -m pytest --cov=omnidesk --cov-report=term-missing`
-5. `build_windows.bat`
-6. `CHANGELOG.md` を更新し、生成された `dist/OmniDesk.exe` を確認します。
+1. `.\scripts\check.ps1`
+2. `python -m pytest --cov=omnidesk --cov-report=term-missing`
+3. `build_windows.bat`
+4. `CHANGELOG.md` を更新し、生成された `dist/OmniDesk.exe` を確認します。
 
