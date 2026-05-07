@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 
 from PyQt6.QtCore import (
@@ -166,8 +167,6 @@ class ColumnBrowser(QWidget):
         selection_model = self._view.selectionModel()
         if not selection_model:
             return
-        try:
+        with suppress(TypeError):
             selection_model.currentChanged.disconnect(self._handle_selection_changed)
-        except TypeError:
-            pass
         selection_model.currentChanged.connect(self._handle_selection_changed)

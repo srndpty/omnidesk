@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QRunnable, Qt, pyqtSignal
@@ -84,10 +85,8 @@ class CacheLoadJob(QRunnable):
             loaded = QImage(str(self._cache_path), "PNG")
             if not loaded.isNull():
                 image = loaded
-                try:
+                with suppress(OSError):
                     os.utime(self._cache_path, None)
-                except OSError:
-                    pass
         if not self._token.cancelled:
             self.signals.loaded.emit(self._key, self._token.generation, image)
 

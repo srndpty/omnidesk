@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, pyqtSignal
@@ -277,10 +278,8 @@ class _VideoJob(QObject):
 
     def _finish(self, icon: QIcon | None) -> None:
         self._complete = True
-        try:
+        with suppress(TypeError, RuntimeError):
             self._sink.videoFrameChanged.disconnect(self._handle_frame)
-        except (TypeError, RuntimeError):
-            pass
         self._timeout.stop()
         self._player.stop()
         if self._audio is not None:

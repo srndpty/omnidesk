@@ -5,6 +5,7 @@ for ad-hoc local debugging when watching printed progress is useful.
 """
 
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 from PyQt6.QtCore import QEventLoop, QObject, QTimer, pyqtSignal
@@ -19,10 +20,8 @@ from omnidesk.ui.thumbnail_jobs import CancellationToken
 
 
 def _cleanup_file(path: Path) -> None:
-    try:
+    with suppress(OSError):
         path.unlink()
-    except OSError:
-        pass
 
 
 class TestRunner(QObject):
@@ -126,9 +125,8 @@ class TestRunner(QObject):
     def on_thumbnail_ready(self, key, icon, generation):
         self.results[key] = icon
         self.generations[key] = generation
-        if len(self.results) >= self.expected_count:
-            if hasattr(self, "loop"):
-                self.loop.quit()
+        if len(self.results) >= self.expected_count and hasattr(self, "loop"):
+            self.loop.quit()
 
 
 if __name__ == "__main__":

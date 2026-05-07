@@ -7,6 +7,7 @@ import hashlib
 import os
 from collections import OrderedDict
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -143,10 +144,8 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
                 while len(self._store) > self._capacity:
                     self._store.popitem(last=False)
                 # LRU更新として mtime を touch
-                try:
+                with suppress(Exception):
                     os.utime(path, None)
-                except Exception:
-                    pass
                 return ic
         return None
 
@@ -163,10 +162,8 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
             pixmap.save(saver, "PNG")
             saver.commit()
             # print(f"[ThumbnailCache] saved to disk: {dst}", flush=True)
-            try:
+            with suppress(Exception):
                 os.utime(str(dst), None)  # LRU更新
-            except Exception:
-                pass
         except Exception:
             # 保存失敗は無視（メモリにはある）
             return
@@ -198,10 +195,8 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
             stats.sort(key=lambda t: t[1])  # mtime 昇順
             while (len(stats) > self._disk_max_items) or (total > self._disk_max_bytes):
                 f, _mt, sz = stats.pop(0)
-                try:
+                with suppress(Exception):
                     f.unlink(missing_ok=True)
-                except Exception:
-                    pass
                 total -= sz
         except Exception:
             pass
@@ -209,10 +204,8 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
     # 任意: クリアAPI
     def clear_disk(self) -> None:
         for f in self._root.glob("*.png"):
-            try:
+            with suppress(Exception):
                 f.unlink(missing_ok=True)
-            except Exception:
-                pass
 
 
 # 既存呼び出し側はそのままで OK

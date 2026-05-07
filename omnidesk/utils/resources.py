@@ -25,7 +25,7 @@ def resource_path(*parts: str | Path | Iterable[str | Path]) -> Path:
     if (
         len(parts) == 1
         and isinstance(parts[0], Iterable)
-        and not isinstance(parts[0], (str, bytes, Path))
+        and not isinstance(parts[0], str | bytes | Path)
     ):
         sequence = parts[0]
     else:

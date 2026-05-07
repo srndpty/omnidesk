@@ -412,7 +412,6 @@ class MediaFileSystemModel(QFileSystemModel):
     def dropMimeData(
         self, data: QMimeData, action: Qt.DropAction, row: int, column: int, parent: QModelIndex
     ) -> bool:
-        print
         """ドラッグ＆ドロップによるファイル移動を処理"""
         if action == Qt.DropAction.IgnoreAction:
             print("[MediaFileSystemModel] drop ignored")

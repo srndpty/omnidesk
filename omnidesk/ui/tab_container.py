@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from functools import partial
 from pathlib import Path
 
@@ -252,10 +253,8 @@ class TabContainer(QWidget):
             return
         widget = self._tabs.widget(index)
         if isinstance(widget, FileBrowserTab):
-            try:
+            with suppress(RuntimeError):
                 widget.deleteLater()
-            except RuntimeError:
-                pass
         self._tabs.removeTab(index)
         self.tabCountChanged.emit(self._tabs.count())
         # self._emit_current_path(self._tabs.currentIndex())

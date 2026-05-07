@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+from contextlib import suppress
 from functools import partial
 from pathlib import Path
 
@@ -115,10 +116,13 @@ class _BaseFileViewMixin:
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if event.buttons() & Qt.MouseButton.LeftButton and self._drag_start_pos is not None:
             distance = (event.position() - self._drag_start_pos).manhattanLength()
-            if distance >= QApplication.startDragDistance():
-                if self._drag_on_item and self.selected_paths():
-                    self.startDrag(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
-                    return
+            if (
+                distance >= QApplication.startDragDistance()
+                and self._drag_on_item
+                and self.selected_paths()
+            ):
+                self.startDrag(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
+                return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
@@ -160,7 +164,6 @@ class _BaseFileViewMixin:
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
         if event.mimeData().hasUrls():
-            print
             action = drop_action_for_modifiers(event.modifiers())
             event.setDropAction(action)
             event.acceptProposedAction()
@@ -1150,16 +1153,12 @@ class FileBrowserTab(QWidget):
         if self._bound_selection_model is selection_model:
             return
         if self._bound_selection_model is not None:
-            try:
+            with suppress(TypeError):
                 self._bound_selection_model.currentChanged.disconnect(self._handle_current_changed)
-            except TypeError:
-                pass
-            try:
+            with suppress(TypeError):
                 self._bound_selection_model.selectionChanged.disconnect(
                     self._handle_selection_changed
                 )
-            except TypeError:
-                pass
         self._bound_selection_model = selection_model
         selection_model.currentChanged.connect(self._handle_current_changed)
         selection_model.selectionChanged.connect(self._handle_selection_changed)
