@@ -1,0 +1,8 @@
+# Changelog
+
+## Unreleased
+
+- Added project metadata, centralized pytest/coverage/Ruff configuration, and local pre-commit hooks.
+- Added GitHub Actions CI for linting, tests, coverage, and Windows PyInstaller smoke builds.
+- Added rotating file logging under the OmniDesk user configuration directory.
+- Introduced typed settings and a file operation service layer while preserving existing behavior.

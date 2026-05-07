@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import suppress
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, pyqt
 from PyQt6.QtGui import QIcon, QImage, QImageReader, QPixmap
 
 from .thumbnail_jobs import CancellationToken
+
+logger = logging.getLogger(__name__)
 
 try:
     from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
@@ -148,7 +151,7 @@ class MediaThumbnailProvider(QObject):
             icon = QIcon(pixmap)
             # print(f"[MediaThumbnailProvider] created pixmap for {key} size={pixmap.width()}x{pixmap.height()}", flush=True)
         else:
-            print(f"[MediaThumbnailProvider] image job finished with no image: {key}", flush=True)
+            logger.warning("Image thumbnail job finished with no image: %s", key)
         self.thumbnailReady.emit(key, icon, generation)
 
     def _on_video_finished(self, key: str, icon: QIcon | None, generation: int) -> None:
@@ -249,7 +252,7 @@ class _VideoJob(QObject):
         if self._token.cancelled:
             self._finish(None)
             return
-        print(f"[_VideoJob] start: {self._path}", flush=True)
+        logger.debug("Video thumbnail job started: %s", self._path)
         self._player.setSource(QUrl.fromLocalFile(str(self._path)))
         self._player.setPosition(0)
         self._player.play()
@@ -260,9 +263,9 @@ class _VideoJob(QObject):
             return
         image = frame.toImage()
         if image.isNull():
-            print(f"[_VideoJob] frame invalid for {self._path}", flush=True)
+            logger.debug("Video thumbnail frame was null: %s", self._path)
             return
-        print(f"[_VideoJob] captured frame for {self._path}", flush=True)
+        logger.debug("Video thumbnail frame captured: %s", self._path)
         pixmap = QPixmap.fromImage(image).scaled(
             self._edge,
             self._edge,
@@ -273,7 +276,7 @@ class _VideoJob(QObject):
 
     def _handle_timeout(self) -> None:
         if not self._complete:
-            print(f"[_VideoJob] timeout: {self._path}", flush=True)
+            logger.warning("Video thumbnail job timed out: %s", self._path)
             self._finish(None)
 
     def _finish(self, icon: QIcon | None) -> None:
@@ -285,7 +288,7 @@ class _VideoJob(QObject):
         if self._audio is not None:
             self._audio.deleteLater()
         self._player.deleteLater()
-        print(f"[_VideoJob] finish: {self._path} icon={'Y' if icon else 'N'}", flush=True)
+        logger.debug("Video thumbnail job finished: %s icon=%s", self._path, bool(icon))
         self.finished.emit(
             self._key, None if self._token.cancelled else icon, self._token.generation
         )

@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QApplication
 from .theme import apply_dark_theme
 from .ui.icons import application_icon
 from .ui.main_window import MainWindow
+from .utils.logging_config import configure_logging
 
 
 def create_app(argv: list[str] | None = None) -> QApplication:
@@ -17,6 +18,7 @@ def create_app(argv: list[str] | None = None) -> QApplication:
         argv = sys.argv
     existing = QApplication.instance()
     app = existing if existing is not None else QApplication(argv)
+    configure_logging()
     app.setApplicationName("OmniDesk")
     app.setOrganizationName("OmniDesk")
     apply_dark_theme(app)

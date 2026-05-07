@@ -10,7 +10,14 @@ if not exist resources\icons\app_icon.ico (
     exit /b 1
 )
 
-pyinstaller --clean --noconfirm OmniDesk.spec
+python -m ruff check . --no-cache
+if errorlevel 1 exit /b 1
+
+python -m pytest
+if errorlevel 1 exit /b 1
+
+pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist OmniDesk.spec
+if errorlevel 1 exit /b 1
 
 popd
 endlocal

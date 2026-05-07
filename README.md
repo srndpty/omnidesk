@@ -33,12 +33,14 @@ OmniDesk is a dark-themed, multi-tab file manager for Windows powered by PyQt6. 
 - **ビュー切り替えボタン**: アドレスバー右側のボタンでタイル/リストの表示方法を即時に変更。
 
 ## はじめかた
-```bash
-poetry install
-poetry run python main.py
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python main.py
 ```
 
-必要に応じて `.venv` を利用した仮想環境でも動作します。
+ログは既定で `~/.omnidesk/logs/omnidesk.log` に保存されます。詳細ログが必要な場合は `OMNIDESK_LOG_LEVEL=DEBUG` を設定してください。
 
 ## テスト
 
@@ -49,10 +51,24 @@ pip install -r requirements.txt
 python -m pytest
 ```
 
+lint / format確認:
+
+```powershell
+python -m ruff check . --no-cache
+python -m ruff format . --check
+```
+
 カバレッジを確認する場合:
 
 ```bash
 pytest --cov=omnidesk --cov-report=term-missing
+```
+
+pre-commit を使う場合:
+
+```powershell
+pre-commit install
+pre-commit run --all-files
 ```
 
 古い非同期サムネイル確認スクリプトは `tests/manual/verify_async_behavior.py` に移動しています。
@@ -66,8 +82,16 @@ pytest --cov=omnidesk --cov-report=term-missing
    ```
 2. リポジトリのルートで PyInstaller を実行します。
    ```bash
-   pyinstaller --clean --noconfirm OmniDesk.spec
+   pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist OmniDesk.spec
    ```
-   または `build_windows.bat` を実行すると同じ結果が得られます。
-3. 成功すると `dist/OmniDesk/OmniDesk.exe` が生成されます。初回起動時は Windows SmartScreen により警告が表示される場合があります。
+   または `build_windows.bat` を実行すると、Ruff・pytest・PyInstaller の順に実行します。
+3. 成功すると `dist/OmniDesk.exe` が生成されます。初回起動時は Windows SmartScreen により警告が表示される場合があります。
+
+## リリース手順
+
+1. `python -m ruff check . --no-cache`
+2. `python -m ruff format . --check`
+3. `python -m pytest --cov=omnidesk --cov-report=term-missing`
+4. `build_windows.bat`
+5. `CHANGELOG.md` を更新し、生成された `dist/OmniDesk.exe` を確認します。
 

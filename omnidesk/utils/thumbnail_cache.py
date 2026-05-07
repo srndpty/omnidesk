@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from collections import OrderedDict
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from PyQt6.QtCore import QSaveFile, QStandardPaths
 from PyQt6.QtGui import QIcon, QPixmap
 
 Key = TypeVar("Key")
+logger = logging.getLogger(__name__)
 
 
 def _app_cache_root() -> Path:
@@ -102,6 +104,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
             kind = "D" if p.is_dir() else "F"
         except Exception:
             # ファイルが一時的に無い場合など
+            logger.debug("Could not stat thumbnail key %s", skey, exc_info=True)
             mtime = 0
             size = 0
             kind = "U"
@@ -147,6 +150,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
                 with suppress(Exception):
                     os.utime(path, None)
                 return ic
+            logger.warning("Failed to load thumbnail cache file: %s", path)
         return None
 
     # ---------- メモリ+ディスク: put ----------
@@ -166,6 +170,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
                 os.utime(str(dst), None)  # LRU更新
         except Exception:
             # 保存失敗は無視（メモリにはある）
+            logger.exception("Failed to save thumbnail cache file: %s", dst)
             return
 
         self._enforce_disk_budget()
@@ -186,6 +191,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
                     total += st.st_size
                     stats.append((f, st.st_mtime, st.st_size))
                 except Exception:
+                    logger.debug("Could not stat thumbnail cache file: %s", f, exc_info=True)
                     continue
 
             if len(stats) <= self._disk_max_items and total <= self._disk_max_bytes:
@@ -199,7 +205,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
                     f.unlink(missing_ok=True)
                 total -= sz
         except Exception:
-            pass
+            logger.exception("Failed to enforce thumbnail cache budget in %s", self._root)
 
     # 任意: クリアAPI
     def clear_disk(self) -> None:

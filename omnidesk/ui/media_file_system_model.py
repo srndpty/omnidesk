@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -13,6 +14,8 @@ from PyQt6.QtWidgets import QFileIconProvider
 from ..utils.thumbnail_cache import file_thumbnail_cache, folder_preview_cache
 from .media_icon_provider import MediaThumbnailProvider
 from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
+
+logger = logging.getLogger(__name__)
 
 
 def folder_thumbnail_rect(base_size: QSize, thumb_size: QSize, edge: int) -> tuple[int, int]:
@@ -60,7 +63,7 @@ class MediaFileSystemModel(QFileSystemModel):
 
     def _debug(self, event: str, key: str, detail: object = "") -> None:
         if self._debug_thumbnails:
-            print(f"[thumb:{event}] {key} {detail}", flush=True)
+            logger.debug("[thumb:%s] %s %s", event, key, detail)
 
     # ------------------------------------------------------------------
     def data(self, index, role):
@@ -271,7 +274,7 @@ class MediaFileSystemModel(QFileSystemModel):
             # print(f"[MediaFileSystemModel] job started for {norm_key}", flush=True)
             self._pending.add(norm_key)
         else:
-            print(f"[MediaFileSystemModel] job not started for {norm_key}", flush=True)
+            logger.warning("Thumbnail job not started for %s", norm_key)
             self._debug("image-not-started", norm_key)
 
     def _handle_cache_loaded(self, key: str, generation: int, image: object, is_dir: bool) -> None:
@@ -414,20 +417,20 @@ class MediaFileSystemModel(QFileSystemModel):
     ) -> bool:
         """ドラッグ＆ドロップによるファイル移動を処理"""
         if action == Qt.DropAction.IgnoreAction:
-            print("[MediaFileSystemModel] drop ignored")
+            logger.debug("drop ignored")
             return True
 
         if not data.hasUrls():
-            print("[MediaFileSystemModel] drop has no URLs")
+            logger.warning("drop has no URLs")
             return False
 
         if not parent.isValid() or not self.isDir(parent):
-            print("[MediaFileSystemModel] drop target is not a valid directory")
+            logger.warning("drop target is not a valid directory")
             return False
 
         dest_dir = Path(self.filePath(parent))
         if not dest_dir.exists() or not dest_dir.is_dir():
-            print(f"[MediaFileSystemModel] drop target directory does not exist: {dest_dir}")
+            logger.warning("drop target directory does not exist: %s", dest_dir)
             return False
 
         moved = False
@@ -442,7 +445,7 @@ class MediaFileSystemModel(QFileSystemModel):
                 # os.rename だとドライブを跨ぐと失敗する → shutil.move を推奨
                 shutil.move(str(src_path), str(dest_path))
                 moved = True
-            except Exception as e:
-                print(f"[MediaFileSystemModel] move failed: {e}")
+            except Exception:
+                logger.exception("drop move failed: %s -> %s", src_path, dest_path)
 
         return moved

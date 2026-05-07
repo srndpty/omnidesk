@@ -5,8 +5,17 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import Callable, Mapping
-from itertools import count
 from pathlib import Path
+
+from .file_operations import (
+    delete_paths as delete_paths,
+)
+from .file_operations import (
+    perform_copy_or_move as perform_copy_or_move,
+)
+from .file_operations import (
+    resolve_destination as resolve_destination,
+)
 
 
 def deletion_replacement_path(
@@ -40,63 +49,6 @@ def deletion_replacement_path(
             return candidate
 
     return None
-
-
-def delete_paths(paths: list[Path]) -> list[str]:
-    errors: list[str] = []
-    for path in paths:
-        try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-        except Exception as exc:  # pragma: no cover - filesystem dependent
-            errors.append(f"{path}: {exc}")
-    return errors
-
-
-def perform_copy_or_move(sources: list[Path], dest_dir: Path, *, move: bool) -> list[str]:
-    errors: list[str] = []
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    for src in sources:
-        if not src.exists():
-            errors.append(f"Missing: {src}")
-            continue
-        try:
-            if move and src.parent.resolve() == dest_dir.resolve():
-                continue
-        except Exception:  # pragma: no cover - resolution failure on some systems
-            pass
-        try:
-            target = resolve_destination(dest_dir, src.name, move)
-        except ValueError as exc:
-            errors.append(str(exc))
-            continue
-        try:
-            if move:
-                shutil.move(str(src), str(target))
-            elif src.is_dir():
-                shutil.copytree(src, target)
-            else:
-                shutil.copy2(src, target)
-        except Exception as exc:  # pragma: no cover - filesystem dependent
-            errors.append(f"{src} -> {target}: {exc}")
-    return errors
-
-
-def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:
-    target = dest_dir / name
-    if not target.exists():
-        return target
-    if move:
-        raise ValueError(f"Destination already has {name}")
-    stem = target.stem
-    suffix = target.suffix
-    for n in count(1):
-        candidate = dest_dir / f"{stem} - Copy {n}{suffix}"
-        if not candidate.exists():
-            return candidate
-    raise ValueError("Unable to resolve destination")
 
 
 def is_within(path: Path, potential_parent: Path) -> bool:

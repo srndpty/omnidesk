@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 from contextlib import suppress
@@ -58,10 +59,7 @@ from .file_browser_drop import (
     should_move_from_drop_action,
 )
 from .file_browser_helpers import (
-    delete_paths,
     deletion_replacement_path,
-    perform_copy_or_move,
-    resolve_destination,
     resolve_windows_program,
 )
 from .file_browser_media_mode import (
@@ -77,7 +75,17 @@ from .file_browser_navigation import (
 )
 from .file_browser_selection import has_selection_path_in_directory, pending_selection_action
 from .file_browser_visible import index_identity, tile_probe_points, tile_probe_step
+from .file_operations import (
+    create_file,
+    create_folder,
+    delete_paths,
+    perform_copy_or_move,
+    rename_path,
+    resolve_destination,
+)
 from .media_file_system_model import MediaFileSystemModel
+
+logger = logging.getLogger(__name__)
 
 
 class _BaseFileViewMixin:
@@ -136,12 +144,12 @@ class _BaseFileViewMixin:
 
         button = event.button()
         if button == Qt.MouseButton.BackButton:
-            print("[_BaseFileViewMixin] Back button pressed, telling tab to go up.", flush=True)
+            logger.debug("Back mouse button pressed")
             self._tab.go_up()  # 親であるタブのgo_up()を呼び出す
             event.accept()
         elif button == Qt.MouseButton.ForwardButton:
             # 将来の「進む」機能のために、ここに処理を追加できる
-            print("[_BaseFileViewMixin] Forward button pressed.", flush=True)
+            logger.debug("Forward mouse button pressed")
             # self._tab.go_forward() # のようなメソッドを将来的に呼び出す
             event.accept()
 
@@ -222,6 +230,7 @@ class _BaseFileViewMixin:
                 os.rename(src_path, dest_path)
             except Exception:
                 # 必要ならメッセージなど
+                logger.exception("Failed to move dropped path %s to %s", src_path, dest_path)
                 return False
 
         return True
@@ -589,14 +598,9 @@ class FileBrowserTab(QWidget):
         new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=original.name)
         if not ok or not new_name or new_name == original.name:
             return
-        target = original.with_name(new_name)
-        if target.exists():
-            QMessageBox.warning(self, "Rename failed", f"{target} already exists.")
-            return
-        try:
-            original.rename(target)
-        except Exception as exc:  # pragma: no cover - filesystem dependent
-            QMessageBox.warning(self, "Rename failed", str(exc))
+        target, error = rename_path(original, new_name)
+        if error:
+            QMessageBox.warning(self, "Rename failed", error)
             return
         self.refresh()
         self._select_path(target)
@@ -607,11 +611,9 @@ class FileBrowserTab(QWidget):
         name, ok = QInputDialog.getText(self, "New File", "File name:", text="New File.txt")
         if not ok or not name.strip():
             return
-        target = self._resolve_destination(self._current_path, name.strip(), move=False)
-        try:
-            target.touch(exist_ok=False)
-        except Exception as exc:  # pragma: no cover - filesystem dependent
-            QMessageBox.warning(self, "Create file failed", str(exc))
+        target, error = create_file(self._current_path, name.strip())
+        if error:
+            QMessageBox.warning(self, "Create file failed", error)
             return
         self.refresh()
         self._select_path(target)
@@ -622,11 +624,9 @@ class FileBrowserTab(QWidget):
         name, ok = QInputDialog.getText(self, "New Folder", "Folder name:", text="New Folder")
         if not ok or not name.strip():
             return
-        target = self._resolve_destination(self._current_path, name.strip(), move=False)
-        try:
-            target.mkdir(parents=True, exist_ok=False)
-        except Exception as exc:  # pragma: no cover - filesystem dependent
-            QMessageBox.warning(self, "Create folder failed", str(exc))
+        target, error = create_folder(self._current_path, name.strip())
+        if error:
+            QMessageBox.warning(self, "Create folder failed", error)
             return
         self.refresh()
         self._select_path(target)
@@ -767,14 +767,14 @@ class FileBrowserTab(QWidget):
         self.directoryChanged.emit(target)
         self._select_pending_or_first_row()
         self._restart_thumbnail_requests()  # ナビゲート後にサムネイル要求を再開
-        print(f"navigate_to target:`{target}`, _restart_thumbnail_requests()")
+        logger.debug("Navigated to %s and restarted thumbnail requests", target)
 
     # ★★★ 3. activate と deactivate メソッドを追加 ★★★
     def activate(self) -> None:
         """このタブがアクティブになったときに呼び出される"""
         if self._is_active:
             return
-        print(f"[FileBrowserTab] Activating tab for {self._current_path}", flush=True)
+        logger.debug("Activating tab for %s", self._current_path)
         self._is_active = True
         # アクティブになったので、サムネイル要求を開始する
         self._restart_thumbnail_requests()
@@ -783,7 +783,7 @@ class FileBrowserTab(QWidget):
         """このタブが非アクティブになったときに呼び出される"""
         if not self._is_active:
             return
-        print(f"[FileBrowserTab] Deactivating tab for {self._current_path}", flush=True)
+        logger.debug("Deactivating tab for %s", self._current_path)
         self._is_active = False
         # 保留中のサムネイル要求があればキャンセルする
         self._thumbnail_request_timer.stop()
@@ -936,23 +936,27 @@ class FileBrowserTab(QWidget):
         try:
             parts = shlex.split(cmdline, posix=False)
         except ValueError:
+            logger.exception("Cannot parse address bar command: %s", cmdline)
             QMessageBox.warning(self, "Command", f"Cannot parse command line:\n{cmdline}")
             return
         if not parts:
             return
 
         program, *args = parts
-        print(f"_execute_address_command: program=`{program}`, args={args}", flush=True)
+        logger.debug("Executing address bar command program=%s args=%s", program, args)
 
         # 特例: 'cmd' 単体なら現在のフォルダで起動
         if program.lower() in ("cmd", "cmd.exe"):
             comspec = os.environ.get("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
-            QProcess.startDetached(comspec, [], str(self._current_path))
+            if not QProcess.startDetached(comspec, [], str(self._current_path)):
+                logger.error("Failed to start cmd from %s", self._current_path)
+                QMessageBox.warning(self, "Command", f"Failed to start:\n{cmdline}")
             return
 
         # 実行ファイルの解決
         resolved, is_batch = self._resolve_program_for_windows(program)
         if not resolved:
+            logger.warning("Address bar command was not found: %s", program)
             QMessageBox.warning(
                 self, "Command not found", f"'{program}' is not found in current folder or PATH."
             )
@@ -961,9 +965,15 @@ class FileBrowserTab(QWidget):
         if is_batch:
             # .bat/.cmd はシェル経由で
             comspec = os.environ.get("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
-            QProcess.startDetached(comspec, ["/C", resolved, *args], str(self._current_path))
+            if not QProcess.startDetached(
+                comspec, ["/C", resolved, *args], str(self._current_path)
+            ):
+                logger.error("Failed to start batch command: %s args=%s", resolved, args)
+                QMessageBox.warning(self, "Command", f"Failed to start:\n{cmdline}")
         else:
-            QProcess.startDetached(resolved, args, str(self._current_path))
+            if not QProcess.startDetached(resolved, args, str(self._current_path)):
+                logger.error("Failed to start command: %s args=%s", resolved, args)
+                QMessageBox.warning(self, "Command", f"Failed to start:\n{cmdline}")
 
     def _resolve_program_for_windows(self, program: str) -> tuple[str | None, bool]:
         """
@@ -994,13 +1004,13 @@ class FileBrowserTab(QWidget):
     # QWidget overrides
     # ------------------------------------------------------------------
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
-        print(f"keyPressEvent: key={event.key()}, modifiers={event.modifiers()}", flush=True)
+        logger.debug("keyPressEvent key=%s modifiers=%s", event.key(), event.modifiers())
         # Ctrl+Enter で選択中のフォルダを新しいタブで開く
         if (
             event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
             and event.modifiers() & Qt.KeyboardModifier.ControlModifier
         ):
-            print("Ctrl+Enter detected")
+            logger.debug("Ctrl+Enter detected")
             selected = self._selected_index_path()
             if selected and selected.is_dir():
                 self.requestOpenInNewTab.emit(selected)
@@ -1013,7 +1023,7 @@ class FileBrowserTab(QWidget):
         # スクロール時と同じタイマーを開始し、可視範囲のサムネイル要求をスケジュールする
         if self._is_active:  # アクティブなタブだけがリサイズに応答
             self._restart_thumbnail_requests()
-            print("resizeEvent, _thumbnail_request_timer.start...")
+            logger.debug("Resize event restarted thumbnail requests")
             return
         super().resizeEvent(event)
 

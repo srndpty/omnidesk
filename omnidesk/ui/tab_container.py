@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from contextlib import suppress
 from functools import partial
@@ -13,6 +14,8 @@ from PyQt6.QtWidgets import QSizePolicy, QTabWidget, QToolButton, QVBoxLayout, Q
 
 from .file_browser_tab import FileBrowserTab
 from .tab_bar_helpers import local_paths_from_urls, tab_drop_action, wheel_scroll_request
+
+logger = logging.getLogger(__name__)
 
 
 class TabContainer(QWidget):
@@ -77,11 +80,12 @@ class TabContainer(QWidget):
         )
 
         final_tab_bar = self._tabs.tabBar()
-        print("--- TabBar Final State Check ---")
-        print(f"  isExpanding: {final_tab_bar.expanding()}")
-        print(f"  usesScrollButtons: {self._tabs.usesScrollButtons()}")
-        print(f"  elideMode: {final_tab_bar.elideMode()}")
-        print("------------------------------")
+        logger.debug(
+            "TabBar initialized expanding=%s usesScrollButtons=%s elideMode=%s",
+            final_tab_bar.expanding(),
+            self._tabs.usesScrollButtons(),
+            final_tab_bar.elideMode(),
+        )
 
     # ★★★ このメソッドをまるごとTabContainerクラスに追加 ★★★
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:

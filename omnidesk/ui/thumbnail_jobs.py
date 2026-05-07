@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from contextlib import suppress
@@ -9,6 +10,8 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QRunnable, Qt, pyqtSignal
 from PyQt6.QtGui import QImage
+
+logger = logging.getLogger(__name__)
 
 
 class CancellationToken:
@@ -59,6 +62,7 @@ class FolderScanJob(QRunnable):
                     image_path = entry
                     break
         except OSError:
+            logger.exception("Failed to scan folder for thumbnail: %s", self._path)
             image_path = None
         if not self._token.cancelled:
             self.signals.found.emit(self._key, self._token.generation, image_path)
@@ -87,6 +91,8 @@ class CacheLoadJob(QRunnable):
                 image = loaded
                 with suppress(OSError):
                     os.utime(self._cache_path, None)
+            else:
+                logger.warning("Failed to load thumbnail cache image: %s", self._cache_path)
         if not self._token.cancelled:
             self.signals.loaded.emit(self._key, self._token.generation, image)
 

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from PyQt6.QtCore import Qt, QThreadPool
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QMainWindow, QStackedWidget, QToolBar
 
-from ..utils.config import load_settings, save_settings
+from ..utils.config import AppSettings, load_settings, save_settings
 from ..utils.paths import get_default_start_path
 from ..utils.windows_theme import apply_dark_title_bar
 from .column_browser import ColumnBrowser
@@ -26,11 +25,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OmniDesk")
         self.resize(1200, 720)
 
-        self._settings: dict[str, Any] = load_settings()
-        file_browser_config = self._settings.get("file_browser", {})
-        name_column_width = file_browser_config.get("name_column_width")
-        if not isinstance(name_column_width, int) or name_column_width <= 0:
-            name_column_width = None
+        self._settings = AppSettings.from_raw(load_settings())
+        name_column_width = self._settings.name_column_width()
 
         self._tab_container = TabContainer(self, name_column_width=name_column_width)
         self._tab_container.currentPathChanged.connect(self._update_status_path)
@@ -55,30 +51,24 @@ class MainWindow(QMainWindow):
         apply_dark_title_bar(self)
 
     def _restore_initial_state(self) -> None:
-        session = self._settings.get("session", {}) if isinstance(self._settings, dict) else {}
-        tab_entries = session.get("tabs") if isinstance(session, dict) else None
         opened = False
-        if isinstance(tab_entries, list):
-            for raw in tab_entries:
-                try:
-                    candidate = Path(raw)
-                except Exception:  # pragma: no cover - defensive
-                    continue
-                if not candidate.exists():
-                    continue
-                self._tab_container.open_in_new_tab(candidate)
-                opened = True
-            if opened:
-                current = self._tab_container.current_tab()
-                active_path = current.current_path() if current else get_default_start_path()
-                self._column_browser.set_root_path(active_path)
-                if session.get("view_mode") == "columns":
-                    self._switch_to_columns()
-                else:
-                    self._switch_to_tabs()
-                self._update_status_path(self._current_active_path())
-                self._update_action_state()
-                return
+        for raw in self._settings.session_tabs():
+            candidate = Path(raw)
+            if not candidate.exists():
+                continue
+            self._tab_container.open_in_new_tab(candidate)
+            opened = True
+        if opened:
+            current = self._tab_container.current_tab()
+            active_path = current.current_path() if current else get_default_start_path()
+            self._column_browser.set_root_path(active_path)
+            if self._settings.view_mode() == "columns":
+                self._switch_to_columns()
+            else:
+                self._switch_to_tabs()
+            self._update_status_path(self._current_active_path())
+            self._update_action_state()
+            return
 
         initial_path = get_default_start_path()
         self._tab_container.open_in_new_tab(initial_path)
@@ -192,13 +182,8 @@ class MainWindow(QMainWindow):
             self._tab_container.select_previous_tab()
 
     def _handle_name_column_width_changed(self, width: int) -> None:
-        if width <= 0:
-            return
-        file_browser_config = self._settings.setdefault("file_browser", {})
-        if file_browser_config.get("name_column_width") == width:
-            return
-        file_browser_config["name_column_width"] = width
-        save_settings(self._settings)
+        if self._settings.set_name_column_width(width):
+            save_settings(self._settings.as_dict())
 
     # ------------------------------------------------------------------
     def _switch_to_columns(self) -> None:
@@ -238,11 +223,11 @@ class MainWindow(QMainWindow):
         self._previous_tab_action.setEnabled(in_tabs and tab_count > 1)
 
     def _persist_settings(self) -> None:
-        session = self._settings.setdefault("session", {})
-        if isinstance(session, dict):
-            session["tabs"] = [str(path) for path in self._tab_container.tab_paths()]
-            session["view_mode"] = self._view_mode
-        save_settings(self._settings)
+        self._settings.set_session(
+            tabs=[str(path) for path in self._tab_container.tab_paths()],
+            view_mode=self._view_mode,
+        )
+        save_settings(self._settings.as_dict())
 
     # ------------------------------------------------------------------
     def focusInEvent(self, event) -> None:  # noqa: N802

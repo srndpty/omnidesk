@@ -1,3 +1,11 @@
+[project]
+name = "omnidesk"
+version = "0.1.0"
+description = "Dark-themed, multi-tab file manager for Windows powered by PyQt6."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -24,4 +32,23 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-line-ending = "auto"
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+qt_api = "pyqt6"
+markers = [
+    "coverage: tests that exercise coverage-focused helper behavior",
+]
+filterwarnings = [
+    "ignore:.*sipPyTypeDict.*:DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["omnidesk"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
