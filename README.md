@@ -49,6 +49,12 @@ pip install -r requirements.txt
 python -m pytest
 ```
 
+カバレッジを確認する場合:
+
+```bash
+pytest --cov=omnidesk --cov-report=term-missing
+```
+
 古い非同期サムネイル確認スクリプトは `tests/manual/verify_async_behavior.py` に移動しています。
 
 ## Windows 向けビルド

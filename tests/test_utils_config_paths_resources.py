@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from omnidesk.utils import config, paths, resources
+
+
+def test_load_settings_returns_empty_when_file_missing(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "missing.json")
+
+    assert config.load_settings() == {}
+
+
+def test_load_settings_reads_valid_json(monkeypatch, tmp_path: Path) -> None:
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"window": {"width": 1200}}', encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
+
+    assert config.load_settings() == {"window": {"width": 1200}}
+
+
+def test_load_settings_returns_empty_for_invalid_json(monkeypatch, tmp_path: Path) -> None:
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
+
+    assert config.load_settings() == {}
+
+
+def test_load_settings_returns_empty_for_read_error(monkeypatch, tmp_path: Path) -> None:
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
+    monkeypatch.setattr(Path, "read_text", lambda self, encoding=None: (_ for _ in ()).throw(OSError()))
+
+    assert config.load_settings() == {}
+
+
+def test_save_settings_creates_config_file(monkeypatch, tmp_path: Path) -> None:
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr(config, "DEFAULT_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
+
+    config.save_settings({"tabs": ["C:/tmp"]})
+
+    assert settings_file.read_text(encoding="utf-8") == '{\n  "tabs": [\n    "C:/tmp"\n  ]\n}'
+
+
+def test_save_settings_ignores_os_errors(monkeypatch, tmp_path: Path) -> None:
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr(config, "DEFAULT_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
+    monkeypatch.setattr(Path, "write_text", lambda self, *args, **kwargs: (_ for _ in ()).throw(OSError()))
+
+    config.save_settings({"ignored": True})
+
+    assert not settings_file.exists()
+
+
+def test_resolve_for_navigation_resolves_existing_path(tmp_path: Path) -> None:
+    target = tmp_path / "folder"
+    target.mkdir()
+
+    assert paths.resolve_for_navigation(target) == target.resolve()
+
+
+def test_resolve_for_navigation_returns_unresolved_path_on_os_error(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "unavailable"
+    monkeypatch.setattr(Path, "resolve", lambda self: (_ for _ in ()).throw(OSError()))
+
+    assert paths.resolve_for_navigation(target) == target
+
+
+def test_get_default_start_path_prefers_current_directory(monkeypatch, tmp_path: Path) -> None:
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.setattr(Path, "cwd", lambda: cwd)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    assert paths.get_default_start_path() == cwd.resolve()
+
+
+def test_iter_available_roots_uses_existing_drive_letters(monkeypatch) -> None:
+    def exists(self: Path) -> bool:
+        return str(self).replace("\\", "/") in {"C:/", "Z:/"}
+
+    monkeypatch.setattr(Path, "exists", exists)
+
+    assert list(paths.iter_available_roots()) == [Path("C:/"), Path("Z:/")]
+
+
+def test_resource_path_accepts_varargs_and_iterable() -> None:
+    resources._resource_root.cache_clear()
+
+    assert resources.resource_path("icons", "app_icon.png").name == "app_icon.png"
+    assert resources.resource_path(["icons", "app_icon.ico"]).name == "app_icon.ico"
+
+
+def test_resource_root_uses_meipass_resources(monkeypatch, tmp_path: Path) -> None:
+    bundle_resources = tmp_path / "resources"
+    bundle_resources.mkdir()
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    resources._resource_root.cache_clear()
+
+    try:
+        assert resources._resource_root() == bundle_resources
+    finally:
+        resources._resource_root.cache_clear()
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+
+
+def test_resource_root_uses_nested_meipass_resources(monkeypatch, tmp_path: Path) -> None:
+    nested_resources = tmp_path / "omnidesk" / "resources"
+    nested_resources.mkdir(parents=True)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    resources._resource_root.cache_clear()
+
+    try:
+        assert resources._resource_root() == nested_resources
+    finally:
+        resources._resource_root.cache_clear()
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+
+
+def test_application_icon_candidates_prefer_platform_extension(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(resources, "_resource_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    candidates = resources.application_icon_candidates()
+
+    assert candidates[0].suffix == ".png"
+    assert candidates[1].suffix == ".ico"
+
+
+def test_application_icon_path_falls_back_to_png(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(resources, "_resource_root", lambda: tmp_path)
+
+    assert resources.application_icon_path() == tmp_path / "icons" / "app_icon.png"
