@@ -13,6 +13,7 @@ from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QTabBar, QTabWidget, QVBoxLayout, QWidget, QVBoxLayout, QToolButton, QSizePolicy
 
 from .file_browser_tab import FileBrowserTab
+from .tab_bar_helpers import local_paths_from_urls, tab_drop_action, wheel_scroll_request
 
 
 # class _ClosableTabBar(QTabBar):
@@ -112,9 +113,7 @@ class TabContainer(QWidget):
                     idx = obj.tabAt(event.position().toPoint())
                     if idx != -1:
                         obj.setCurrentIndex(idx)  # 視覚的に対象タブをハイライト
-                        action = (Qt.DropAction.CopyAction
-                                if event.modifiers() & Qt.KeyboardModifier.ControlModifier
-                                else Qt.DropAction.MoveAction)
+                        action = tab_drop_action(event.modifiers())
                         event.setDropAction(action)
                         event.accept()
                         return True
@@ -127,9 +126,8 @@ class TabContainer(QWidget):
                     if idx != -1:
                         target_tab = self._tabs.widget(idx)
                         if isinstance(target_tab, FileBrowserTab):
-                            paths = [Path(u.toLocalFile())
-                                    for u in event.mimeData().urls() if u.isLocalFile()]
-                            move = not (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                            paths = local_paths_from_urls(event.mimeData().urls())
+                            move = tab_drop_action(event.modifiers()) == Qt.DropAction.MoveAction
                             dest_dir = target_tab.current_path()
                             target_tab._handle_external_drop(paths, dest_dir, move)
                             event.setDropAction(Qt.DropAction.MoveAction if move
@@ -139,28 +137,12 @@ class TabContainer(QWidget):
                 return False
             if event.type() == QEvent.Type.Wheel:
                 wheel: QWheelEvent = event
-                # --- ステップ数を決める（マウス/トラックパッド両対応） ---
-                steps = 0
-
-                # 1) 角度ベース（マウスホイール）: 1ステップ=15度 (=120)
                 ad = wheel.angleDelta()
-                if ad.x() != 0 or ad.y() != 0:
-                    # 横スクロールを優先。横が0なら縦を使う
-                    delta = ad.x() if abs(ad.x()) >= abs(ad.y()) else ad.y()
-                    steps = int(delta / 120)   # 複数ノッチまとめて
-
-                    # 方向決定（多くの環境で：+は左 / -は右）
-                    go_left = (delta > 0)
-                else:
-                    # 2) ピクセルベース（トラックパッド）: しきい値で擬似ステップ化
-                    pd = wheel.pixelDelta()
-                    px = pd.x() if abs(pd.x()) >= abs(pd.y()) else pd.y()
-                    # 好みでしきい値調整（60px=1ステップ）
-                    steps = int(px / 60)
-                    go_left = (px > 0)
-
-                if steps != 0:
-                    self._scroll_tabstrip(go_left=go_left, count=abs(steps))
+                pd = wheel.pixelDelta()
+                request = wheel_scroll_request(ad.x(), ad.y(), pd.x(), pd.y())
+                if request is not None:
+                    go_left, count = request
+                    self._scroll_tabstrip(go_left=go_left, count=count)
                     event.accept()
                     return True
 

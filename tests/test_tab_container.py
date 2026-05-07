@@ -119,3 +119,23 @@ def test_directory_and_width_handlers_update_state(monkeypatch, qtbot, tmp_path:
 
     assert width_signal.args == [512]
     assert container.name_column_width() == 512
+
+
+def test_tab_container_label_for_drive_and_regular_path() -> None:
+    assert TabContainer._label_for(Path("C:/")) == "C:"
+    assert TabContainer._label_for(Path("C:/Users/example")) == "example"
+
+
+def test_scroll_tabstrip_fallback_changes_current_index(qtbot) -> None:
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container._tabs.addTab(QWidget(), "one")
+    container._tabs.addTab(QWidget(), "two")
+    container._tabs.addTab(QWidget(), "three")
+    container._tabs.setCurrentIndex(1)
+
+    container._scroll_tabstrip(go_left=True, count=5)
+    assert container._tabs.currentIndex() == 0
+
+    container._scroll_tabstrip(go_left=False, count=5)
+    assert container._tabs.currentIndex() == 2

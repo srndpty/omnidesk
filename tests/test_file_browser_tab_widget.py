@@ -179,3 +179,32 @@ def test_file_browser_tab_execute_command_starts_direct_and_batch(monkeypatch, q
         ["/C", "C:/bin/script.cmd", "arg"],
         str(tab.current_path()),
     )
+
+
+def test_file_browser_tab_execute_command_starts_cmd_special_case(monkeypatch, qtbot) -> None:
+    starts: list[tuple[str, list[str], str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setenv("COMSPEC", "C:/Windows/System32/cmd.exe")
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QProcess.startDetached",
+        lambda program, args, cwd: starts.append((program, list(args), cwd)) or True,
+    )
+
+    tab._execute_address_command("cmd")
+
+    assert starts == [("C:/Windows/System32/cmd.exe", [], str(tab.current_path()))]
+
+
+def test_file_browser_tab_activate_deactivate_thumbnail_state(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    tab.activate()
+    assert tab._is_active
+    assert tab._thumbnail_request_timer.isActive()
+
+    tab.deactivate()
+    assert not tab._is_active
+    assert not tab._thumbnail_request_timer.isActive()
+    assert not tab._thumbnail_scroll_settle_timer.isActive()
