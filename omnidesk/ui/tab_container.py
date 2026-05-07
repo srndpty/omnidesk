@@ -47,12 +47,12 @@ class TabContainer(QWidget):
         # 4. QTabWidget自体の設定を行う
         self._tabs.setDocumentMode(True)
         self._tabs.setMovable(True)
-        self._tabs.setTabsClosable(True)
+        self._tabs.setTabsClosable(False)
         self._tabs.setUsesScrollButtons(True) # これは QTabWidget のプロパティ
 
         # 2. デフォルトのタブバーを取得し、設定を適用する
         default_tab_bar = self._tabs.tabBar()
-        default_tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
+        default_tab_bar.setElideMode(Qt.TextElideMode.ElideRight)
         default_tab_bar.setExpanding(False)
         
         # 1. 現在のサイズポリシーを取得
@@ -66,7 +66,10 @@ class TabContainer(QWidget):
         bar = self._tabs.tabBar()
         bar.installEventFilter(self)
         bar.setAcceptDrops(True)
-        bar.setStyleSheet("QTabBar::tab { max-width: 220px; }")
+        bar.setStyleSheet(
+            "QTabBar::tab { font-size: 9pt; padding: 5px 3px 5px 2px; "
+            "min-width: 4.3em; max-width: 220px; text-align: left; }"
+        )
         # (C) ホイールをタブバーで受ける（フォーカス不要でも届くように）
         bar.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
         bar.installEventFilter(self)
@@ -212,8 +215,7 @@ class TabContainer(QWidget):
             return
         index = self._tabs.currentIndex()
         if index >= 0:
-            self._tabs.removeTab(index)
-            self.tabCountChanged.emit(self._tabs.count())
+            self._close_tab(index)
 
     def tab_count(self) -> int:
         return self._tabs.count()

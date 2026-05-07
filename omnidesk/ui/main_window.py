@@ -138,7 +138,6 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("MainToolbar", self)
         toolbar.setMovable(False)
         toolbar.addAction(self._new_tab_action)
-        toolbar.addAction(self._close_tab_action)
         toolbar.addSeparator()
         toolbar.addAction(self._open_folder_action)
         toolbar.addAction(self._go_up_action)

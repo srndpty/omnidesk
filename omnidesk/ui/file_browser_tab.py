@@ -394,6 +394,7 @@ class FileBrowserTab(QWidget):
         self._manual_media_mode: bool | None = None
         self._manual_media_mode: bool | None = None
         self._clipboard: dict[str, object] | None = None
+        self._pending_selection_path: Path | None = None
         self._create_actions()
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")
@@ -600,10 +601,10 @@ class FileBrowserTab(QWidget):
         self.refresh()
         self._select_path(target)
 
-    def _select_path(self, path: Path) -> None:
+    def _select_path(self, path: Path) -> bool:
         index = self._model.index(str(path))
         if not index.isValid():
-            return
+            return False
         view = self._active_view()
         selection_model = view.selectionModel()
         if selection_model:
@@ -612,6 +613,7 @@ class FileBrowserTab(QWidget):
                 QItemSelectionModel.SelectionFlag.ClearAndSelect,
             )
         view.scrollTo(index)
+        return True
 
     def _show_context_menu(self, view: QAbstractItemView, point) -> None:
         index = view.indexAt(point)
@@ -666,6 +668,7 @@ class FileBrowserTab(QWidget):
         paths = self._selected_paths()
         if not paths:
             return
+        select_after_delete = self._selection_path_before_deleted_items(paths)
         if (
             QMessageBox.question(
                 self,
@@ -687,6 +690,7 @@ class FileBrowserTab(QWidget):
                 errors.append(f"{path}: {exc}")
         if errors:
             QMessageBox.warning(self, "Delete failed", "\n".join(errors))
+        self._pending_selection_path = select_after_delete
         self.refresh()
         self._update_action_states()
 
@@ -783,12 +787,12 @@ class FileBrowserTab(QWidget):
         root_index = self._model.setRootPath(str(target))
         self._tree_view.setRootIndex(root_index)
         self._tile_view.setRootIndex(root_index)
-        self._update_media_mode(target)
+        self._update_media_mode(target, select_default=False)
         self._configure_header_sections()
         self._apply_name_column_width()
         self._connect_selection_signals()
         self.directoryChanged.emit(target)
-        self._select_first_row()
+        self._select_pending_or_first_row()
         self._restart_thumbnail_requests()  # ナビゲート後にサムネイル要求を再開
         print(f"navigate_to target:`{target}`, _restart_thumbnail_requests()")
 
@@ -956,8 +960,8 @@ class FileBrowserTab(QWidget):
     # internal slots
     # ------------------------------------------------------------------
     def _on_directory_loaded(self, _: str) -> None:
-        self._select_first_row()
-        self._update_media_mode(self._current_path)
+        self._update_media_mode(self._current_path, select_default=False)
+        self._select_pending_or_first_row()
         self._configure_header_sections()
         self._apply_name_column_width()
 
@@ -1179,6 +1183,75 @@ class FileBrowserTab(QWidget):
                     QItemSelectionModel.SelectionFlag.ClearAndSelect,
                 )
 
+    def _select_pending_or_first_row(self) -> None:
+        if self._pending_selection_path is not None:
+            pending = self._pending_selection_path
+            if pending.exists() and self._select_path(pending):
+                self._pending_selection_path = None
+                return
+            if pending.exists():
+                return
+            self._pending_selection_path = None
+        if self._has_current_selection_in_current_directory():
+            return
+        self._select_first_row()
+
+    def _has_current_selection_in_current_directory(self) -> bool:
+        selection_model = self._active_view().selectionModel()
+        if not selection_model:
+            return False
+        index = selection_model.currentIndex()
+        if not index.isValid():
+            return False
+        path = Path(self._model.filePath(index))
+        try:
+            return path.exists() and path.parent.resolve() == self._current_path.resolve()
+        except Exception:
+            return False
+
+    def _selection_path_before_deleted_items(self, deleted_paths: list[Path]) -> Path | None:
+        view = self._active_view()
+        model = view.model()
+        selection_model = view.selectionModel()
+        if not model or not selection_model:
+            return None
+
+        root_index = view.rootIndex()
+        selected_rows = {
+            index.siblingAtColumn(0).row()
+            for index in selection_model.selectedRows() or selection_model.selectedIndexes()
+            if index.isValid()
+        }
+        if not selected_rows:
+            return None
+
+        deleted = {path.resolve() for path in deleted_paths}
+
+        def path_for_row(row: int) -> Path | None:
+            index = model.index(row, 0, root_index)
+            if not index.isValid():
+                return None
+            candidate = Path(self._model.filePath(index))
+            try:
+                if candidate.resolve() in deleted:
+                    return None
+            except Exception:
+                return None
+            return candidate
+
+        for row in range(min(selected_rows) - 1, -1, -1):
+            candidate = path_for_row(row)
+            if candidate is not None:
+                return candidate
+
+        row_count = model.rowCount(root_index)
+        for row in range(max(selected_rows) + 1, row_count):
+            candidate = path_for_row(row)
+            if candidate is not None:
+                return candidate
+
+        return None
+
     def _handle_thumbnail_updated(self, index: QModelIndex) -> None:
         """Force repaint when a thumbnail icon is ready."""
         for view in (self._tile_view, self._tree_view):
@@ -1216,16 +1289,16 @@ class FileBrowserTab(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     # ------------------------------------------------------------------
-    def _update_media_mode(self, directory: Path) -> None:
+    def _update_media_mode(self, directory: Path, *, select_default: bool = True) -> None:
         # should_enable = self._is_media_heavy(directory)
         should_enable = True  # 常にサムネイルモードにする
         if should_enable != self._media_icon_mode:
             self._media_icon_mode = should_enable
-            self._apply_media_mode()
+            self._apply_media_mode(select_default=select_default)
         elif self._media_icon_mode:
-            self._apply_media_mode()
+            self._apply_media_mode(select_default=select_default)
 
-    def _apply_media_mode(self) -> None:
+    def _apply_media_mode(self, *, select_default: bool = True) -> None:
         if self._media_icon_mode:
             icon_edge = 160
             self._model.set_thumbnail_edge(icon_edge)
@@ -1238,7 +1311,8 @@ class FileBrowserTab(QWidget):
             self._view_stack.setCurrentWidget(self._tree_view)
         self._update_view_toggle_button()
         self._connect_selection_signals()
-        self._select_first_row()
+        if select_default:
+            self._select_pending_or_first_row()
 
     def _handle_view_toggle_clicked(self) -> None:
         target = not self._media_icon_mode
