@@ -572,6 +572,9 @@ class _FakeFileInfo:
     def isDir(self) -> bool:
         return self._is_dir
 
+    def isFile(self) -> bool:
+        return not self._is_dir
+
     def absoluteFilePath(self) -> str:
         return str(self._path)
 
