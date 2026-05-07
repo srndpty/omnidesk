@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from omnidesk.ui.file_operations import create_file, create_folder, rename_path
+from omnidesk.ui.file_operations import (
+    create_file,
+    create_folder,
+    delete_paths,
+    is_dangerous_operation_path,
+    is_plain_child_name,
+    perform_copy_or_move,
+    rename_path,
+)
 
 
 def test_rename_path_reports_conflict(tmp_path: Path) -> None:
@@ -42,3 +50,61 @@ def test_create_file_and_folder_use_copy_names_for_conflicts(tmp_path: Path) -> 
     assert folder_error is None
     assert folder_path == tmp_path / "New Folder - Copy 1"
     assert folder_path.is_dir()
+
+
+def test_plain_child_name_rejects_paths_and_empty_values() -> None:
+    assert is_plain_child_name("file.txt")
+    assert not is_plain_child_name("")
+    assert not is_plain_child_name("   ")
+    assert not is_plain_child_name("nested/file.txt")
+    assert not is_plain_child_name(r"nested\file.txt")
+
+
+def test_create_and_rename_reject_path_separator_names(tmp_path: Path) -> None:
+    original = tmp_path / "original.txt"
+    original.write_text("original", encoding="utf-8")
+
+    renamed, rename_error = rename_path(original, "nested/renamed.txt")
+    created_file, file_error = create_file(tmp_path, "nested/file.txt")
+    created_folder, folder_error = create_folder(tmp_path, "nested/folder")
+
+    assert renamed is None
+    assert rename_error == "Name must not contain path separators."
+    assert created_file is None
+    assert file_error == "Name must not contain path separators."
+    assert created_folder is None
+    assert folder_error == "Name must not contain path separators."
+    assert not (tmp_path / "nested").exists()
+
+
+def test_dangerous_operation_path_detects_roots() -> None:
+    assert is_dangerous_operation_path(Path(Path.cwd().anchor))
+
+
+def test_delete_paths_refuses_dangerous_path(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "omnidesk.ui.file_operations.is_dangerous_operation_path",
+        lambda path: path == tmp_path,
+    )
+
+    errors = delete_paths([tmp_path])
+
+    assert len(errors) == 1
+    assert "Refusing to delete dangerous path" in errors[0]
+    assert tmp_path.exists()
+
+
+def test_copy_or_move_refuses_dangerous_source(monkeypatch, tmp_path: Path) -> None:
+    src = tmp_path / "source.txt"
+    dest = tmp_path / "dest"
+    src.write_text("source", encoding="utf-8")
+    monkeypatch.setattr(
+        "omnidesk.ui.file_operations.is_dangerous_operation_path",
+        lambda path: path == src,
+    )
+
+    errors = perform_copy_or_move([src], dest, move=False)
+
+    assert len(errors) == 1
+    assert "Refusing to operate on dangerous path" in errors[0]
+    assert not (dest / src.name).exists()

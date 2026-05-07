@@ -13,6 +13,9 @@ if not exist resources\icons\app_icon.ico (
 python -m ruff check . --no-cache
 if errorlevel 1 exit /b 1
 
+python -m pyright
+if errorlevel 1 exit /b 1
+
 python -m pytest
 if errorlevel 1 exit /b 1
 

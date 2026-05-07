@@ -47,7 +47,7 @@ python main.py
 pytest と pytest-qt を使った自動テストを用意しています。
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 python -m pytest
 ```
 
@@ -56,6 +56,12 @@ lint / format確認:
 ```powershell
 python -m ruff check . --no-cache
 python -m ruff format . --check
+```
+
+型検査はまず副作用の薄いヘルパー層だけを対象にしています。
+
+```powershell
+python -m pyright
 ```
 
 カバレッジを確認する場合:
@@ -75,10 +81,9 @@ pre-commit run --all-files
 
 ## Windows 向けビルド
 
-1. 依存パッケージをインストールします。
+1. 開発用依存パッケージをインストールします。
    ```bash
-   pip install -r requirements.txt
-   pip install pyinstaller
+   pip install -r requirements-dev.txt
    ```
 2. リポジトリのルートで PyInstaller を実行します。
    ```bash
@@ -91,7 +96,8 @@ pre-commit run --all-files
 
 1. `python -m ruff check . --no-cache`
 2. `python -m ruff format . --check`
-3. `python -m pytest --cov=omnidesk --cov-report=term-missing`
-4. `build_windows.bat`
-5. `CHANGELOG.md` を更新し、生成された `dist/OmniDesk.exe` を確認します。
+3. `python -m pyright`
+4. `python -m pytest --cov=omnidesk --cov-report=term-missing`
+5. `build_windows.bat`
+6. `CHANGELOG.md` を更新し、生成された `dist/OmniDesk.exe` を確認します。
 

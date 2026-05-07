@@ -6,6 +6,17 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 
+[project.optional-dependencies]
+dev = [
+    "pre-commit==4.2.0",
+    "pyinstaller==6.16.0",
+    "pytest==8.3.5",
+    "pytest-cov==6.0.0",
+    "pytest-qt==4.4.0",
+    "pyright==1.1.408",
+    "ruff==0.11.6",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -52,3 +63,29 @@ source = ["omnidesk"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+
+[tool.pyright]
+include = [
+    "omnidesk/ui/file_browser_actions.py",
+    "omnidesk/ui/file_browser_drop.py",
+    "omnidesk/ui/file_browser_helpers.py",
+    "omnidesk/ui/file_browser_media_mode.py",
+    "omnidesk/ui/file_browser_navigation.py",
+    "omnidesk/ui/file_browser_selection.py",
+    "omnidesk/ui/file_browser_visible.py",
+    "omnidesk/ui/file_operations.py",
+    "omnidesk/utils/config.py",
+    "omnidesk/utils/logging_config.py",
+    "omnidesk/utils/paths.py",
+    "omnidesk/utils/resources.py",
+]
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "tmp",
+]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = "none"
+reportMissingImports = "none"

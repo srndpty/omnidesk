@@ -26,6 +26,9 @@ jobs:
       - name: Ruff format check
         run: python -m ruff format . --check
 
+      - name: Type check
+        run: python -m pyright
+
       - name: Tests
         env:
           QT_QPA_PLATFORM: offscreen

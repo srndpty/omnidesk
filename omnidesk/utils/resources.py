@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from functools import lru_cache
 from pathlib import Path
+from typing import cast
 
 
 @lru_cache(maxsize=1)
 def _resource_root() -> Path:
     """Return the directory that contains bundled resources."""
     if hasattr(sys, "_MEIPASS"):
-        base = Path(sys._MEIPASS)
+        base = Path(sys.__dict__["_MEIPASS"])
         for candidate in (base / "resources", base / "omnidesk" / "resources"):
             if candidate.exists():
                 return candidate
@@ -22,14 +23,15 @@ def _resource_root() -> Path:
 
 def resource_path(*parts: str | Path | Iterable[str | Path]) -> Path:
     """Return a path under the resources directory."""
+    sequence: Sequence[str | Path]
     if (
         len(parts) == 1
         and isinstance(parts[0], Iterable)
         and not isinstance(parts[0], str | bytes | Path)
     ):
-        sequence = parts[0]
+        sequence = tuple(parts[0])
     else:
-        sequence = parts
+        sequence = cast(Sequence[str | Path], parts)
     return _resource_root() / Path(*sequence)
 
 
