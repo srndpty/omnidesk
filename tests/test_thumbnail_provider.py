@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtGui import QImage
+from PyQt6.QtGui import QImage, QIcon
 
-from omnidesk.ui.media_icon_provider import MediaThumbnailProvider, _ImageJob
+from omnidesk.ui import media_icon_provider
+from omnidesk.ui.media_icon_provider import MediaThumbnailProvider, _ImageJob, _VideoJob
 from omnidesk.ui.thumbnail_jobs import CancellationToken
 
 
@@ -183,3 +184,223 @@ def test_image_job_run_does_not_emit_when_cancelled(qtbot, tmp_path: Path) -> No
 
     with qtbot.assertNotEmitted(job.signals.finished, wait=100):
         job.run()
+
+
+class _FakeSignal:
+    def __init__(self) -> None:
+        self.callbacks: list[object] = []
+
+    def connect(self, callback) -> None:
+        self.callbacks.append(callback)
+
+    def disconnect(self, callback) -> None:
+        if callback not in self.callbacks:
+            raise TypeError("callback is not connected")
+        self.callbacks.remove(callback)
+
+
+class _FakeAudioOutput:
+    def __init__(self, _parent=None) -> None:
+        self.volume: float | None = None
+        self.deleted = False
+
+    def setVolume(self, volume: float) -> None:
+        self.volume = volume
+
+    def deleteLater(self) -> None:
+        self.deleted = True
+
+
+class _FakePlayer:
+    instances: list["_FakePlayer"] = []
+
+    def __init__(self, _parent=None) -> None:
+        self.audio_output = None
+        self.video_sink = None
+        self.source = None
+        self.position: int | None = None
+        self.played = False
+        self.stopped = False
+        self.deleted = False
+        _FakePlayer.instances.append(self)
+
+    def setAudioOutput(self, audio_output) -> None:
+        self.audio_output = audio_output
+
+    def setVideoSink(self, video_sink) -> None:
+        self.video_sink = video_sink
+
+    def setSource(self, source) -> None:
+        self.source = source
+
+    def setPosition(self, position: int) -> None:
+        self.position = position
+
+    def play(self) -> None:
+        self.played = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def deleteLater(self) -> None:
+        self.deleted = True
+
+
+class _FakeVideoSink:
+    instances: list["_FakeVideoSink"] = []
+
+    def __init__(self, _parent=None) -> None:
+        self.videoFrameChanged = _FakeSignal()
+        _FakeVideoSink.instances.append(self)
+
+
+class _FakeTimer:
+    instances: list["_FakeTimer"] = []
+
+    def __init__(self, _parent=None) -> None:
+        self.timeout = _FakeSignal()
+        self.single_shot: bool | None = None
+        self.started_with: int | None = None
+        self.stopped = False
+        _FakeTimer.instances.append(self)
+
+    def setSingleShot(self, single_shot: bool) -> None:
+        self.single_shot = single_shot
+
+    def start(self, milliseconds: int) -> None:
+        self.started_with = milliseconds
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class _FakeFrame:
+    def __init__(self, image: QImage, *, valid: bool = True) -> None:
+        self._image = image
+        self._valid = valid
+
+    def isValid(self) -> bool:
+        return self._valid
+
+    def toImage(self) -> QImage:
+        return self._image
+
+
+def _install_video_fakes(monkeypatch) -> None:
+    _FakePlayer.instances = []
+    _FakeVideoSink.instances = []
+    _FakeTimer.instances = []
+    monkeypatch.setattr(media_icon_provider, "QAudioOutput", _FakeAudioOutput)
+    monkeypatch.setattr(media_icon_provider, "QMediaPlayer", _FakePlayer)
+    monkeypatch.setattr(media_icon_provider, "QVideoSink", _FakeVideoSink)
+    monkeypatch.setattr(media_icon_provider, "QTimer", _FakeTimer)
+
+
+def test_video_job_start_configures_player(monkeypatch, tmp_path: Path) -> None:
+    _install_video_fakes(monkeypatch)
+    video_path = tmp_path / "movie.mp4"
+    token = CancellationToken(21)
+
+    job = _VideoJob("video-key", video_path, 80, token)
+    job.start()
+
+    player = _FakePlayer.instances[-1]
+    timer = _FakeTimer.instances[-1]
+    assert Path(player.source.toLocalFile()) == video_path
+    assert player.position == 0
+    assert player.played
+    assert timer.single_shot is True
+    assert timer.started_with == 2000
+
+
+def test_video_job_cancelled_start_finishes_without_icon(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    _install_video_fakes(monkeypatch)
+    token = CancellationToken(22)
+    token.cancel()
+    job = _VideoJob("video-key", tmp_path / "movie.mp4", 80, token)
+
+    with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
+        job.start()
+
+    player = _FakePlayer.instances[-1]
+    assert blocker.args == ["video-key", None, 22]
+    assert player.stopped
+    assert player.deleted
+    assert _FakeTimer.instances[-1].stopped
+
+
+def test_video_job_unavailable_start_emits_none(monkeypatch, qtbot, tmp_path: Path) -> None:
+    _install_video_fakes(monkeypatch)
+    job = _VideoJob("video-key", tmp_path / "movie.mp4", 80, CancellationToken(23))
+    monkeypatch.setattr(media_icon_provider, "QVideoSink", None)
+
+    with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
+        job.start()
+
+    assert blocker.args == ["video-key", None, 23]
+
+
+def test_video_job_handle_frame_emits_scaled_icon(monkeypatch, qtbot, tmp_path: Path) -> None:
+    _install_video_fakes(monkeypatch)
+    image = QImage(200, 100, QImage.Format.Format_RGB32)
+    image.fill(0x00FF00)
+    job = _VideoJob("video-key", tmp_path / "movie.mp4", 64, CancellationToken(24))
+
+    with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
+        job._handle_frame(_FakeFrame(image))
+
+    key, icon, generation = blocker.args
+    assert key == "video-key"
+    assert isinstance(icon, QIcon)
+    assert generation == 24
+    pixmap = icon.pixmap(64, 64)
+    assert pixmap.width() <= 64
+    assert pixmap.height() <= 64
+    assert _FakePlayer.instances[-1].stopped
+
+
+def test_video_job_ignores_invalid_null_cancelled_and_complete_frames(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    _install_video_fakes(monkeypatch)
+    token = CancellationToken(25)
+    job = _VideoJob("video-key", tmp_path / "movie.mp4", 64, token)
+    null_image = QImage()
+    valid_image = QImage(20, 20, QImage.Format.Format_RGB32)
+    valid_image.fill(0x0000FF)
+
+    with qtbot.assertNotEmitted(job.finished, wait=100):
+        job._handle_frame(_FakeFrame(valid_image, valid=False))
+        job._handle_frame(_FakeFrame(null_image))
+        token.cancel()
+        job._handle_frame(_FakeFrame(valid_image))
+
+    token = CancellationToken(26)
+    job = _VideoJob("video-key-2", tmp_path / "movie.mp4", 64, token)
+    job._complete = True
+
+    with qtbot.assertNotEmitted(job.finished, wait=100):
+        job._handle_frame(_FakeFrame(valid_image))
+
+
+def test_video_job_timeout_finishes_once(monkeypatch, qtbot, tmp_path: Path) -> None:
+    _install_video_fakes(monkeypatch)
+    job = _VideoJob("video-key", tmp_path / "movie.mp4", 64, CancellationToken(27))
+    emitted: list[list[object]] = []
+    job.finished.connect(lambda *args: emitted.append(list(args)))
+
+    with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
+        job._handle_timeout()
+
+    assert blocker.args == ["video-key", None, 27]
+    assert emitted == [["video-key", None, 27]]
+
+    job._handle_timeout()
+
+    assert emitted == [["video-key", None, 27]]
