@@ -73,7 +73,12 @@ from .file_browser_navigation import (
     resolve_address_path,
     should_record_history,
 )
-from .file_browser_selection import has_selection_path_in_directory, pending_selection_action
+from .file_browser_selection import (
+    has_selection_path_in_directory,
+    pending_selection_action,
+    rubber_band_intersecting_rows,
+    rubber_band_target_rows,
+)
 from .file_browser_visible import index_identity, tile_probe_points, tile_probe_step
 from .file_operations import (
     create_file,
@@ -289,60 +294,40 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
     def _update_rubber_band_selection(self, modifiers: Qt.KeyboardModifier) -> None:
         """ラバーバンド内のアイテムをリアルタイムで選択するメソッド"""
         selection_rect = self._rubber_band.geometry()
-        current_selection_in_band = QItemSelection()
         root = self.rootIndex()
         model = self.model()
         column_count = model.columnCount()
+        row_rects: list[tuple[int, QRect]] = []
 
         for row in range(model.rowCount(root)):
-            # ★★★ ここからが変更されたロジック ★★★
-
-            # 1. 行の最初のカラムのインデックスを取得
             first_col_index = model.index(row, 0, root)
             if not first_col_index.isValid():
                 continue
-
-            # 2. 行全体の表示矩形を計算する
-            #    最初のカラムの矩形と最後のカラムの矩形を結合する
             last_col_index = model.index(row, column_count - 1, root)
             full_row_rect = self.visualRect(first_col_index).united(self.visualRect(last_col_index))
+            row_rects.append((row, full_row_rect))
 
-            # 高速化のため、行がビューポート外ならチェックをスキップ
-            if not full_row_rect.intersects(self.viewport().rect()):
-                continue
+        current_rows = rubber_band_intersecting_rows(
+            selection_rect, self.viewport().rect(), row_rects
+        )
+        current_indexes = {(row, column) for row in current_rows for column in range(column_count)}
+        previous_indexes = {
+            (index.row(), index.column()) for index in self._last_selection.indexes()
+        }
+        target_rows = rubber_band_target_rows(
+            current_indexes,
+            previous_indexes,
+            control_pressed=bool(modifiers & Qt.KeyboardModifier.ControlModifier),
+        )
 
-            # 3. ラバーバンドが行全体の矩形と交差するかどうかをチェック
-            if selection_rect.intersects(full_row_rect):
-                row_selection = QItemSelection(first_col_index, last_col_index)
-                current_selection_in_band.merge(
-                    row_selection, QItemSelectionModel.SelectionFlag.Select
-                )
-
-        # ★★★ ここから下の選択ロジックは変更なし ★★★
+        target_selection = QItemSelection()
+        for row in target_rows:
+            start_index = model.index(row, 0, root)
+            end_index = model.index(row, column_count - 1, root)
+            if start_index.isValid() and end_index.isValid():
+                target_selection.select(start_index, end_index)
         selection_model = self.selectionModel()
-
-        if modifiers & Qt.KeyboardModifier.ControlModifier:
-            last_indexes = set(self._last_selection.indexes())
-            current_indexes_in_band = set(current_selection_in_band.indexes())
-            final_indexes_to_select = last_indexes.symmetric_difference(current_indexes_in_band)
-
-            final_selection = QItemSelection()
-            processed_rows = set()
-            for index in final_indexes_to_select:
-                row = index.row()
-                if row not in processed_rows:
-                    start_index = model.index(row, 0, root)
-                    end_index = model.index(row, column_count - 1, root)
-                    final_selection.select(start_index, end_index)
-                    processed_rows.add(row)
-
-            selection_model.select(
-                final_selection, QItemSelectionModel.SelectionFlag.ClearAndSelect
-            )
-        else:
-            selection_model.select(
-                current_selection_in_band, QItemSelectionModel.SelectionFlag.ClearAndSelect
-            )
+        selection_model.select(target_selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
 
 class _FileTileView(_BaseFileViewMixin, QListView):
