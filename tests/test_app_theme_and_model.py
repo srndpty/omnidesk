@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QApplication
 from omnidesk import app as app_module
 from omnidesk.theme import DARK_STYLESHEET, apply_dark_theme
 from omnidesk.ui.icons import application_icon
-from omnidesk.ui.media_file_system_model import MediaFileSystemModel
+from omnidesk.ui.media_file_system_model import MediaFileSystemModel, file_thumbnail_cache, folder_preview_cache
 
 
 def test_apply_dark_theme_sets_fusion_style_and_stylesheet(qapp: QApplication) -> None:
@@ -56,3 +56,46 @@ def test_media_file_system_model_small_helpers(tmp_path: Path) -> None:
     assert model._normalise_key(target).endswith("target.txt")
     assert model.supportedDropActions() == Qt.DropAction.CopyAction | Qt.DropAction.MoveAction
     assert model.supportedDragActions() == Qt.DropAction.CopyAction | Qt.DropAction.MoveAction
+
+
+def test_media_file_system_model_token_and_cancel_state(monkeypatch) -> None:
+    model = MediaFileSystemModel()
+    cancelled: list[str] = []
+    monkeypatch.setattr(model._provider, "cancel_thumbnail", lambda key: cancelled.append(key))
+
+    token = model._new_token("key")
+    model._visible_keys.add("key")
+    model._pending.add("key")
+    model._folder_scans["key"] = object()
+    model._cache_jobs["key"] = object()
+
+    assert model._is_current_request("key", token.generation)
+
+    model.clear_visible_thumbnail_targets()
+
+    assert token.cancelled
+    assert cancelled == ["key"]
+    assert model._visible_keys == set()
+    assert "key" not in model._pending
+    assert "key" not in model._folder_scans
+    assert "key" not in model._cache_jobs
+
+
+def test_media_file_system_model_cache_for_info_and_rejections(tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    model._thumbnail_edge = 32
+
+    assert model._cache_for_info(True) is folder_preview_cache
+    assert model._cache_for_info(False) is file_thumbnail_cache
+    assert not model._request_visible_key(str(tmp_path), tmp_path, is_dir=True)
+
+    unsupported = tmp_path / "notes.txt"
+    unsupported.write_text("text", encoding="utf-8")
+    assert not model._request_visible_key(str(unsupported), unsupported, is_dir=False)
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    model._provider._video_support = False
+    model._ensure_thumbnail(video, ".mp4", str(video))
+
+    assert str(video) in model._failed
