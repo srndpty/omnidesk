@@ -17,7 +17,7 @@ OmniDesk is a dark-themed, multi-tab file manager for Windows powered by PyQt6. 
 | Ctrl+W / Middle Click | 現在のタブを閉じる |
 | Ctrl+Tab / Ctrl+Shift+Tab | 次/前のタブへ移動 |
 | Ctrl+Shift+C | カラムビューとタブビューを切り替え |
-| Backspace / Alt+Up | 親ディレクトリへ移動 |
+| Alt+Left / Alt+Right | 戻る / 進む履歴へ移動 |
 | Alt+D | アドレスバーへフォーカスし、パスを全選択 |
 | Ctrl+A | 全選択 |
 | Ctrl+C / Ctrl+X / Ctrl+V | コピー / カット / ペースト |
@@ -28,6 +28,8 @@ OmniDesk is a dark-themed, multi-tab file manager for Windows powered by PyQt6. 
 | F5 | 表示を更新 |
 
 ## その他の操作
+- **戻る / 進む**: パスバー左側の矢印ボタン、Alt+Left / Alt+Right、またはマウスの戻る / 進むボタンでタブ内履歴を移動。
+- **親ディレクトリへ移動**: パスバー左側の上矢印ボタンで現在フォルダの親へ移動。
 - **ドラッグ＆ドロップ**: 選択したアイテムを別フォルダへドラッグすると移動。Ctrl キーを押しながらドロップするとコピー。
 - **右クリックメニュー**: コピー / カット / ペースト / 削除 / リネームに加え、新しいファイル・フォルダ作成が可能。
 - **ビュー切り替えボタン**: アドレスバー右側のボタンでタイル/リストの表示方法を即時に変更。
