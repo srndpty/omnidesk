@@ -52,11 +52,13 @@ class MainWindow(QMainWindow):
 
     def _restore_initial_state(self) -> None:
         opened = False
-        for raw in self._settings.session_tabs():
+        pinned_tabs = self._settings.session_pinned_tabs()
+        for index, raw in enumerate(self._settings.session_tabs()):
             candidate = Path(raw)
             if not candidate.exists():
                 continue
-            self._tab_container.open_in_new_tab(candidate)
+            pinned = index < len(pinned_tabs) and pinned_tabs[index]
+            self._tab_container.open_in_new_tab(candidate, pinned=pinned)
             opened = True
         if opened:
             current = self._tab_container.current_tab()
@@ -219,6 +221,7 @@ class MainWindow(QMainWindow):
     def _persist_settings(self) -> None:
         self._settings.set_session(
             tabs=[str(path) for path in self._tab_container.tab_paths()],
+            pinned_tabs=self._tab_container.tab_pinned_states(),
             view_mode=self._view_mode,
         )
         save_settings(self._settings.as_dict())

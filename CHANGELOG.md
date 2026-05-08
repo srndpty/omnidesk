@@ -8,3 +8,6 @@
 - Introduced typed settings and a file operation service layer while preserving existing behavior.
 - Added per-tab back/forward navigation history for toolbar buttons, shortcuts, and mouse navigation buttons.
 - Replaced tab navigation text buttons with arrow icon buttons and removed the main toolbar Go Up action.
+- Added a tab context menu for pinning and closing tabs, with pinned tabs marked by an orange top accent.
+- Prevented pinned tabs from being closed until they are unpinned.
+- Persisted pinned tab state across app restarts.

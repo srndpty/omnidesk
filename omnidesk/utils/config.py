@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class SessionSettings(TypedDict, total=False):
     tabs: list[str]
+    pinned_tabs: list[bool]
     view_mode: str
 
 
@@ -46,6 +47,13 @@ class AppSettings:
         tabs = session.get("tabs") if isinstance(session, dict) else None
         return [item for item in tabs if isinstance(item, str)] if isinstance(tabs, list) else []
 
+    def session_pinned_tabs(self) -> list[bool]:
+        session = self.data.get("session", {})
+        pinned = session.get("pinned_tabs") if isinstance(session, dict) else None
+        return (
+            [item for item in pinned if isinstance(item, bool)] if isinstance(pinned, list) else []
+        )
+
     def view_mode(self) -> str | None:
         session = self.data.get("session", {})
         value = session.get("view_mode") if isinstance(session, dict) else None
@@ -68,8 +76,18 @@ class AppSettings:
         file_browser["name_column_width"] = width
         return True
 
-    def set_session(self, *, tabs: list[str], view_mode: str) -> None:
-        self.data["session"] = {"tabs": tabs, "view_mode": view_mode}
+    def set_session(
+        self,
+        *,
+        tabs: list[str],
+        pinned_tabs: list[bool] | None = None,
+        view_mode: str,
+    ) -> None:
+        self.data["session"] = {
+            "tabs": tabs,
+            "pinned_tabs": pinned_tabs if pinned_tabs is not None else [False for _ in tabs],
+            "view_mode": view_mode,
+        }
 
 
 def load_settings() -> dict[str, Any]:

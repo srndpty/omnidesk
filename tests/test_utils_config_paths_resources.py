@@ -66,20 +66,29 @@ def test_app_settings_typed_wrapper_reads_and_updates_values() -> None:
     settings = config.AppSettings.from_raw(
         {
             "file_browser": {"name_column_width": 320},
-            "session": {"tabs": ["C:/one", 123, "C:/two"], "view_mode": "columns"},
+            "session": {
+                "tabs": ["C:/one", 123, "C:/two"],
+                "pinned_tabs": [True, "bad", False],
+                "view_mode": "columns",
+            },
         }
     )
 
     assert settings.name_column_width() == 320
     assert settings.session_tabs() == ["C:/one", "C:/two"]
+    assert settings.session_pinned_tabs() == [True, False]
     assert settings.view_mode() == "columns"
     assert settings.set_name_column_width(640)
     assert not settings.set_name_column_width(640)
 
-    settings.set_session(tabs=["C:/three"], view_mode="tabs")
+    settings.set_session(tabs=["C:/three"], pinned_tabs=[True], view_mode="tabs")
 
     assert settings.as_dict()["file_browser"]["name_column_width"] == 640
-    assert settings.as_dict()["session"] == {"tabs": ["C:/three"], "view_mode": "tabs"}
+    assert settings.as_dict()["session"] == {
+        "tabs": ["C:/three"],
+        "pinned_tabs": [True],
+        "view_mode": "tabs",
+    }
 
 
 def test_app_settings_ignores_invalid_raw_values() -> None:
@@ -92,6 +101,7 @@ def test_app_settings_ignores_invalid_raw_values() -> None:
 
     assert settings.name_column_width() is None
     assert settings.session_tabs() == []
+    assert settings.session_pinned_tabs() == []
     assert settings.view_mode() is None
 
 

@@ -9,14 +9,51 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent, QWheelEvent
-from PyQt6.QtWidgets import QSizePolicy, QTabWidget, QToolButton, QVBoxLayout, QWidget
+from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, pyqtSignal
+from PyQt6.QtGui import (
+    QColor,
+    QContextMenuEvent,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QMouseEvent,
+    QPainter,
+    QWheelEvent,
+)
+from PyQt6.QtWidgets import (
+    QMenu,
+    QSizePolicy,
+    QTabBar,
+    QTabWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .file_browser_tab import FileBrowserTab
 from .tab_bar_helpers import local_paths_from_urls, tab_drop_action, wheel_scroll_request
 
 logger = logging.getLogger(__name__)
+
+PINNED_TAB_DATA = "pinned"
+PINNED_TAB_ACCENT = QColor("#f59e0b")
+
+
+class _PinnedTabBar(QTabBar):
+    """Tab bar that marks pinned tabs without consuming tab title width."""
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(PINNED_TAB_ACCENT)
+        for index in range(self.count()):
+            if self.tabData(index) != PINNED_TAB_DATA:
+                continue
+            rect = self.tabRect(index)
+            accent_rect = rect.adjusted(1, 0, -1, 0)
+            accent_rect.setHeight(3)
+            painter.drawRect(accent_rect)
 
 
 class TabContainer(QWidget):
@@ -34,6 +71,7 @@ class TabContainer(QWidget):
     ) -> None:
         super().__init__(parent)
         self._tabs = QTabWidget(self)
+        self._tabs.setTabBar(_PinnedTabBar(self._tabs))
 
         # 4. QTabWidget自体の設定を行う
         self._tabs.setDocumentMode(True)
@@ -153,6 +191,13 @@ class TabContainer(QWidget):
                         self._close_tab(index)
                         return True
 
+            elif event.type() == QEvent.Type.ContextMenu:
+                context_event = cast(QContextMenuEvent, event)
+                index = tab_bar.tabAt(context_event.pos())
+                if index >= 0:
+                    self._show_tab_context_menu(index, context_event.globalPos())
+                    return True
+
         return super().eventFilter(obj, event)
 
     def _scroll_tabstrip(self, *, go_left: bool, count: int = 1) -> None:
@@ -182,7 +227,7 @@ class TabContainer(QWidget):
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
-    def open_in_new_tab(self, path: Path) -> FileBrowserTab:
+    def open_in_new_tab(self, path: Path, *, pinned: bool = False) -> FileBrowserTab:
         tab = FileBrowserTab(self, name_column_width=self._name_column_width)
         tab.navigate_to(path)
         tab.directoryChanged.connect(self._make_directory_changed_handler(tab))
@@ -191,6 +236,7 @@ class TabContainer(QWidget):
             partial(self._handle_name_column_width_changed, source=tab)
         )
         index = self._tabs.addTab(tab, self._label_for(path))
+        self._set_tab_pinned(index, pinned=pinned)
         self._tabs.setCurrentIndex(index)
         self.tabCountChanged.emit(self._tabs.count())
         return tab
@@ -256,6 +302,9 @@ class TabContainer(QWidget):
                 paths.append(widget.current_path())
         return paths
 
+    def tab_pinned_states(self) -> list[bool]:
+        return [self.is_tab_pinned(index) for index in range(self._tabs.count())]
+
     def name_column_width(self) -> int:
         return self._name_column_width
 
@@ -265,11 +314,48 @@ class TabContainer(QWidget):
         self._name_column_width = width
         self._apply_name_column_width(width)
 
+    def is_tab_pinned(self, index: int) -> bool:
+        return (
+            0 <= index < self._tabs.count()
+            and self._tabs.tabBar().tabData(index) == PINNED_TAB_DATA
+        )
+
     # ------------------------------------------------------------------
     # internal helpers
     # ------------------------------------------------------------------
+    def _show_tab_context_menu(self, index: int, global_pos: QPoint) -> None:
+        menu = self._create_tab_context_menu(index)
+        menu.exec(global_pos)
+
+    def _create_tab_context_menu(self, index: int) -> QMenu:
+        menu = QMenu(self)
+        pin_action = menu.addAction("Unpin Tab" if self.is_tab_pinned(index) else "Pin Tab")
+        pin_action.triggered.connect(partial(self._toggle_tab_pinned, index))
+        close_action = menu.addAction("Close Tab")
+        close_action.setEnabled(self._can_close_tab(index))
+        close_action.triggered.connect(partial(self._close_tab, index))
+        return menu
+
+    def _toggle_tab_pinned(self, index: int) -> None:
+        if not 0 <= index < self._tabs.count():
+            return
+        self._set_tab_pinned(index, pinned=not self.is_tab_pinned(index))
+
+    def _set_tab_pinned(self, index: int, *, pinned: bool) -> None:
+        if not 0 <= index < self._tabs.count():
+            return
+        self._tabs.tabBar().setTabData(index, PINNED_TAB_DATA if pinned else None)
+        self._tabs.tabBar().update(self._tabs.tabBar().tabRect(index))
+
+    def _can_close_tab(self, index: int) -> bool:
+        return (
+            0 <= index < self._tabs.count()
+            and self._tabs.count() > 1
+            and not self.is_tab_pinned(index)
+        )
+
     def _close_tab(self, index: int) -> None:
-        if self._tabs.count() <= 1:
+        if not self._can_close_tab(index):
             return
         widget = self._tabs.widget(index)
         if isinstance(widget, FileBrowserTab):
