@@ -69,6 +69,7 @@ from .file_browser_media_mode import (
     media_mode_button_text,
 )
 from .file_browser_navigation import (
+    navigation_history_step,
     navigation_target,
     path_to_focus_after_go_up,
     resolve_address_path,
@@ -162,12 +163,11 @@ class _BaseFileViewMixin:
         button = event.button()
         if button == Qt.MouseButton.BackButton:
             logger.debug("Back mouse button pressed")
-            self._tab.go_up()  # 親であるタブのgo_up()を呼び出す
+            self._tab.go_back()
             event.accept()
         elif button == Qt.MouseButton.ForwardButton:
-            # 将来の「進む」機能のために、ここに処理を追加できる
             logger.debug("Forward mouse button pressed")
-            # self._tab.go_forward() # のようなメソッドを将来的に呼び出す
+            self._tab.go_forward()
             event.accept()
 
     def startDrag(self, supported_actions: Qt.DropAction) -> None:  # noqa: N802
@@ -350,6 +350,7 @@ class FileBrowserTab(QWidget):
         self._media_icon_mode = False
         self._current_path = Path.home()
         self._navigation_history: list[Path] = []
+        self._forward_history: list[Path] = []
         self._is_active = False
 
         self._model = MediaFileSystemModel(self)
@@ -410,9 +411,19 @@ class FileBrowserTab(QWidget):
         self._path_edit.setClearButtonEnabled(True)
         self._path_edit.returnPressed.connect(self._handle_path_entered)
 
+        self._back_button = QToolButton(self)
+        self._back_button.setText("Back")
+        self._back_button.setToolTip("Go back (Alt+Left)")
+        self._back_button.clicked.connect(self.go_back)
+
+        self._forward_button = QToolButton(self)
+        self._forward_button.setText("Forward")
+        self._forward_button.setToolTip("Go forward (Alt+Right)")
+        self._forward_button.clicked.connect(self.go_forward)
+
         self._up_button = QToolButton(self)
         self._up_button.setText("Up")
-        self._up_button.setToolTip("Go to parent directory (Backspace)")
+        self._up_button.setToolTip("Go to parent directory")
         self._up_button.clicked.connect(self.go_up)
 
         self._refresh_button = QToolButton(self)
@@ -423,8 +434,10 @@ class FileBrowserTab(QWidget):
         path_bar_layout = QHBoxLayout()
         path_bar_layout.setContentsMargins(0, 0, 0, 0)
         path_bar_layout.setSpacing(6)
-        path_bar_layout.addWidget(self._path_edit, stretch=1)
+        path_bar_layout.addWidget(self._back_button)
+        path_bar_layout.addWidget(self._forward_button)
         path_bar_layout.addWidget(self._up_button)
+        path_bar_layout.addWidget(self._path_edit, stretch=1)
         path_bar_layout.addWidget(self._toggle_view_button)
         path_bar_layout.addWidget(self._refresh_button)
 
@@ -512,7 +525,8 @@ class FileBrowserTab(QWidget):
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+A"), self, self._select_all)
         QShortcut(QKeySequence("Alt+D"), self, self._focus_path_edit)
-        QShortcut(QKeySequence("Alt+Up"), self, self.go_up)
+        QShortcut(QKeySequence("Alt+Left"), self, self.go_back)
+        QShortcut(QKeySequence("Alt+Right"), self, self.go_forward)
 
     def _update_action_states(self) -> None:
         paths = self._selected_paths()
@@ -529,6 +543,13 @@ class FileBrowserTab(QWidget):
         self._paste_action.setEnabled(states["paste"])
         self._new_file_action.setEnabled(states["new_file"])
         self._new_folder_action.setEnabled(states["new_folder"])
+        self._update_navigation_button_states()
+
+    def _update_navigation_button_states(self) -> None:
+        if not hasattr(self, "_back_button") or not hasattr(self, "_forward_button"):
+            return
+        self._back_button.setEnabled(bool(self._navigation_history))
+        self._forward_button.setEnabled(bool(self._forward_history))
 
     def _paths_from_indexes(self, indexes: list[QModelIndex]) -> list[Path]:
         paths: list[Path] = []
@@ -724,10 +745,11 @@ class FileBrowserTab(QWidget):
             return
 
         current = self._current_path
-        if should_record_history(current, path, from_history=from_history):
-            self._navigation_history.append(current)
-
         target = navigation_target(path)
+        if should_record_history(current, target, from_history=from_history):
+            self._navigation_history.append(current)
+            self._forward_history.clear()
+
         self._current_path = target
         self._path_edit.setText(str(target))
         root_index = self._model.setRootPath(str(target))
@@ -740,6 +762,7 @@ class FileBrowserTab(QWidget):
         self.directoryChanged.emit(target)
         self._select_pending_or_first_row()
         self._restart_thumbnail_requests()  # ナビゲート後にサムネイル要求を再開
+        self._update_navigation_button_states()
         logger.debug("Navigated to %s and restarted thumbnail requests", target)
 
     # ★★★ 3. activate と deactivate メソッドを追加 ★★★
@@ -852,6 +875,34 @@ class FileBrowserTab(QWidget):
     def refresh(self) -> None:
         """Refresh the current directory view."""
         self.navigate_to(self._current_path)
+
+    def go_back(self) -> None:
+        """Navigate to the previous directory in this tab's history."""
+        step = navigation_history_step(
+            self._navigation_history,
+            self._forward_history,
+            self._current_path,
+            direction="back",
+        )
+        if step is None:
+            return
+        self._navigation_history = step.back_history
+        self._forward_history = step.forward_history
+        self.navigate_to(step.target, from_history=True)
+
+    def go_forward(self) -> None:
+        """Navigate to the next directory in this tab's history."""
+        step = navigation_history_step(
+            self._navigation_history,
+            self._forward_history,
+            self._current_path,
+            direction="forward",
+        )
+        if step is None:
+            return
+        self._navigation_history = step.back_history
+        self._forward_history = step.forward_history
+        self.navigate_to(step.target, from_history=True)
 
     def go_up(self) -> None:
         """Navigate to the parent directory."""
@@ -999,21 +1050,6 @@ class FileBrowserTab(QWidget):
             logger.debug("Resize event restarted thumbnail requests")
             return
         super().resizeEvent(event)
-
-    # def mouseReleaseEvent(self, event) -> None: # noqa: N802
-    #     """マウスボタンが離されたときに呼び出される"""
-    #     # 親クラスのイベント処理をまず呼び出す
-
-    #     print(f"mouseReleaseEvent: button={event.button()}", flush=True)
-
-    #     # どのボタンが離されたかチェック
-    #     if event.button() == Qt.MouseButton.BackButton:
-    #         print("[FileBrowserTab] Back button pressed, going up.", flush=True)
-    #         self.go_up()
-    #         event.accept() # イベントが処理されたことをQtに伝える
-    #         return
-
-    #     super().mouseReleaseEvent(event)
 
     # ------------------------------------------------------------------
     # helpers

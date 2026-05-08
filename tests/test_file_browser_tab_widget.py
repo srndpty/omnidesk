@@ -66,6 +66,79 @@ def test_file_browser_tab_go_up_selects_previous_folder(monkeypatch, qtbot, tmp_
     assert selected == [child]
 
 
+def test_file_browser_tab_go_back_and_forward_navigate_history(qtbot, tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    third = tmp_path / "third"
+    first.mkdir()
+    second.mkdir()
+    third.mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    tab.navigate_to(first)
+    tab.navigate_to(second)
+    tab.navigate_to(third)
+
+    assert tab._navigation_history[-2:] == [first, second]
+    assert not tab._forward_history
+    assert tab._back_button.isEnabled()
+    assert not tab._forward_button.isEnabled()
+
+    tab.go_back()
+
+    assert tab.current_path() == second
+    assert tab._navigation_history[-1] == first
+    assert tab._forward_history == [third]
+    assert tab._back_button.isEnabled()
+    assert tab._forward_button.isEnabled()
+
+    tab.go_forward()
+
+    assert tab.current_path() == third
+    assert tab._navigation_history[-2:] == [first, second]
+    assert not tab._forward_history
+
+
+def test_file_browser_tab_go_up_does_not_record_navigation_history(qtbot, tmp_path: Path) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    sibling = tmp_path / "sibling"
+    child.mkdir(parents=True)
+    sibling.mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(sibling)
+    tab.navigate_to(child)
+    history_before = list(tab._navigation_history)
+
+    tab.go_up()
+
+    assert tab.current_path() == parent
+    assert tab._navigation_history == history_before
+
+
+def test_file_browser_tab_new_navigation_clears_forward_history(qtbot, tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    third = tmp_path / "third"
+    fourth = tmp_path / "fourth"
+    for path in (first, second, third, fourth):
+        path.mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(first)
+    tab.navigate_to(second)
+    tab.navigate_to(third)
+    tab.go_back()
+
+    tab.navigate_to(fourth)
+
+    assert tab.current_path() == fourth
+    assert not tab._forward_history
+    assert not tab._forward_button.isEnabled()
+
+
 def test_file_browser_tab_name_column_width_and_view_toggle(qtbot) -> None:
     tab = FileBrowserTab(name_column_width=222)
     qtbot.addWidget(tab)

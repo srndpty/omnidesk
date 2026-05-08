@@ -96,7 +96,6 @@ class MainWindow(QMainWindow):
         self._refresh_action.triggered.connect(self._handle_refresh)
 
         self._go_up_action = QAction("Go Up", self)
-        self._go_up_action.setShortcut(QKeySequence(Qt.Key.Key_Backspace))
         self._go_up_action.triggered.connect(self._handle_go_up)
 
         self._toggle_view_action = QAction("Switch to Column View", self)

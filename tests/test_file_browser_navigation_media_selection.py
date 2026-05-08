@@ -10,6 +10,7 @@ from omnidesk.ui.file_browser_media_mode import (
     media_mode_button_text,
 )
 from omnidesk.ui.file_browser_navigation import (
+    navigation_history_step,
     navigation_target,
     path_to_focus_after_go_up,
     resolve_address_path,
@@ -40,6 +41,40 @@ def test_should_record_history_respects_history_flag_and_same_path(tmp_path: Pat
     assert not should_record_history(current, other, from_history=True)
     assert not should_record_history(current, current, from_history=False)
     assert should_record_history(current, other, from_history=False)
+
+
+def test_navigation_history_step_moves_between_back_and_forward_stacks(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    third = tmp_path / "third"
+
+    back_step = navigation_history_step([first, second], [], third, direction="back")
+
+    assert back_step is not None
+    assert back_step.target == second
+    assert back_step.back_history == [first]
+    assert back_step.forward_history == [third]
+
+    forward_step = navigation_history_step(
+        back_step.back_history,
+        back_step.forward_history,
+        back_step.target,
+        direction="forward",
+    )
+
+    assert forward_step is not None
+    assert forward_step.target == third
+    assert forward_step.back_history == [first, second]
+    assert forward_step.forward_history == []
+
+
+def test_navigation_history_step_returns_none_without_target(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+
+    assert navigation_history_step([], [], current, direction="back") is None
+    assert navigation_history_step([], [], current, direction="forward") is None
 
 
 def test_path_to_focus_after_go_up_returns_parent_and_current(tmp_path: Path) -> None:

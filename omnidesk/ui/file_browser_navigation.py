@@ -3,7 +3,19 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+
+@dataclass(frozen=True)
+class NavigationHistoryStep:
+    """Result of moving through a file browser tab history stack."""
+
+    target: Path
+    back_history: list[Path]
+    forward_history: list[Path]
 
 
 def navigation_target(path: Path) -> Path:
@@ -19,6 +31,32 @@ def should_record_history(current: Path, destination: Path, *, from_history: boo
         return current.resolve() != destination.resolve()
     except OSError:
         return current != destination
+
+
+def navigation_history_step(
+    back_history: Sequence[Path],
+    forward_history: Sequence[Path],
+    current: Path,
+    *,
+    direction: Literal["back", "forward"],
+) -> NavigationHistoryStep | None:
+    """Return the next history state for a back/forward navigation request."""
+    if direction == "back":
+        if not back_history:
+            return None
+        return NavigationHistoryStep(
+            target=back_history[-1],
+            back_history=list(back_history[:-1]),
+            forward_history=[current, *forward_history],
+        )
+
+    if not forward_history:
+        return None
+    return NavigationHistoryStep(
+        target=forward_history[0],
+        back_history=[*back_history, current],
+        forward_history=list(forward_history[1:]),
+    )
 
 
 def path_to_focus_after_go_up(current_path: Path) -> tuple[Path, Path] | None:
