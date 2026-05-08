@@ -390,6 +390,7 @@ class FileBrowserTab(QWidget):
         self._current_path = Path.home()
         self._navigation_history: list[Path] = []
         self._forward_history: list[Path] = []
+        self._has_loaded_root = False
         self._is_active = False
 
         self._model = MediaFileSystemModel(self)
@@ -789,19 +790,22 @@ class FileBrowserTab(QWidget):
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
-    def navigate_to(self, path: Path, *, from_history: bool = False) -> None:
+    def navigate_to(self, path: Path, *, from_history: bool = False) -> bool:
         """Display the given directory as the current root."""
         if not path.exists():
             QMessageBox.warning(self, "Cannot navigate", f"{path} does not exist.")
-            return
+            return False
 
         current = self._current_path
         target = navigation_target(path)
-        if should_record_history(current, target, from_history=from_history):
+        if self._has_loaded_root and should_record_history(
+            current, target, from_history=from_history
+        ):
             self._navigation_history.append(current)
             self._forward_history.clear()
 
         self._current_path = target
+        self._has_loaded_root = True
         self._path_edit.setText(str(target))
         root_index = self._model.setRootPath(str(target))
         self._tree_view.setRootIndex(root_index)
@@ -815,6 +819,7 @@ class FileBrowserTab(QWidget):
         self._restart_thumbnail_requests()  # ナビゲート後にサムネイル要求を再開
         self._update_navigation_button_states()
         logger.debug("Navigated to %s and restarted thumbnail requests", target)
+        return True
 
     # ★★★ 3. activate と deactivate メソッドを追加 ★★★
     def activate(self) -> None:
@@ -937,9 +942,10 @@ class FileBrowserTab(QWidget):
         )
         if step is None:
             return
-        self._navigation_history = step.back_history
-        self._forward_history = step.forward_history
-        self.navigate_to(step.target, from_history=True)
+        if self.navigate_to(step.target, from_history=True):
+            self._navigation_history = step.back_history
+            self._forward_history = step.forward_history
+            self._update_navigation_button_states()
 
     def go_forward(self) -> None:
         """Navigate to the next directory in this tab's history."""
@@ -951,9 +957,10 @@ class FileBrowserTab(QWidget):
         )
         if step is None:
             return
-        self._navigation_history = step.back_history
-        self._forward_history = step.forward_history
-        self.navigate_to(step.target, from_history=True)
+        if self.navigate_to(step.target, from_history=True):
+            self._navigation_history = step.back_history
+            self._forward_history = step.forward_history
+            self._update_navigation_button_states()
 
     def go_up(self) -> None:
         """Navigate to the parent directory."""

@@ -21,6 +21,8 @@ def test_file_browser_tab_initializes_and_navigates(qtbot, tmp_path: Path) -> No
     assert tab._path_edit.text() == str(tmp_path)
     assert blocker.args == [tmp_path]
     assert tab.name_column_width() == FileBrowserTab.DEFAULT_NAME_COLUMN_WIDTH
+    assert tab._navigation_history == []
+    assert not tab._back_button.isEnabled()
 
 
 def test_file_browser_tab_navigate_to_file_uses_parent(qtbot, tmp_path: Path) -> None:
@@ -47,6 +49,7 @@ def test_file_browser_tab_warns_for_missing_navigation(monkeypatch, qtbot, tmp_p
     tab.navigate_to(missing)
 
     assert warnings == [("Cannot navigate", f"{missing} does not exist.")]
+    assert not tab._has_loaded_root
 
 
 def test_file_browser_tab_go_up_selects_previous_folder(monkeypatch, qtbot, tmp_path: Path) -> None:
@@ -113,6 +116,36 @@ def test_file_browser_tab_go_back_and_forward_navigate_history(qtbot, tmp_path: 
     assert tab.current_path() == third
     assert tab._navigation_history[-2:] == [first, second]
     assert not tab._forward_history
+
+
+def test_file_browser_tab_failed_history_navigation_keeps_stacks(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(first)
+    tab.navigate_to(second)
+    first.rmdir()
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab.go_back()
+
+    assert warnings == [("Cannot navigate", f"{first} does not exist.")]
+    assert tab.current_path() == second
+    assert tab._navigation_history == [first]
+    assert tab._forward_history == []
+    assert tab._back_button.isEnabled()
+    assert not tab._forward_button.isEnabled()
 
 
 def test_file_browser_tab_go_up_does_not_record_navigation_history(qtbot, tmp_path: Path) -> None:
