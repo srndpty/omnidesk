@@ -104,6 +104,45 @@ def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
     tab._select_path(path)
 
 
+def _configure_arrow_button(
+    button: QToolButton,
+    *,
+    text: str,
+    accessible_name: str,
+    tooltip: str,
+) -> None:
+    button.setText(text)
+    button.setAccessibleName(accessible_name)
+    button.setToolTip(tooltip)
+    button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    button.setFixedSize(QSize(28, 28))
+    button.setStyleSheet(
+        """
+        QToolButton {
+            font-size: 16px;
+            font-weight: 600;
+            padding: 0;
+            border: 1px solid #3a3f46;
+            border-radius: 4px;
+            color: #e6e8eb;
+            background: #24282e;
+        }
+        QToolButton:hover {
+            background: #303640;
+            border-color: #59616d;
+        }
+        QToolButton:pressed {
+            background: #1c2026;
+        }
+        QToolButton:disabled {
+            color: #6f7680;
+            background: #1b1e23;
+            border-color: #2b3037;
+        }
+        """
+    )
+
+
 class _BaseFileViewMixin:
     """Adds reusable drag-and-drop and context menu behaviours."""
 
@@ -412,18 +451,30 @@ class FileBrowserTab(QWidget):
         self._path_edit.returnPressed.connect(self._handle_path_entered)
 
         self._back_button = QToolButton(self)
-        self._back_button.setText("Back")
-        self._back_button.setToolTip("Go back (Alt+Left)")
+        _configure_arrow_button(
+            self._back_button,
+            text="←",
+            accessible_name="Back",
+            tooltip="Go back (Alt+Left)",
+        )
         self._back_button.clicked.connect(self.go_back)
 
         self._forward_button = QToolButton(self)
-        self._forward_button.setText("Forward")
-        self._forward_button.setToolTip("Go forward (Alt+Right)")
+        _configure_arrow_button(
+            self._forward_button,
+            text="→",
+            accessible_name="Forward",
+            tooltip="Go forward (Alt+Right)",
+        )
         self._forward_button.clicked.connect(self.go_forward)
 
         self._up_button = QToolButton(self)
-        self._up_button.setText("Up")
-        self._up_button.setToolTip("Go to parent directory")
+        _configure_arrow_button(
+            self._up_button,
+            text="↑",
+            accessible_name="Up",
+            tooltip="Go to parent directory",
+        )
         self._up_button.clicked.connect(self.go_up)
 
         self._refresh_button = QToolButton(self)

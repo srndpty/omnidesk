@@ -66,6 +66,21 @@ def test_file_browser_tab_go_up_selects_previous_folder(monkeypatch, qtbot, tmp_
     assert selected == [child]
 
 
+def test_file_browser_tab_navigation_buttons_use_modern_arrow_text(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    for button, name, text in (
+        (tab._back_button, "Back", "←"),
+        (tab._forward_button, "Forward", "→"),
+        (tab._up_button, "Up", "↑"),
+    ):
+        assert button.text() == text
+        assert button.accessibleName() == name
+        assert button.icon().isNull()
+        assert button.toolTip()
+
+
 def test_file_browser_tab_go_back_and_forward_navigate_history(qtbot, tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
