@@ -11,3 +11,4 @@
 - Added a tab context menu for pinning and closing tabs, with pinned tabs marked by an orange top accent.
 - Prevented pinned tabs from being closed until they are unpinned.
 - Persisted pinned tab state across app restarts.
+- Added Ctrl+Shift+T to reopen the most recently closed tab.

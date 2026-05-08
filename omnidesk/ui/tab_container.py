@@ -72,6 +72,7 @@ class TabContainer(QWidget):
         super().__init__(parent)
         self._tabs = QTabWidget(self)
         self._tabs.setTabBar(_PinnedTabBar(self._tabs))
+        self._closed_tabs: list[tuple[Path, bool]] = []
 
         # 4. QTabWidget自体の設定を行う
         self._tabs.setDocumentMode(True)
@@ -251,6 +252,16 @@ class TabContainer(QWidget):
         if index >= 0:
             self._close_tab(index)
 
+    def reopen_closed_tab(self) -> bool:
+        if not self._closed_tabs:
+            return False
+        path, pinned = self._closed_tabs.pop()
+        self.open_in_new_tab(path, pinned=pinned)
+        return True
+
+    def has_closed_tabs(self) -> bool:
+        return bool(self._closed_tabs)
+
     def tab_count(self) -> int:
         return self._tabs.count()
 
@@ -359,6 +370,7 @@ class TabContainer(QWidget):
             return
         widget = self._tabs.widget(index)
         if isinstance(widget, FileBrowserTab):
+            self._closed_tabs.append((widget.current_path(), self.is_tab_pinned(index)))
             with suppress(RuntimeError):
                 widget.deleteLater()
         self._tabs.removeTab(index)

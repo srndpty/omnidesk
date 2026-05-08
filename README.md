@@ -15,6 +15,7 @@ OmniDesk is a dark-themed, multi-tab file manager for Windows powered by PyQt6. 
 | --- | --- |
 | Ctrl+T | 新しいタブを開く |
 | Ctrl+W / Middle Click | 現在のタブを閉じる |
+| Ctrl+Shift+T | 直近で閉じたタブを復元 |
 | Ctrl+Tab / Ctrl+Shift+Tab | 次/前のタブへ移動 |
 | Ctrl+Shift+C | カラムビューとタブビューを切り替え |
 | Alt+Left / Alt+Right | 戻る / 進む履歴へ移動 |

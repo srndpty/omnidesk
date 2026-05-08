@@ -256,6 +256,42 @@ def test_pinned_tabs_cannot_be_closed_until_unpinned(
     assert container._tabs.tabText(0) == "two"
 
 
+def test_reopen_closed_tab_restores_most_recent_tab(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one")
+    container.open_in_new_tab(tmp_path / "two")
+    container.open_in_new_tab(tmp_path / "three")
+
+    container.close_current_tab()
+    container.close_current_tab()
+
+    assert container.tab_paths() == [tmp_path / "one"]
+    assert container.has_closed_tabs()
+
+    assert container.reopen_closed_tab()
+
+    assert container.tab_paths() == [tmp_path / "one", tmp_path / "two"]
+    current = container.current_tab()
+    assert current is not None
+    assert current.current_path() == tmp_path / "two"
+
+    assert container.reopen_closed_tab()
+
+    assert container.tab_paths() == [
+        tmp_path / "one",
+        tmp_path / "two",
+        tmp_path / "three",
+    ]
+    assert not container.has_closed_tabs()
+    assert not container.reopen_closed_tab()
+
+
 def test_directory_and_width_handlers_update_state(monkeypatch, qtbot, tmp_path: Path) -> None:
     monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
     container = TabContainer()
