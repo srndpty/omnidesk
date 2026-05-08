@@ -42,11 +42,13 @@ class FakeTabContainer(QWidget):
         super().__init__(parent)
         self.name_column_width = name_column_width
         self.tabs: list[FakeTab] = []
+        self.pinned_tabs: list[bool] = []
         self.calls: list[str] = []
 
-    def open_in_new_tab(self, path: Path) -> FakeTab:
+    def open_in_new_tab(self, path: Path, *, pinned: bool = False) -> FakeTab:
         tab = FakeTab(path)
         self.tabs.append(tab)
+        self.pinned_tabs.append(pinned)
         self.tabCountChanged.emit(len(self.tabs))
         return tab
 
@@ -57,6 +59,7 @@ class FakeTabContainer(QWidget):
         self.calls.append("close")
         if len(self.tabs) > 1:
             self.tabs.pop()
+            self.pinned_tabs.pop()
             self.tabCountChanged.emit(len(self.tabs))
 
     def tab_count(self) -> int:
@@ -64,6 +67,9 @@ class FakeTabContainer(QWidget):
 
     def tab_paths(self) -> list[Path]:
         return [tab.current_path() for tab in self.tabs]
+
+    def tab_pinned_states(self) -> list[bool]:
+        return list(self.pinned_tabs)
 
     def navigate_current_to(self, path: Path) -> None:
         self.calls.append(f"navigate:{path}")
@@ -142,7 +148,11 @@ def test_main_window_restores_column_session(monkeypatch, qtbot, tmp_path: Path)
     second.mkdir()
     settings = {
         "file_browser": {"name_column_width": 222},
-        "session": {"tabs": [str(first), str(second)], "view_mode": "columns"},
+        "session": {
+            "tabs": [str(first), str(second)],
+            "pinned_tabs": [True, False],
+            "view_mode": "columns",
+        },
     }
     saved: list[dict] = []
     _patch_main_window(monkeypatch, settings, tmp_path, saved)
@@ -153,6 +163,7 @@ def test_main_window_restores_column_session(monkeypatch, qtbot, tmp_path: Path)
     assert not window._is_tab_mode()
     assert window._tab_container.name_column_width == 222
     assert window._tab_container.tab_paths() == [first, second]
+    assert window._tab_container.tab_pinned_states() == [True, False]
     assert window._column_browser.current_path() == second
     assert window._toggle_view_action.text() == "Switch to Tab View"
 
@@ -203,5 +214,6 @@ def test_main_window_persists_width_and_session(monkeypatch, qtbot, tmp_path: Pa
 
     assert settings["file_browser"]["name_column_width"] == 640
     assert settings["session"]["tabs"] == [str(tmp_path)]
+    assert settings["session"]["pinned_tabs"] == [False]
     assert settings["session"]["view_mode"] == "tabs"
     assert saved

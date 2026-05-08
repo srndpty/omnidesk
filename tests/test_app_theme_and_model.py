@@ -26,6 +26,11 @@ def test_apply_dark_theme_sets_fusion_style_and_stylesheet(qapp: QApplication) -
     assert qapp.styleSheet() == DARK_STYLESHEET
 
 
+def test_dark_theme_styles_disabled_menu_items() -> None:
+    assert "QMenu::item:disabled" in DARK_STYLESHEET
+    assert "color: #6f7680;" in DARK_STYLESHEET
+
+
 def test_create_app_reuses_existing_application(monkeypatch, qapp: QApplication) -> None:
     monkeypatch.setattr(app_module, "application_icon", lambda: QIcon())
 

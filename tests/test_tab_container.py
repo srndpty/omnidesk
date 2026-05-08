@@ -158,6 +158,104 @@ def test_open_tabs_and_navigation_methods_use_current_tab(
     assert second.current_path() == tmp_path / "three"
 
 
+def test_tab_pinning_uses_tab_data_without_changing_label(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one")
+    container.open_in_new_tab(tmp_path / "two", pinned=True)
+
+    assert container._tabs.tabText(0) == "one"
+    assert container._tabs.tabText(1) == "two"
+    assert not container.is_tab_pinned(0)
+    assert container.is_tab_pinned(1)
+    assert container.tab_pinned_states() == [False, True]
+
+    container._toggle_tab_pinned(0)
+
+    assert container.is_tab_pinned(0)
+    assert container._tabs.tabText(0) == "one"
+    assert container.tab_pinned_states() == [True, True]
+
+    container._toggle_tab_pinned(0)
+
+    assert not container.is_tab_pinned(0)
+    assert container._tabs.tabText(0) == "one"
+
+
+def test_tab_context_menu_exposes_pin_and_close_actions(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one")
+    container.open_in_new_tab(tmp_path / "two")
+
+    menu = container._create_tab_context_menu(0)
+    actions = menu.actions()
+
+    assert [action.text() for action in actions] == ["Pin Tab", "Close Tab"]
+    assert actions[1].isEnabled()
+
+    actions[0].trigger()
+    pinned_menu = container._create_tab_context_menu(0)
+
+    assert container.is_tab_pinned(0)
+    assert pinned_menu.actions()[0].text() == "Unpin Tab"
+    assert not pinned_menu.actions()[1].isEnabled()
+
+
+def test_tab_context_menu_disables_close_for_last_tab(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one")
+
+    menu = container._create_tab_context_menu(0)
+
+    assert menu.actions()[1].text() == "Close Tab"
+    assert not menu.actions()[1].isEnabled()
+
+
+def test_pinned_tabs_cannot_be_closed_until_unpinned(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one")
+    container.open_in_new_tab(tmp_path / "two")
+    container._tabs.setCurrentIndex(0)
+    container._toggle_tab_pinned(0)
+
+    container.close_current_tab()
+    assert container.tab_count() == 2
+    assert container._tabs.tabText(0) == "one"
+
+    container._close_tab(0)
+    assert container.tab_count() == 2
+    assert container._tabs.tabText(0) == "one"
+
+    container._toggle_tab_pinned(0)
+    container.close_current_tab()
+
+    assert container.tab_count() == 1
+    assert container._tabs.tabText(0) == "two"
+
+
 def test_directory_and_width_handlers_update_state(monkeypatch, qtbot, tmp_path: Path) -> None:
     monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
     container = TabContainer()

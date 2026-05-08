@@ -30,6 +30,7 @@ OmniDesk is a dark-themed, multi-tab file manager for Windows powered by PyQt6. 
 ## その他の操作
 - **戻る / 進む**: パスバー左側の矢印ボタン、Alt+Left / Alt+Right、またはマウスの戻る / 進むボタンでタブ内履歴を移動。
 - **親ディレクトリへ移動**: パスバー左側の上矢印ボタンで現在フォルダの親へ移動。
+- **タブ右クリックメニュー**: タブをピン留めすると上端がオレンジ色になり、ピン留め中は閉じられない状態になります。ピン留め状態は次回起動時にも復元されます。
 - **ドラッグ＆ドロップ**: 選択したアイテムを別フォルダへドラッグすると移動。Ctrl キーを押しながらドロップするとコピー。
 - **右クリックメニュー**: コピー / カット / ペースト / 削除 / リネームに加え、新しいファイル・フォルダ作成が可能。
 - **ビュー切り替えボタン**: アドレスバー右側のボタンでタイル/リストの表示方法を即時に変更。
@@ -130,4 +131,3 @@ pre-commit run --all-files
 2. `python -m pytest --cov=omnidesk --cov-report=term-missing`
 3. `build_windows.bat`
 4. `CHANGELOG.md` を更新し、生成された `dist/OmniDesk.exe` を確認します。
-

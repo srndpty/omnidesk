@@ -21,6 +21,16 @@ QMenu::item:selected {
     background-color: #3d7bfd;
 }
 
+QMenu::item:disabled {
+    color: #6f7680;
+    background-color: transparent;
+}
+
+QMenu::item:disabled:selected {
+    color: #6f7680;
+    background-color: transparent;
+}
+
 QTreeView, QColumnView {
     background-color: #25262a;
     alternate-background-color: #2b2d30;

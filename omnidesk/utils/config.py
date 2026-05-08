@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class SessionSettings(TypedDict, total=False):
     tabs: list[str]
+    pinned_tabs: list[bool]
     view_mode: str
 
 
@@ -26,6 +27,11 @@ class FileBrowserSettings(TypedDict, total=False):
 class SettingsData(TypedDict, total=False):
     session: SessionSettings
     file_browser: FileBrowserSettings
+
+
+class SessionTabState(TypedDict):
+    path: str
+    pinned: bool
 
 
 @dataclass
@@ -42,9 +48,28 @@ class AppSettings:
         return self.data
 
     def session_tabs(self) -> list[str]:
+        return [item["path"] for item in self.session_tab_states()]
+
+    def session_pinned_tabs(self) -> list[bool]:
+        return [item["pinned"] for item in self.session_tab_states()]
+
+    def session_tab_states(self) -> list[SessionTabState]:
         session = self.data.get("session", {})
         tabs = session.get("tabs") if isinstance(session, dict) else None
-        return [item for item in tabs if isinstance(item, str)] if isinstance(tabs, list) else []
+        pinned = session.get("pinned_tabs") if isinstance(session, dict) else None
+        if not isinstance(tabs, list):
+            return []
+        states: list[SessionTabState] = []
+        for index, path in enumerate(tabs):
+            if not isinstance(path, str):
+                continue
+            pinned_value = (
+                pinned[index] if isinstance(pinned, list) and index < len(pinned) else False
+            )
+            states.append(
+                {"path": path, "pinned": pinned_value if isinstance(pinned_value, bool) else False}
+            )
+        return states
 
     def view_mode(self) -> str | None:
         session = self.data.get("session", {})
@@ -68,8 +93,18 @@ class AppSettings:
         file_browser["name_column_width"] = width
         return True
 
-    def set_session(self, *, tabs: list[str], view_mode: str) -> None:
-        self.data["session"] = {"tabs": tabs, "view_mode": view_mode}
+    def set_session(
+        self,
+        *,
+        tabs: list[str],
+        pinned_tabs: list[bool] | None = None,
+        view_mode: str,
+    ) -> None:
+        self.data["session"] = {
+            "tabs": tabs,
+            "pinned_tabs": pinned_tabs if pinned_tabs is not None else [False for _ in tabs],
+            "view_mode": view_mode,
+        }
 
 
 def load_settings() -> dict[str, Any]:
