@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget
@@ -66,8 +67,9 @@ class FakeTabContainer(QWidget):
 
     def navigate_current_to(self, path: Path) -> None:
         self.calls.append(f"navigate:{path}")
-        if self.current_tab():
-            self.current_tab().navigate_to(path)
+        tab = self.current_tab()
+        if tab is not None:
+            tab.navigate_to(path)
 
     def refresh(self) -> None:
         self.calls.append("refresh")
@@ -169,17 +171,19 @@ def test_main_window_handlers_delegate_by_mode(monkeypatch, qtbot, tmp_path: Pat
     window._handle_next_tab()
     window._handle_previous_tab()
 
-    assert "refresh" in window._tab_container.calls
-    assert "go_up" in window._tab_container.calls
-    assert "next" in window._tab_container.calls
-    assert "previous" in window._tab_container.calls
+    tab_container = cast(FakeTabContainer, window._tab_container)
+    assert "refresh" in tab_container.calls
+    assert "go_up" in tab_container.calls
+    assert "next" in tab_container.calls
+    assert "previous" in tab_container.calls
 
     window._switch_to_columns()
     window._handle_refresh()
     window._handle_go_up()
 
-    assert "refresh" in window._column_browser.calls
-    assert "go_up" in window._column_browser.calls
+    column_browser = cast(FakeColumnBrowser, window._column_browser)
+    assert "refresh" in column_browser.calls
+    assert "go_up" in column_browser.calls
     assert not window._new_tab_action.isEnabled()
 
     window._switch_to_tabs()

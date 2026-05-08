@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from PyQt6.QtCore import QEvent, QPoint, Qt, QUrl, pyqtSignal
 from PyQt6.QtWidgets import QWidget
@@ -133,8 +134,8 @@ def test_open_tabs_and_navigation_methods_use_current_tab(
     container = TabContainer(name_column_width=333)
     qtbot.addWidget(container)
 
-    first = container.open_in_new_tab(tmp_path / "one")
-    second = container.open_in_new_tab(tmp_path / "two")
+    first = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "one"))
+    second = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "two"))
 
     assert container.tab_count() == 2
     assert container.current_tab() is second
@@ -201,7 +202,7 @@ def test_event_filter_drag_move_and_drop(monkeypatch, qtbot, tmp_path: Path) -> 
     monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
     container = TabContainer()
     qtbot.addWidget(container)
-    tab = container.open_in_new_tab(tmp_path)
+    tab = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path))
     tab_bar = container._tabs.tabBar()
     monkeypatch.setattr(tab_bar, "tabAt", lambda _point: 0)
     local_file = tmp_path / "drag.txt"
@@ -213,12 +214,12 @@ def test_event_filter_drag_move_and_drop(monkeypatch, qtbot, tmp_path: Path) -> 
         urls=urls,
         modifiers=Qt.KeyboardModifier.ControlModifier,
     )
-    assert container.eventFilter(tab_bar, drag_move)
+    assert container.eventFilter(tab_bar, cast(QEvent, drag_move))
     assert drag_move.drop_action == Qt.DropAction.CopyAction
     assert drag_move.accepted
 
     drop = StubEvent(QEvent.Type.Drop, urls=urls)
-    assert container.eventFilter(tab_bar, drop)
+    assert container.eventFilter(tab_bar, cast(QEvent, drop))
     assert drop.drop_action == Qt.DropAction.MoveAction
     assert any(call.startswith("drop:") for call in tab.calls)
 
@@ -233,9 +234,9 @@ def test_event_filter_drag_enter_and_middle_click(monkeypatch, qtbot, tmp_path: 
     monkeypatch.setattr(tab_bar, "tabAt", lambda _point: 1)
 
     drag_enter = StubEvent(QEvent.Type.DragEnter, urls=[QUrl.fromLocalFile(str(tmp_path))])
-    assert container.eventFilter(tab_bar, drag_enter)
+    assert container.eventFilter(tab_bar, cast(QEvent, drag_enter))
     assert drag_enter.accepted
 
     middle = StubEvent(QEvent.Type.MouseButtonRelease, button=Qt.MouseButton.MiddleButton)
-    assert container.eventFilter(tab_bar, middle)
+    assert container.eventFilter(tab_bar, cast(QEvent, middle))
     assert container.tab_count() == 1
