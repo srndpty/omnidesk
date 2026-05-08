@@ -43,6 +43,7 @@ class FakeTabContainer(QWidget):
         self.name_column_width = name_column_width
         self.tabs: list[FakeTab] = []
         self.pinned_tabs: list[bool] = []
+        self.closed_tabs: list[tuple[Path, bool]] = []
         self.calls: list[str] = []
 
     def open_in_new_tab(self, path: Path, *, pinned: bool = False) -> FakeTab:
@@ -58,9 +59,21 @@ class FakeTabContainer(QWidget):
     def close_current_tab(self) -> None:
         self.calls.append("close")
         if len(self.tabs) > 1:
-            self.tabs.pop()
-            self.pinned_tabs.pop()
+            tab = self.tabs.pop()
+            pinned = self.pinned_tabs.pop()
+            self.closed_tabs.append((tab.current_path(), pinned))
             self.tabCountChanged.emit(len(self.tabs))
+
+    def reopen_closed_tab(self) -> bool:
+        self.calls.append("reopen")
+        if not self.closed_tabs:
+            return False
+        path, pinned = self.closed_tabs.pop()
+        self.open_in_new_tab(path, pinned=pinned)
+        return True
+
+    def has_closed_tabs(self) -> bool:
+        return bool(self.closed_tabs)
 
     def tab_count(self) -> int:
         return len(self.tabs)
@@ -181,12 +194,16 @@ def test_main_window_handlers_delegate_by_mode(monkeypatch, qtbot, tmp_path: Pat
     window._handle_go_up()
     window._handle_next_tab()
     window._handle_previous_tab()
+    window._handle_close_tab()
+    window._handle_reopen_closed_tab()
 
     tab_container = cast(FakeTabContainer, window._tab_container)
     assert "refresh" in tab_container.calls
     assert "go_up" in tab_container.calls
     assert "next" in tab_container.calls
     assert "previous" in tab_container.calls
+    assert "close" in tab_container.calls
+    assert "reopen" in tab_container.calls
 
     window._switch_to_columns()
     window._handle_refresh()

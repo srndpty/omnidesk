@@ -87,6 +87,10 @@ class MainWindow(QMainWindow):
         self._close_tab_action.setShortcut(QKeySequence("Ctrl+W"))
         self._close_tab_action.triggered.connect(self._handle_close_tab)
 
+        self._reopen_closed_tab_action = QAction("Reopen Closed Tab", self)
+        self._reopen_closed_tab_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
+        self._reopen_closed_tab_action.triggered.connect(self._handle_reopen_closed_tab)
+
         self._open_folder_action = QAction("Open Folder...", self)
         self._open_folder_action.setShortcut(QKeySequence("Ctrl+O"))
         self._open_folder_action.triggered.connect(self._handle_open_folder)
@@ -110,6 +114,7 @@ class MainWindow(QMainWindow):
         for action in (
             self._new_tab_action,
             self._close_tab_action,
+            self._reopen_closed_tab_action,
             self._open_folder_action,
             self._refresh_action,
             self._toggle_view_action,
@@ -137,6 +142,11 @@ class MainWindow(QMainWindow):
 
     def _handle_close_tab(self) -> None:
         self._tab_container.close_current_tab()
+
+    def _handle_reopen_closed_tab(self) -> None:
+        if self._is_tab_mode():
+            self._tab_container.reopen_closed_tab()
+            self._update_action_state()
 
     def _handle_open_folder(self) -> None:
         start_path = self._current_active_path()
@@ -213,6 +223,7 @@ class MainWindow(QMainWindow):
         tab_count = self._tab_container.tab_count()
         self._new_tab_action.setEnabled(in_tabs)
         self._close_tab_action.setEnabled(in_tabs and tab_count > 1)
+        self._reopen_closed_tab_action.setEnabled(in_tabs and self._tab_container.has_closed_tabs())
         self._next_tab_action.setEnabled(in_tabs and tab_count > 1)
         self._previous_tab_action.setEnabled(in_tabs and tab_count > 1)
 
