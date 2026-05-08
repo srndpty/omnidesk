@@ -52,13 +52,11 @@ class MainWindow(QMainWindow):
 
     def _restore_initial_state(self) -> None:
         opened = False
-        pinned_tabs = self._settings.session_pinned_tabs()
-        for index, raw in enumerate(self._settings.session_tabs()):
-            candidate = Path(raw)
+        for tab_state in self._settings.session_tab_states():
+            candidate = Path(tab_state["path"])
             if not candidate.exists():
                 continue
-            pinned = index < len(pinned_tabs) and pinned_tabs[index]
-            self._tab_container.open_in_new_tab(candidate, pinned=pinned)
+            self._tab_container.open_in_new_tab(candidate, pinned=tab_state["pinned"])
             opened = True
         if opened:
             current = self._tab_container.current_tab()

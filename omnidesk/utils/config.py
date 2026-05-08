@@ -29,6 +29,11 @@ class SettingsData(TypedDict, total=False):
     file_browser: FileBrowserSettings
 
 
+class SessionTabState(TypedDict):
+    path: str
+    pinned: bool
+
+
 @dataclass
 class AppSettings:
     """Typed wrapper around persisted settings data."""
@@ -43,16 +48,28 @@ class AppSettings:
         return self.data
 
     def session_tabs(self) -> list[str]:
-        session = self.data.get("session", {})
-        tabs = session.get("tabs") if isinstance(session, dict) else None
-        return [item for item in tabs if isinstance(item, str)] if isinstance(tabs, list) else []
+        return [item["path"] for item in self.session_tab_states()]
 
     def session_pinned_tabs(self) -> list[bool]:
+        return [item["pinned"] for item in self.session_tab_states()]
+
+    def session_tab_states(self) -> list[SessionTabState]:
         session = self.data.get("session", {})
+        tabs = session.get("tabs") if isinstance(session, dict) else None
         pinned = session.get("pinned_tabs") if isinstance(session, dict) else None
-        return (
-            [item for item in pinned if isinstance(item, bool)] if isinstance(pinned, list) else []
-        )
+        if not isinstance(tabs, list):
+            return []
+        states: list[SessionTabState] = []
+        for index, path in enumerate(tabs):
+            if not isinstance(path, str):
+                continue
+            pinned_value = (
+                pinned[index] if isinstance(pinned, list) and index < len(pinned) else False
+            )
+            states.append(
+                {"path": path, "pinned": pinned_value if isinstance(pinned_value, bool) else False}
+            )
+        return states
 
     def view_mode(self) -> str | None:
         session = self.data.get("session", {})
