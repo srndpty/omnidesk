@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pytest_mock import MockerFixture
+
 from omnidesk.ui.file_operations import (
     create_file,
     create_folder,
@@ -11,6 +13,19 @@ from omnidesk.ui.file_operations import (
     perform_copy_or_move,
     rename_path,
 )
+
+
+def test_file_operations_work_on_pyfakefs(fs) -> None:
+    workspace = Path("C:/workspace")
+    source = workspace / "source"
+    destination = workspace / "destination"
+    source.mkdir(parents=True)
+    (source / "file.txt").write_text("copy", encoding="utf-8")
+
+    errors = perform_copy_or_move([source / "file.txt"], destination, move=False)
+
+    assert errors == []
+    assert (destination / "file.txt").read_text(encoding="utf-8") == "copy"
 
 
 def test_rename_path_reports_conflict(tmp_path: Path) -> None:
@@ -81,8 +96,8 @@ def test_dangerous_operation_path_detects_roots() -> None:
     assert is_dangerous_operation_path(Path(Path.cwd().anchor))
 
 
-def test_delete_paths_refuses_dangerous_path(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(
+def test_delete_paths_refuses_dangerous_path(mocker: MockerFixture, tmp_path: Path) -> None:
+    mocker.patch(
         "omnidesk.ui.file_operations.is_dangerous_operation_path",
         lambda path: path == tmp_path,
     )
@@ -94,11 +109,14 @@ def test_delete_paths_refuses_dangerous_path(monkeypatch, tmp_path: Path) -> Non
     assert tmp_path.exists()
 
 
-def test_copy_or_move_refuses_dangerous_source(monkeypatch, tmp_path: Path) -> None:
+def test_copy_or_move_refuses_dangerous_source(
+    mocker: MockerFixture,
+    tmp_path: Path,
+) -> None:
     src = tmp_path / "source.txt"
     dest = tmp_path / "dest"
     src.write_text("source", encoding="utf-8")
-    monkeypatch.setattr(
+    mocker.patch(
         "omnidesk.ui.file_operations.is_dangerous_operation_path",
         lambda path: path == src,
     )

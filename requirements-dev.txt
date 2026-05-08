@@ -1,4 +1,4 @@
 -r requirements.txt
 
-# Development entrypoint. requirements.txt is still kept as the CI/build source
-# for now, while pyproject.toml records the same dev tools as optional metadata.
+# Development entrypoint. Edit requirements*.in and run
+# .\scripts\compile-requirements.ps1 to regenerate requirements.txt.

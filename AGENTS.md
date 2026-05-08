@@ -13,6 +13,7 @@
   - `python -m ruff format . --check`
   - `python -m pyright`
   - `git diff --check`
+- 並列実行を試す場合は `.\scripts\check-parallel.ps1` を使ってください。ただし通常の品質ゲートは `check.ps1` を優先してください。Qtテストがあるため、xdistは安定性優先で `-n 2` に固定しています。
 - `python -m pyright` が見つからない場合は、venv内で `python -m pip install -r requirements-dev.txt` を実行してください。
 - カバレッジ確認が必要な場合は、PowerShellで以下を使ってください。
   - `$env:COVERAGE_FILE='tmp/.coverage'; pytest --cov=omnidesk --cov-report=term-missing --cov-report=xml:tmp\coverage.xml`
@@ -22,6 +23,10 @@
 - UI全体のE2Eより、Qtイベントループを使う部品テストと、UIに依存しないヘルパーの純粋テストを優先してください。
 - ファイル操作は `tmp_path` を使い、リポジトリ直下に一時ファイルを残さないでください。
 - Qt signal待機は自前の `QEventLoop` より `pytest-qt` の `qtbot.waitSignal()` を優先してください。
+- mock/patchには、読みやすくなる場合は `pytest-mock` の `mocker` fixtureを使ってください。
+- 実ファイルシステムを使う必要がないファイル操作テストでは、`pyfakefs` の `fs` fixtureを検討してください。QtやOS連携が絡む場合は `tmp_path` のままで構いません。
+- 時刻依存のログ・キャッシュ挙動は `freezegun.freeze_time()` で固定してください。
+- `pytest-timeout` を導入済みです。長いQtテストが正当な場合だけ、局所的に `@pytest.mark.timeout(...)` を使ってください。
 - テストダブルは実際に呼ばれるQt APIを満たしてください。たとえば `QFileInfo` の代替には `isDir()` だけでなく、必要に応じて `isFile()` や `absoluteFilePath()` も実装してください。
 - 壊れやすいマウスドラッグや描画E2Eを増やすより、矩形交差判定・選択候補・パス解決などを小ヘルパーへ切り出してテストしてください。
 
@@ -50,6 +55,7 @@
 
 ## 依存とビルド
 - 通常の開発環境は `python -m pip install -r requirements-dev.txt` で準備してください。
+- 依存追加・更新は `requirements-dev.in` または `requirements.in` を編集し、`.\scripts\compile-requirements.ps1` で `requirements.txt` を再生成してください。
 - CIはWindows上でRuff、Pyright、pytest、coverage、PyInstaller smoke buildを実行します。
 - Windowsビルド確認は `build_windows.bat` を使ってください。
 - PyInstallerを手動実行する場合は以下を使ってください。

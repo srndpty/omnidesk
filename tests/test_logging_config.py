@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from freezegun import freeze_time
+
 from omnidesk.utils import logging_config
 
 
@@ -17,6 +19,7 @@ def test_log_level_from_environment_defaults_and_accepts_known_level() -> None:
     )
 
 
+@freeze_time("2030-01-02 03:04:05")
 def test_configure_logging_writes_rotating_log_file(tmp_path: Path) -> None:
     log_file = tmp_path / "logs" / "omnidesk.log"
 
@@ -31,7 +34,9 @@ def test_configure_logging_writes_rotating_log_file(tmp_path: Path) -> None:
         handler.flush()
 
     assert configured_path == log_file
-    assert "hello log" in log_file.read_text(encoding="utf-8")
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "2030-01-02" in log_text
+    assert "hello log" in log_text
 
 
 def test_configure_logging_does_not_duplicate_handler(tmp_path: Path) -> None:
