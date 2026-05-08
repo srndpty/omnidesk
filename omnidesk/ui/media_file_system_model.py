@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 
 from PyQt6.QtCore import QMimeData, QModelIndex, QSize, Qt, QThreadPool
-from PyQt6.QtGui import QFileSystemModel, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QFileSystemModel, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import QFileIconProvider
 
 from ..utils.thumbnail_cache import file_thumbnail_cache, folder_preview_cache
@@ -284,7 +284,8 @@ class MediaFileSystemModel(QFileSystemModel):
         self._cache_jobs.pop(key, None)
         self._pending.discard(key)
         self._tokens.pop(key, None)
-        if image is None or image.isNull():
+        qimage: QImage | None = image if isinstance(image, QImage) else None
+        if qimage is None or qimage.isNull():
             self._debug("cache-miss", key)
             path = Path(key)
             if is_dir:
@@ -292,7 +293,7 @@ class MediaFileSystemModel(QFileSystemModel):
             else:
                 self._ensure_thumbnail(path, path.suffix.lower(), key)
             return
-        pixmap = QPixmap.fromImage(image)
+        pixmap = QPixmap.fromImage(qimage)
         icon = QIcon(pixmap)
         self._cache_for_info(is_dir).put_memory(key, icon, pixmap)
         self._debug("cache-ready", key)

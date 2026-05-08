@@ -17,7 +17,7 @@ def create_app(argv: list[str] | None = None) -> QApplication:
     if argv is None:
         argv = sys.argv
     existing = QApplication.instance()
-    app = existing if existing is not None else QApplication(argv)
+    app = existing if isinstance(existing, QApplication) else QApplication(argv)
     configure_logging()
     app.setApplicationName("OmniDesk")
     app.setOrganizationName("OmniDesk")
