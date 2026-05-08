@@ -8,6 +8,7 @@ import shlex
 from contextlib import suppress
 from functools import partial
 from pathlib import Path
+from typing import Literal, TypedDict, cast
 
 from PyQt6.QtCore import (
     QDir,
@@ -93,24 +94,35 @@ from .media_file_system_model import MediaFileSystemModel
 logger = logging.getLogger(__name__)
 
 
+class _ClipboardPayload(TypedDict):
+    paths: list[Path]
+    mode: Literal["copy", "move"]
+
+
+def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
+    tab._select_path(path)
+
+
 class _BaseFileViewMixin:
     """Adds reusable drag-and-drop and context menu behaviours."""
 
     def _init_file_view(self, tab: FileBrowserTab) -> None:
+        view = cast(QAbstractItemView, self)
         self._tab = tab
         self._drag_start_pos = None
         self._drag_on_item = False
-        self.setDragEnabled(True)
-        self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(partial(tab._show_context_menu, self))
+        view.setDragEnabled(True)
+        view.setAcceptDrops(True)
+        view.setDropIndicatorShown(True)
+        view.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        view.setDefaultDropAction(Qt.DropAction.MoveAction)
+        view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        view.customContextMenuRequested.connect(partial(tab._show_context_menu, view))
 
     def selected_paths(self) -> list[Path]:
-        selection_model = self.selectionModel()
+        view = cast(QAbstractItemView, self)
+        selection_model = view.selectionModel()
         if not selection_model:
             return []
         rows = selection_model.selectedRows() or selection_model.selectedIndexes()
@@ -122,9 +134,9 @@ class _BaseFileViewMixin:
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.position()
             # クリックされた位置にアイテムが存在するかどうかをチェック
-            index_at_pos = self.indexAt(event.position().toPoint())
+            index_at_pos = cast(QAbstractItemView, self).indexAt(event.position().toPoint())
             self._drag_on_item = index_at_pos.isValid()
-        super().mousePressEvent(event)
+        super().mousePressEvent(event)  # type: ignore[attr-defined]
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if event.buttons() & Qt.MouseButton.LeftButton and self._drag_start_pos is not None:
@@ -136,7 +148,7 @@ class _BaseFileViewMixin:
             ):
                 self.startDrag(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
                 return
-        super().mouseMoveEvent(event)
+        super().mouseMoveEvent(event)  # type: ignore[attr-defined]
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         """
@@ -145,7 +157,7 @@ class _BaseFileViewMixin:
         """
         # まず、親クラス（QTreeView/QListView）のデフォルト処理を呼び出す
         # これにより、通常のクリック選択などが壊れないようにする
-        super().mouseReleaseEvent(event)
+        super().mouseReleaseEvent(event)  # type: ignore[attr-defined]
 
         button = event.button()
         if button == Qt.MouseButton.BackButton:
@@ -164,7 +176,7 @@ class _BaseFileViewMixin:
             return
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
-        drag = QDrag(self)
+        drag = QDrag(cast(QWidget, self))
         drag.setMimeData(mime)
         default_action = Qt.DropAction.MoveAction
         drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction, default_action)
@@ -192,7 +204,7 @@ class _BaseFileViewMixin:
             event.ignore()
             return
         pos = event.position().toPoint()
-        index = self.indexAt(pos)
+        index = cast(QAbstractItemView, self).indexAt(pos)
         target_dir = self._tab._current_path
         if index.isValid():
             file_info = self._tab._model.fileInfo(index)
@@ -209,45 +221,14 @@ class _BaseFileViewMixin:
         event.setDropAction(Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction)
         event.acceptProposedAction()
 
-    def dropMimeData(self, data, action, row, column, parent_index: QModelIndex) -> bool:
-        if action != Qt.DropAction.MoveAction:
-            return False
-
-        # parent_index はドロップ先のディレクトリのインデックス
-        if not parent_index.isValid():
-            return False
-
-        dest_dir = self.filePath(parent_index)
-        if not os.path.isdir(dest_dir):
-            return False
-
-        # data.urls() にドラッグされたファイルのパスが入ってくる
-        for url in data.urls():
-            src_path = url.toLocalFile()
-            basename = os.path.basename(src_path)
-            dest_path = os.path.join(dest_dir, basename)
-
-            # 防御的にチェック
-            if src_path == dest_path:
-                continue
-            try:
-                # 移動（リネーム）
-                os.rename(src_path, dest_path)
-            except Exception:
-                # 必要ならメッセージなど
-                logger.exception("Failed to move dropped path %s to %s", src_path, dest_path)
-                return False
-
-        return True
-
 
 class _FileTreeView(_BaseFileViewMixin, QTreeView):
     def __init__(self, tab: FileBrowserTab) -> None:
-        super().__init__(tab)
+        QTreeView.__init__(self, tab)
         self._init_file_view(tab)
 
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
-        self._rubber_band_origin = None
+        self._rubber_band_origin: QPoint | None = None
 
         # ★★★ リアルタイム選択更新のための状態変数を追加 ★★★
         self._last_selection = QItemSelection()
@@ -256,8 +237,9 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
         super().mousePressEvent(event)  # Mixinの処理を先に呼ぶ
 
         if not self._drag_on_item and event.button() == Qt.MouseButton.LeftButton:
-            self._rubber_band_origin = event.pos()
-            self._rubber_band.setGeometry(QRect(self._rubber_band_origin, QSize()))
+            origin = event.pos()
+            self._rubber_band_origin = origin
+            self._rubber_band.setGeometry(QRect(origin, QSize()))
             self._rubber_band.show()
 
             # ★★★ 既存の選択状態を保存しておく ★★★
@@ -267,7 +249,7 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
             return
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._rubber_band.isVisible():
+        if self._rubber_band.isVisible() and self._rubber_band_origin is not None:
             rect = QRect(self._rubber_band_origin, event.pos()).normalized()
             self._rubber_band.setGeometry(rect)
 
@@ -332,7 +314,7 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
 
 class _FileTileView(_BaseFileViewMixin, QListView):
     def __init__(self, tab: FileBrowserTab) -> None:
-        super().__init__(tab)
+        QListView.__init__(self, tab)
         self._init_file_view(tab)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setFlow(QListView.Flow.LeftToRight)
@@ -415,7 +397,7 @@ class FileBrowserTab(QWidget):
 
         self._manual_media_mode: bool | None = None
         self._manual_media_mode: bool | None = None
-        self._clipboard: dict[str, object] | None = None
+        self._clipboard: _ClipboardPayload | None = None
         self._pending_selection_path: Path | None = None
         self._create_actions()
         self._toggle_view_button = QToolButton(self)
@@ -564,7 +546,7 @@ class FileBrowserTab(QWidget):
 
     def _selected_paths(self) -> list[Path]:
         view = self._active_view()
-        return view.selected_paths()
+        return cast(_BaseFileViewMixin, view).selected_paths()
 
     def _select_all(self) -> None:
         view = self._active_view()
@@ -587,6 +569,8 @@ class FileBrowserTab(QWidget):
         if error:
             QMessageBox.warning(self, "Rename failed", error)
             return
+        if target is None:
+            return
         self.refresh()
         self._select_path(target)
 
@@ -600,6 +584,8 @@ class FileBrowserTab(QWidget):
         if error:
             QMessageBox.warning(self, "Create file failed", error)
             return
+        if target is None:
+            return
         self.refresh()
         self._select_path(target)
 
@@ -612,6 +598,8 @@ class FileBrowserTab(QWidget):
         target, error = create_folder(self._current_path, name.strip())
         if error:
             QMessageBox.warning(self, "Create folder failed", error)
+            return
+        if target is None:
             return
         self.refresh()
         self._select_path(target)
@@ -669,10 +657,10 @@ class FileBrowserTab(QWidget):
     def _paste_into_current(self) -> None:
         if not self._clipboard:
             return
-        paths = [Path(p) for p in self._clipboard.get("paths", [])]
+        paths = self._clipboard["paths"]
         if not paths:
             return
-        move = self._clipboard.get("mode") == "move"
+        move = self._clipboard["mode"] == "move"
         self._perform_copy_or_move(paths, self._current_path, move=move)
         if move:
             self._clipboard = None
@@ -873,7 +861,7 @@ class FileBrowserTab(QWidget):
             return
         parent, path_to_focus = target
         self.navigate_to(parent, from_history=True)
-        QTimer.singleShot(0, lambda p=path_to_focus: self._select_path(p))
+        QTimer.singleShot(0, partial(_select_path_later, self, path_to_focus))
 
     def focus_view(self) -> None:
         self._active_view().setFocus(Qt.FocusReason.OtherFocusReason)

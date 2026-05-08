@@ -7,9 +7,10 @@ from collections.abc import Callable
 from contextlib import suppress
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent, QWheelEvent
+from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent, QWheelEvent
 from PyQt6.QtWidgets import QSizePolicy, QTabWidget, QToolButton, QVBoxLayout, QWidget
 
 from .file_browser_tab import FileBrowserTab
@@ -89,45 +90,51 @@ class TabContainer(QWidget):
 
     # ★★★ このメソッドをまるごとTabContainerクラスに追加 ★★★
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        if obj is self._tabs.tabBar():
+        tab_bar = self._tabs.tabBar()
+        if obj is tab_bar:
             # ドラッグが入ってきたら受け入れ
             if event.type() == QEvent.Type.DragEnter:
-                if event.mimeData().hasUrls():
-                    event.acceptProposedAction()
+                drag_event = cast(QDragEnterEvent, event)
+                if drag_event.mimeData().hasUrls():
+                    drag_event.acceptProposedAction()
                     return True
                 return False
 
             # 移動中：どのタブ上かを示し、コピー/移動の種別を決定
             if event.type() == QEvent.Type.DragMove:
-                if event.mimeData().hasUrls():
-                    idx = obj.tabAt(event.position().toPoint())
+                drag_event = cast(QDragMoveEvent, event)
+                if drag_event.mimeData().hasUrls():
+                    idx = tab_bar.tabAt(drag_event.position().toPoint())
                     if idx != -1:
-                        obj.setCurrentIndex(idx)  # 視覚的に対象タブをハイライト
-                        action = tab_drop_action(event.modifiers())
-                        event.setDropAction(action)
-                        event.accept()
+                        tab_bar.setCurrentIndex(idx)  # 視覚的に対象タブをハイライト
+                        action = tab_drop_action(drag_event.modifiers())
+                        drag_event.setDropAction(action)
+                        drag_event.accept()
                         return True
                 return False
 
             # ドロップ：対象タブのフォルダへ移動（またはコピー）
             if event.type() == QEvent.Type.Drop:
-                if event.mimeData().hasUrls():
-                    idx = obj.tabAt(event.position().toPoint())
+                drop_event = cast(QDropEvent, event)
+                if drop_event.mimeData().hasUrls():
+                    idx = tab_bar.tabAt(drop_event.position().toPoint())
                     if idx != -1:
                         target_tab = self._tabs.widget(idx)
                         if isinstance(target_tab, FileBrowserTab):
-                            paths = local_paths_from_urls(event.mimeData().urls())
-                            move = tab_drop_action(event.modifiers()) == Qt.DropAction.MoveAction
+                            paths = local_paths_from_urls(drop_event.mimeData().urls())
+                            move = (
+                                tab_drop_action(drop_event.modifiers()) == Qt.DropAction.MoveAction
+                            )
                             dest_dir = target_tab.current_path()
                             target_tab._handle_external_drop(paths, dest_dir, move)
-                            event.setDropAction(
+                            drop_event.setDropAction(
                                 Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction
                             )
-                            event.acceptProposedAction()
+                            drop_event.acceptProposedAction()
                             return True
                 return False
             if event.type() == QEvent.Type.Wheel:
-                wheel: QWheelEvent = event
+                wheel = cast(QWheelEvent, event)
                 ad = wheel.angleDelta()
                 pd = wheel.pixelDelta()
                 request = wheel_scroll_request(ad.x(), ad.y(), pd.x(), pd.y())
@@ -139,9 +146,9 @@ class TabContainer(QWidget):
 
             # ここに他の処理（中クリックでクローズ等）があれば続けてOK
             elif event.type() == QEvent.Type.MouseButtonRelease:
-                mouse: QMouseEvent = event
+                mouse = cast(QMouseEvent, event)
                 if mouse.button() == Qt.MouseButton.MiddleButton:
-                    index = self._tabs.tabBar().tabAt(mouse.position().toPoint())
+                    index = tab_bar.tabAt(mouse.position().toPoint())
                     if index >= 0:
                         self._close_tab(index)
                         return True
@@ -150,8 +157,14 @@ class TabContainer(QWidget):
 
     def _scroll_tabstrip(self, *, go_left: bool, count: int = 1) -> None:
         """内部スクローラーボタンを擬似クリックして帯だけをスクロール"""
-        left_btn = self._tabs.findChild(QToolButton, "qt_tabwidget_scroller_left")
-        right_btn = self._tabs.findChild(QToolButton, "qt_tabwidget_scroller_right")
+        left_btn = cast(
+            QToolButton | None,
+            self._tabs.findChild(QToolButton, "qt_tabwidget_scroller_left"),
+        )
+        right_btn = cast(
+            QToolButton | None,
+            self._tabs.findChild(QToolButton, "qt_tabwidget_scroller_right"),
+        )
 
         # ボタンが見つからない場合のフォールバック（選択タブを動かす）
         if not left_btn or not right_btn:
@@ -173,7 +186,7 @@ class TabContainer(QWidget):
         tab = FileBrowserTab(self, name_column_width=self._name_column_width)
         tab.navigate_to(path)
         tab.directoryChanged.connect(self._make_directory_changed_handler(tab))
-        tab.requestOpenInNewTab.connect(self.open_in_new_tab)
+        tab.requestOpenInNewTab.connect(self._open_requested_path_in_new_tab)
         tab.nameColumnWidthChanged.connect(
             partial(self._handle_name_column_width_changed, source=tab)
         )
@@ -181,6 +194,9 @@ class TabContainer(QWidget):
         self._tabs.setCurrentIndex(index)
         self.tabCountChanged.emit(self._tabs.count())
         return tab
+
+    def _open_requested_path_in_new_tab(self, path: Path) -> None:
+        self.open_in_new_tab(path)
 
     def close_current_tab(self) -> None:
         if self._tabs.count() <= 1:

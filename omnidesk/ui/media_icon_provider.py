@@ -228,16 +228,20 @@ class _VideoJob(QObject):
 
     def __init__(self, key: str, path: Path, edge: int, token: CancellationToken) -> None:
         super().__init__()
+        media_player_cls = QMediaPlayer
+        video_sink_cls = QVideoSink
+        if media_player_cls is None or video_sink_cls is None:
+            raise RuntimeError("Qt Multimedia video support is not available")
         self._key = key
         self._path = path
         self._edge = edge
         self._token = token
-        self._player = QMediaPlayer(self)
+        self._player = media_player_cls(self)
         self._audio = QAudioOutput(self) if QAudioOutput is not None else None
         if self._audio is not None:
             self._audio.setVolume(0.0)
             self._player.setAudioOutput(self._audio)
-        self._sink = QVideoSink(self)
+        self._sink = video_sink_cls(self)
         self._player.setVideoSink(self._sink)
         self._sink.videoFrameChanged.connect(self._handle_frame)
         self._timeout = QTimer(self)

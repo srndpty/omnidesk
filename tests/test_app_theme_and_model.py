@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from PyQt6.QtCore import QMimeData, QSize, Qt, QUrl
 from PyQt6.QtGui import QIcon, QImage, QPixmap
@@ -72,8 +73,8 @@ def test_media_file_system_model_token_and_cancel_state(monkeypatch) -> None:
     token = model._new_token("key")
     model._visible_keys.add("key")
     model._pending.add("key")
-    model._folder_scans["key"] = object()
-    model._cache_jobs["key"] = object()
+    model._folder_scans["key"] = cast(model_module.FolderScanJob, object())
+    model._cache_jobs["key"] = cast(model_module.CacheLoadJob, object())
 
     assert model._is_current_request("key", token.generation)
 
@@ -116,7 +117,10 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
     monkeypatch.setattr(
         model._provider,
         "request_thumbnail",
-        lambda path, edge, result_key=None, token=None: started.append((result_key, path)) or True,
+        lambda path, edge, result_key=None, token=None: started.append(
+            (cast(str, result_key), path)
+        )
+        or True,
     )
 
     model._handle_folder_scan_result(key, generation=99, image_path=image_path)
@@ -329,7 +333,8 @@ def test_media_file_system_model_ensure_thumbnail_skips_memory_pending_failed(
     monkeypatch.setattr(
         model._provider,
         "request_thumbnail",
-        lambda path, edge, result_key=None, token=None: requested.append(result_key) or True,
+        lambda path, edge, result_key=None, token=None: requested.append(cast(str, result_key))
+        or True,
     )
 
     model._ensure_thumbnail(Path(key), ".png", key)

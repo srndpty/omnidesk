@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
+from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QIcon, QImage
 
 from omnidesk.ui import media_icon_provider
@@ -58,7 +60,7 @@ def test_duplicate_result_key_is_rejected(tmp_path: Path) -> None:
     _save_image(image_path)
 
     provider = MediaThumbnailProvider()
-    provider._image_jobs["same-key"] = object()
+    provider._image_jobs["same-key"] = cast(_ImageJob, object())
 
     assert not provider.request_thumbnail(image_path, 100, result_key="same-key")
 
@@ -107,7 +109,7 @@ def test_process_video_queue_skips_cancelled_and_duplicate_jobs(monkeypatch) -> 
     cancelled = CancellationToken(2)
     cancelled.cancel()
     ready = CancellationToken(3)
-    provider._video_jobs["duplicate"] = object()
+    provider._video_jobs["duplicate"] = cast(_VideoJob, object())
     provider._video_queue = [
         ("cancelled", Path("cancelled.mp4"), 100, cancelled),
         ("duplicate", Path("duplicate.mp4"), 100, duplicate),
@@ -129,7 +131,7 @@ def test_on_video_finished_starts_next_queued_job(monkeypatch, qtbot) -> None:
     provider = MediaThumbnailProvider()
     started: list[str] = []
     provider._active_video_jobs = 1
-    provider._video_jobs["done"] = None
+    provider._video_jobs["done"] = cast(_VideoJob, None)
     provider._video_queue = [("next", Path("next.mp4"), 100, CancellationToken(4))]
     monkeypatch.setattr(
         provider,
@@ -306,7 +308,9 @@ def test_video_job_start_configures_player(monkeypatch, tmp_path: Path) -> None:
 
     player = _FakePlayer.instances[-1]
     timer = _FakeTimer.instances[-1]
-    assert Path(player.source.toLocalFile()) == video_path
+    assert player.source is not None
+    source = cast(QUrl, player.source)
+    assert Path(source.toLocalFile()) == video_path
     assert player.position == 0
     assert player.played
     assert timer.single_shot is True

@@ -50,7 +50,7 @@ python -m pip install -r requirements-dev.txt
 
 ## テスト
 
-pytest と pytest-qt を使った自動テストを用意しています。
+pytest と pytest-qt を使った自動テストを用意しています。ハング対策として pytest-timeout も有効化しており、既定では各テスト30秒、セッション全体300秒で停止します。
 
 CI相当の品質確認は次のスクリプトで一括実行できます。
 
@@ -75,6 +75,22 @@ python -m ruff format . --check
 python -m pyright
 git diff --check
 ```
+
+pytest-xdist による並列実行を試す場合:
+
+```powershell
+.\scripts\check-parallel.ps1
+```
+
+Qtを使うテストがあるため、このスクリプトは安定性優先で `-n 2` に固定しています。
+
+依存を更新する場合は `requirements-dev.in` を編集し、pip-toolsで `requirements.txt` を再生成します。
+
+```powershell
+.\scripts\compile-requirements.ps1
+```
+
+テストでは必要に応じて `pytest-mock` の `mocker` fixture、`pyfakefs` の `fs` fixture、`freezegun.freeze_time()` を使っています。
 
 型検査はまず副作用の薄いヘルパー層だけを対象にしています。対象は `pyproject.toml` の `[tool.pyright]` で段階的に広げます。
 
