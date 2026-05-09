@@ -123,8 +123,8 @@ pre-commit run --all-files
    ```bash
    pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist OmniDesk.spec
    ```
-   または `build_windows.bat` を実行すると、Ruff・Pyright・pytest・PyInstaller の順に実行します。
-3. 成功すると `dist/OmniDesk/OmniDesk.exe` と配布用の `dist/OmniDesk.zip` が生成されます。`_internal` フォルダも同じディレクトリに置いたまま配布してください。初回起動時は Windows SmartScreen により警告が表示される場合があります。
+   または `build_windows.bat` を実行すると、Ruff・Pyright・pytest・PyInstaller の順に実行し、配布用の `dist/OmniDesk.zip` も生成します。
+3. 成功すると `dist/OmniDesk/OmniDesk.exe` が生成されます。`build_windows.bat` を実行した場合は、配布用の `dist/OmniDesk.zip` も生成されます。`_internal` フォルダも同じディレクトリに置いたまま配布してください。初回起動時は Windows SmartScreen により警告が表示される場合があります。
 4. 単体exeが必要な場合は、別ターゲットとして次を実行します。
    ```bash
    pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build-onefile --distpath dist OmniDesk-onefile.spec
