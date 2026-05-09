@@ -41,7 +41,7 @@ OmniDesk is a dark-themed, multi-tab file manager for Windows powered by PyQt6. 
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
-python main.py
+python -m omnidesk
 ```
 
 ログは既定で `~/.omnidesk/logs/omnidesk.log` に保存されます。詳細ログが必要な場合は `OMNIDESK_LOG_LEVEL=DEBUG` を設定してください。
@@ -121,13 +121,13 @@ pre-commit run --all-files
    ```
 2. リポジトリのルートで PyInstaller を実行します。標準ビルドは起動速度を優先した onedir 形式です。
    ```bash
-   pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist OmniDesk.spec
+   pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist packaging\pyinstaller\OmniDesk.spec
    ```
-   または `build_windows.bat` を実行すると、Ruff・Pyright・pytest・PyInstaller の順に実行し、配布用の `dist/OmniDesk.zip` も生成します。
-3. 成功すると `dist/OmniDesk/OmniDesk.exe` が生成されます。`build_windows.bat` を実行した場合は、配布用の `dist/OmniDesk.zip` も生成されます。`_internal` フォルダも同じディレクトリに置いたまま配布してください。初回起動時は Windows SmartScreen により警告が表示される場合があります。
+   または `.\scripts\build-windows.ps1` を実行すると、Ruff・Pyright・pytest・PyInstaller の順に実行し、配布用の `dist/OmniDesk.zip` も生成します。`build_windows.bat` は互換用ラッパーとして同じスクリプトを呼び出します。
+3. 成功すると `dist/OmniDesk/OmniDesk.exe` が生成されます。`.\scripts\build-windows.ps1` を実行した場合は、配布用の `dist/OmniDesk.zip` も生成されます。`_internal` フォルダも同じディレクトリに置いたまま配布してください。初回起動時は Windows SmartScreen により警告が表示される場合があります。
 4. 単体exeが必要な場合は、別ターゲットとして次を実行します。
    ```bash
-   pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build-onefile --distpath dist OmniDesk-onefile.spec
+   pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build-onefile --distpath dist packaging\pyinstaller\OmniDesk-onefile.spec
    ```
    成功すると `dist/OmniDesk-onefile.exe` が生成されます。単体exeは配布しやすい一方、起動時に一時展開が必要なため onedir 形式より起動が遅くなることがあります。
 
@@ -135,5 +135,5 @@ pre-commit run --all-files
 
 1. `.\scripts\check.ps1`
 2. `python -m pytest --cov=omnidesk --cov-report=term-missing`
-3. `build_windows.bat`
+3. `.\scripts\build-windows.ps1`
 4. `CHANGELOG.md` を更新し、生成された `dist/OmniDesk/OmniDesk.exe` と `dist/OmniDesk.zip` を確認します。
