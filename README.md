@@ -119,16 +119,21 @@ pre-commit run --all-files
    ```bash
    pip install -r requirements-dev.txt
    ```
-2. リポジトリのルートで PyInstaller を実行します。
+2. リポジトリのルートで PyInstaller を実行します。標準ビルドは起動速度を優先した onedir 形式です。
    ```bash
    pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist OmniDesk.spec
    ```
-   または `build_windows.bat` を実行すると、Ruff・Pyright・pytest・PyInstaller の順に実行します。
-3. 成功すると `dist/OmniDesk.exe` が生成されます。初回起動時は Windows SmartScreen により警告が表示される場合があります。
+   または `build_windows.bat` を実行すると、Ruff・Pyright・pytest・PyInstaller の順に実行し、配布用の `dist/OmniDesk.zip` も生成します。
+3. 成功すると `dist/OmniDesk/OmniDesk.exe` が生成されます。`build_windows.bat` を実行した場合は、配布用の `dist/OmniDesk.zip` も生成されます。`_internal` フォルダも同じディレクトリに置いたまま配布してください。初回起動時は Windows SmartScreen により警告が表示される場合があります。
+4. 単体exeが必要な場合は、別ターゲットとして次を実行します。
+   ```bash
+   pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build-onefile --distpath dist OmniDesk-onefile.spec
+   ```
+   成功すると `dist/OmniDesk-onefile.exe` が生成されます。単体exeは配布しやすい一方、起動時に一時展開が必要なため onedir 形式より起動が遅くなることがあります。
 
 ## リリース手順
 
 1. `.\scripts\check.ps1`
 2. `python -m pytest --cov=omnidesk --cov-report=term-missing`
 3. `build_windows.bat`
-4. `CHANGELOG.md` を更新し、生成された `dist/OmniDesk.exe` を確認します。
+4. `CHANGELOG.md` を更新し、生成された `dist/OmniDesk/OmniDesk.exe` と `dist/OmniDesk.zip` を確認します。

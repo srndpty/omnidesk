@@ -43,8 +43,17 @@ jobs:
       - name: PyInstaller smoke build
         run: pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist OmniDesk.spec
 
-      - name: Verify executable
+      - name: Verify onedir executable
         run: |
-          if (!(Test-Path "dist\OmniDesk.exe")) {
-            throw "dist\OmniDesk.exe was not created"
+          if (!(Test-Path "dist\OmniDesk\OmniDesk.exe")) {
+            throw "dist\OmniDesk\OmniDesk.exe was not created"
           }
+          if (!(Test-Path "dist\OmniDesk\_internal")) {
+            throw "dist\OmniDesk\_internal was not created"
+          }
+          if (!(Test-Path "dist\OmniDesk\_internal\resources\icons\app_icon.ico")) {
+            throw "Bundled app icon was not created"
+          }
+
+      - name: Package onedir artifact
+        run: Compress-Archive -Path "dist\OmniDesk\*" -DestinationPath "dist\OmniDesk.zip" -Force

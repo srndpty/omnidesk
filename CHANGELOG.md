@@ -13,3 +13,4 @@
 - Persisted pinned tab state across app restarts.
 - Added Ctrl+Shift+T to reopen the most recently closed tab.
 - Added Backspace as a back-navigation shortcut and restored focus to the folder left behind when navigating back to its parent.
+- Switched the standard Windows build to PyInstaller onedir output, added a separate onefile spec, and package the onedir build as a zip.
