@@ -4,10 +4,10 @@ from pathlib import Path
 
 block_cipher = None
 
-app_root = Path.cwd()
+app_root = Path(SPECPATH).resolve().parents[1]
 
 a = Analysis(
-    ["main.py"],
+    [str(app_root / "main.py")],
     pathex=[str(app_root)],
     binaries=[],
     datas=[
@@ -28,8 +28,11 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
     [],
-    name="OmniDesk",
+    name="OmniDesk-onefile",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -40,17 +43,4 @@ exe = EXE(
     disable_windowed_traceback=False,
     target_arch=None,
     icon=str(app_root / "resources" / "icons" / "app_icon.ico"),
-    exclude_binaries=True,
-    contents_directory="_internal",
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="OmniDesk",
 )

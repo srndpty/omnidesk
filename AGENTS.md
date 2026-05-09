@@ -57,6 +57,6 @@
 - 通常の開発環境は `python -m pip install -r requirements-dev.txt` で準備してください。
 - 依存追加・更新は `requirements-dev.in` または `requirements.in` を編集し、`.\scripts\compile-requirements.ps1` で `requirements.txt` を再生成してください。
 - CIはWindows上でRuff、Pyright、pytest、coverage、PyInstaller smoke buildを実行します。
-- Windowsビルド確認は `build_windows.bat` を使ってください。
+- Windowsビルド確認は `.\scripts\build-windows.ps1` を使ってください。`build_windows.bat` は互換用ラッパーです。
 - PyInstallerを手動実行する場合は以下を使ってください。
-  - `pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist OmniDesk.spec`
+  - `pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist packaging\pyinstaller\OmniDesk.spec`

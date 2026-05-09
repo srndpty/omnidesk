@@ -41,7 +41,7 @@ jobs:
         run: python -m pytest --cov=omnidesk --cov-report=term-missing --cov-report=xml:tmp\coverage.xml
 
       - name: PyInstaller smoke build
-        run: pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist OmniDesk.spec
+        run: pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist packaging\pyinstaller\OmniDesk.spec
 
       - name: Verify onedir executable
         run: |
