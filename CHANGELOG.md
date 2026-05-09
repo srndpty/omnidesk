@@ -12,3 +12,4 @@
 - Prevented pinned tabs from being closed until they are unpinned.
 - Persisted pinned tab state across app restarts.
 - Added Ctrl+Shift+T to reopen the most recently closed tab.
+- Added Backspace as a back-navigation shortcut and restored focus to the folder left behind when navigating back to its parent.
