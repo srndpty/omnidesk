@@ -577,6 +577,7 @@ class FileBrowserTab(QWidget):
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+A"), self, self._select_all)
         QShortcut(QKeySequence("Alt+D"), self, self._focus_path_edit)
+        QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, self.go_back)
         QShortcut(QKeySequence("Alt+Left"), self, self.go_back)
         QShortcut(QKeySequence("Alt+Right"), self, self.go_forward)
 
@@ -942,10 +943,16 @@ class FileBrowserTab(QWidget):
         )
         if step is None:
             return
+        previous_path = self._current_path
+        old_pending = self._pending_selection_path
+        if has_selection_path_in_directory(previous_path, step.target):
+            self._pending_selection_path = previous_path
         if self.navigate_to(step.target, from_history=True):
             self._navigation_history = step.back_history
             self._forward_history = step.forward_history
             self._update_navigation_button_states()
+        else:
+            self._pending_selection_path = old_pending
 
     def go_forward(self) -> None:
         """Navigate to the next directory in this tab's history."""

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtGui import QKeyEvent, QShortcut
 from PyQt6.QtWidgets import QMessageBox
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
@@ -84,6 +85,17 @@ def test_file_browser_tab_navigation_buttons_use_modern_arrow_text(qtbot) -> Non
         assert button.toolTip()
 
 
+def test_file_browser_tab_backspace_shortcut_goes_back(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    shortcuts = {
+        shortcut.key().toString() for shortcut in cast(list[QShortcut], tab.findChildren(QShortcut))
+    }
+
+    assert "Backspace" in shortcuts
+
+
 def test_file_browser_tab_go_back_and_forward_navigate_history(qtbot, tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -116,6 +128,27 @@ def test_file_browser_tab_go_back_and_forward_navigate_history(qtbot, tmp_path: 
     assert tab.current_path() == third
     assert tab._navigation_history[-2:] == [first, second]
     assert not tab._forward_history
+
+
+def test_file_browser_tab_go_back_selects_folder_left_behind(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    selected: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(parent)
+    tab.navigate_to(child)
+    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
+
+    tab.go_back()
+
+    assert tab.current_path() == parent
+    assert selected == [child]
 
 
 def test_file_browser_tab_failed_history_navigation_keeps_stacks(
