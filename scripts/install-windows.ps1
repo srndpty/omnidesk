@@ -194,6 +194,9 @@ if (-not (Test-Administrator)) {
         "-Destination",
         (ConvertTo-Argument $DestinationFullPath)
     )
+    if ($VerbosePreference -ne "SilentlyContinue") {
+        $argsList += "-Verbose"
+    }
     $process = Start-Process -FilePath "powershell" -ArgumentList $argsList -Verb RunAs -Wait -PassThru
     exit $process.ExitCode
 }
