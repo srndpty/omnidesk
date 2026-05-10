@@ -133,7 +133,7 @@ pre-commit run --all-files
    ```powershell
    .\install_windows.bat -Build
    ```
-   既定では `C:\Program Files\OmniDesk` を置き換えます。配置先を変える場合は、`Program Files` 直下の `OmniDesk` または `OmniDesk-*` という名前のアプリ用ディレクトリを指定してください。`C:\Program Files` 自体、他アプリのディレクトリ、他アプリ配下のディレクトリは指定できません。
+   既定では `C:\Program Files\OmniDesk` の中身を、現在の `dist\OmniDesk` の内容で置き換えます。既存の同名ディレクトリに手動で置いたファイルは削除されます。配置先を変える場合は、`Program Files` 直下の `OmniDesk` または `OmniDesk-*` という名前のアプリ用ディレクトリを指定してください。`C:\Program Files` 自体、他アプリのディレクトリ、他アプリ配下のディレクトリは指定できません。
    ```powershell
    .\install_windows.bat -Destination "C:\Program Files\OmniDesk-dev"
    ```

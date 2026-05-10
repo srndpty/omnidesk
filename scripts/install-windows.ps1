@@ -70,9 +70,29 @@ function Test-OnedirInstall {
     )
 
     return (
-        (Test-Path (Join-Path $Path "OmniDesk.exe") -PathType Leaf) -and
-        (Test-Path (Join-Path $Path "_internal") -PathType Container)
+        (Test-Path -LiteralPath (Join-Path $Path "OmniDesk.exe") -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Path "_internal") -PathType Container)
     )
+}
+
+function Test-DirectoryEmpty {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $firstChild = Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1
+    return ($null -eq $firstChild)
+}
+
+function Test-ReparsePoint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    return ($item -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0))
 }
 
 function Test-OmniDeskProcessInDirectory {
@@ -122,11 +142,11 @@ function Clear-DirectoryContents {
         [string]$Path
     )
 
-    if (Test-Path $Path) {
+    if (Test-Path -LiteralPath $Path) {
         Get-ChildItem -LiteralPath $Path -Force |
             Remove-Item -Recurse -Force
     } else {
-        New-Item -ItemType Directory -Path $Path | Out-Null
+        [System.IO.Directory]::CreateDirectory($Path) | Out-Null
     }
 }
 
@@ -172,13 +192,13 @@ if (-not (Test-Administrator)) {
 # 検証済みのステージングからインストール先を置き換える。
 Push-Location $RepoRoot
 try {
-    if (-not (Test-Path $Source -PathType Container)) {
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
         throw "Build output was not found: $Source. Run build_windows.bat first, or pass -Build."
     }
-    if (-not (Test-Path (Join-Path $Source "OmniDesk.exe") -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Source "OmniDesk.exe") -PathType Leaf)) {
         throw "Build output was not found: $Source. Run build_windows.bat first, or pass -Build."
     }
-    if (-not (Test-Path (Join-Path $Source "_internal") -PathType Container)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Source "_internal") -PathType Container)) {
         throw "Build output is incomplete: $Source\_internal was not found."
     }
 
@@ -191,59 +211,75 @@ try {
     $stagingDestination = Join-Path $destinationParent "$destinationLeaf.installing.$replaceId"
     $backupDestination = Join-Path $destinationParent "$destinationLeaf.backup.$replaceId"
 
-    if (Test-Path $DestinationFullPath -PathType Leaf) {
+    if (Test-Path -LiteralPath $DestinationFullPath -PathType Leaf) {
         throw "Destination exists but is not a directory: $DestinationFullPath"
+    }
+    if (Test-ReparsePoint -Path $DestinationFullPath) {
+        throw "Destination must not be a reparse point: $DestinationFullPath"
     }
     if (Test-OmniDeskProcessInDirectory -Path $DestinationFullPath) {
         throw "OmniDesk is running from $DestinationFullPath. Close it before installing."
     }
 
-    # 今回の実行で使う一時ディレクトリだけを事前に掃除する。
-    Remove-Item -LiteralPath $stagingDestination -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $backupDestination -Recurse -Force -ErrorAction SilentlyContinue
-
-    New-Item -ItemType Directory -Path $stagingDestination | Out-Null
-    Copy-DirectoryContents -Source $Source -Destination $stagingDestination
-
-    # onedir 配置として使えないコピー結果なら、既存インストールを触る前に失敗させる。
-    if (-not (Test-OnedirInstall -Path $stagingDestination)) {
-        throw "Install failed: staging directory is incomplete: $stagingDestination"
-    }
-
-    $hasExistingInstall = Test-Path $DestinationFullPath -PathType Container
-    $hasBackup = $false
-    if ($hasExistingInstall) {
-        New-Item -ItemType Directory -Path $backupDestination | Out-Null
-        Copy-DirectoryContents -Source $DestinationFullPath -Destination $backupDestination
-        $hasBackup = $true
-    }
+    $backupCreated = $false
+    $backupReady = $false
+    $keepBackup = $false
 
     try {
-        Clear-DirectoryContents -Path $DestinationFullPath
-        Copy-DirectoryContents -Source $stagingDestination -Destination $DestinationFullPath
-
-        if (-not (Test-OnedirInstall -Path $DestinationFullPath)) {
-            throw "Install failed: destination directory is incomplete: $DestinationFullPath"
-        }
-    } catch {
-        if ($hasBackup) {
-            Write-Warning "Install failed. Restoring previous install from $backupDestination"
-            try {
-                Clear-DirectoryContents -Path $DestinationFullPath
-                Copy-DirectoryContents -Source $backupDestination -Destination $DestinationFullPath
-            } catch {
-                Write-Warning "Rollback failed. Backup remains at $backupDestination"
-            }
-        }
-        throw
-    }
-
-    Remove-Item -LiteralPath $stagingDestination -Recurse -Force -ErrorAction SilentlyContinue
-    if ($hasBackup) {
+        # 今回の実行で使う一時ディレクトリだけを事前に掃除する。
+        Remove-Item -LiteralPath $stagingDestination -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $backupDestination -Recurse -Force -ErrorAction SilentlyContinue
+
+        [System.IO.Directory]::CreateDirectory($stagingDestination) | Out-Null
+        Copy-DirectoryContents -Source $Source -Destination $stagingDestination
+
+        # onedir 配置として使えないコピー結果なら、既存インストールを触る前に失敗させる。
+        if (-not (Test-OnedirInstall -Path $stagingDestination)) {
+            throw "Install failed: staging directory is incomplete: $stagingDestination"
+        }
+
+        $hasExistingInstall = Test-Path -LiteralPath $DestinationFullPath -PathType Container
+        if ($hasExistingInstall) {
+            if ((-not (Test-OnedirInstall -Path $DestinationFullPath)) -and
+                (-not (Test-DirectoryEmpty -Path $DestinationFullPath))) {
+                throw "Destination exists but does not look like an OmniDesk onedir install: $DestinationFullPath"
+            }
+
+            [System.IO.Directory]::CreateDirectory($backupDestination) | Out-Null
+            $backupCreated = $true
+            Copy-DirectoryContents -Source $DestinationFullPath -Destination $backupDestination
+            $backupReady = $true
+        }
+
+        try {
+            Clear-DirectoryContents -Path $DestinationFullPath
+            Copy-DirectoryContents -Source $stagingDestination -Destination $DestinationFullPath
+
+            if (-not (Test-OnedirInstall -Path $DestinationFullPath)) {
+                throw "Install failed: destination directory is incomplete: $DestinationFullPath"
+            }
+        } catch {
+            if ($backupReady) {
+                Write-Warning "Install failed. Restoring previous install from $backupDestination"
+                try {
+                    Clear-DirectoryContents -Path $DestinationFullPath
+                    Copy-DirectoryContents -Source $backupDestination -Destination $DestinationFullPath
+                } catch {
+                    $keepBackup = $true
+                    Write-Warning "Rollback failed. Backup remains at $backupDestination"
+                }
+            }
+            throw
+        }
+
+        Write-Host "Installed OmniDesk to $DestinationFullPath"
+    } finally {
+        Remove-Item -LiteralPath $stagingDestination -Recurse -Force -ErrorAction SilentlyContinue
+        if ($backupCreated -and -not $keepBackup) {
+            Remove-Item -LiteralPath $backupDestination -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
-    Write-Host "Installed OmniDesk to $DestinationFullPath"
 } finally {
     Pop-Location
 }
