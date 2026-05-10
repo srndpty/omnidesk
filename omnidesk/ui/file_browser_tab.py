@@ -763,10 +763,13 @@ class FileBrowserTab(QWidget):
         self.refresh()
         self._update_action_states()
 
-    def _perform_copy_or_move(self, sources: list[Path], dest_dir: Path, *, move: bool) -> None:
+    def _perform_copy_or_move(
+        self, sources: list[Path], dest_dir: Path, *, move: bool
+    ) -> list[str]:
         errors = perform_copy_or_move(sources, dest_dir, move=move)
         if errors:
             QMessageBox.warning(self, "Operation issues", "\n".join(errors))
+        return errors
 
     def _resolve_destination(self, dest_dir: Path, name: str, move: bool) -> Path:
         return resolve_destination(dest_dir, name, move)
@@ -778,15 +781,49 @@ class FileBrowserTab(QWidget):
         except Exception:
             return False
 
-    def _handle_external_drop(self, paths: list[Path], target_dir: Path, move: bool) -> None:
+    def _handle_external_drop(
+        self,
+        paths: list[Path],
+        target_dir: Path,
+        move: bool,
+        *,
+        select_after: list[Path] | None = None,
+    ) -> bool:
         if not target_dir.exists():
             QMessageBox.warning(self, "Drop failed", f"Destination {target_dir} does not exist.")
-            return
+            return False
         if move and has_blocked_self_move(paths, target_dir):
             QMessageBox.warning(self, "Drop failed", "Cannot move a folder into itself.")
-            return
-        self._perform_copy_or_move(paths, target_dir, move=move)
+            return False
+        errors = self._perform_copy_or_move(paths, target_dir, move=move)
+        if not errors and select_after:
+            self._pending_selection_path = next(
+                (path for path in select_after if path.exists()),
+                None,
+            )
         self.refresh()
+        if self._pending_selection_path is not None:
+            self._select_path(self._pending_selection_path)
+        return not bool(errors)
+
+    def selection_replacement_for_removed_paths(self, paths: list[Path]) -> Path | None:
+        return self._selection_path_before_deleted_items(paths)
+
+    def restore_selection_after_removed_paths(
+        self,
+        removed_paths: list[Path],
+        replacement: Path | None,
+    ) -> None:
+        if replacement is None:
+            return
+        if not any(
+            path.parent == self._current_path and not path.exists() for path in removed_paths
+        ):
+            return
+        self._pending_selection_path = replacement
+        self.refresh()
+        self._select_path(replacement)
+        self.focus_view()
 
     # ------------------------------------------------------------------
     # public API
