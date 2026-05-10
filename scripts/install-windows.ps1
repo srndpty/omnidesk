@@ -89,6 +89,33 @@ function Test-OmniDeskProcessInDirectory {
     return $false
 }
 
+function Copy-DirectoryContents {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    Get-ChildItem -LiteralPath $Source -Force |
+        Copy-Item -Destination $Destination -Recurse -Force
+}
+
+function Clear-DirectoryContents {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (Test-Path $Path) {
+        Get-ChildItem -LiteralPath $Path -Force |
+            Remove-Item -Recurse -Force
+    } else {
+        New-Item -ItemType Directory -Path $Path | Out-Null
+    }
+}
+
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $Source = Join-Path $RepoRoot "dist\OmniDesk"
 $DestinationFullPath = [System.IO.Path]::GetFullPath($Destination)
@@ -145,6 +172,7 @@ try {
     $destinationLeaf = Split-Path -Leaf $DestinationFullPath
     $replaceId = [System.Guid]::NewGuid().ToString("N")
     $stagingDestination = Join-Path $destinationParent "$destinationLeaf.installing.$replaceId"
+    $backupDestination = Join-Path $destinationParent "$destinationLeaf.backup.$replaceId"
 
     if (Test-Path $DestinationFullPath -PathType Leaf) {
         throw "Destination exists but is not a directory: $DestinationFullPath"
@@ -156,31 +184,48 @@ try {
     # 古いインストーラ方式で残った一時ディレクトリを掃除する。
     Remove-Item -LiteralPath "$DestinationFullPath.tmp" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $stagingDestination -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $backupDestination -Recurse -Force -ErrorAction SilentlyContinue
 
     New-Item -ItemType Directory -Path $stagingDestination | Out-Null
-    Get-ChildItem -LiteralPath $Source -Force |
-        Copy-Item -Destination $stagingDestination -Recurse -Force
+    Copy-DirectoryContents -Source $Source -Destination $stagingDestination
 
     # onedir 配置として使えないコピー結果なら、既存インストールを触る前に失敗させる。
     if (-not (Test-OnedirInstall -Path $stagingDestination)) {
         throw "Install failed: staging directory is incomplete: $stagingDestination"
     }
 
-    if (Test-Path $DestinationFullPath) {
-        Get-ChildItem -LiteralPath $DestinationFullPath -Force |
-            Remove-Item -Recurse -Force
-    } else {
-        New-Item -ItemType Directory -Path $DestinationFullPath | Out-Null
+    $hasExistingInstall = Test-Path $DestinationFullPath -PathType Container
+    $hasBackup = $false
+    if ($hasExistingInstall) {
+        New-Item -ItemType Directory -Path $backupDestination | Out-Null
+        Copy-DirectoryContents -Source $DestinationFullPath -Destination $backupDestination
+        $hasBackup = $true
     }
 
-    Get-ChildItem -LiteralPath $stagingDestination -Force |
-        Copy-Item -Destination $DestinationFullPath -Recurse -Force
+    try {
+        Clear-DirectoryContents -Path $DestinationFullPath
+        Copy-DirectoryContents -Source $stagingDestination -Destination $DestinationFullPath
 
-    if (-not (Test-OnedirInstall -Path $DestinationFullPath)) {
-        throw "Install failed: destination directory is incomplete: $DestinationFullPath"
+        if (-not (Test-OnedirInstall -Path $DestinationFullPath)) {
+            throw "Install failed: destination directory is incomplete: $DestinationFullPath"
+        }
+    } catch {
+        if ($hasBackup) {
+            Write-Warning "Install failed. Restoring previous install from $backupDestination"
+            try {
+                Clear-DirectoryContents -Path $DestinationFullPath
+                Copy-DirectoryContents -Source $backupDestination -Destination $DestinationFullPath
+            } catch {
+                Write-Warning "Rollback failed. Backup remains at $backupDestination"
+            }
+        }
+        throw
     }
 
     Remove-Item -LiteralPath $stagingDestination -Recurse -Force -ErrorAction SilentlyContinue
+    if ($hasBackup) {
+        Remove-Item -LiteralPath $backupDestination -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
     Write-Host "Installed OmniDesk to $DestinationFullPath"
 } finally {
