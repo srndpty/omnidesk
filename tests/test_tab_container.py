@@ -22,6 +22,7 @@ class FakeBrowserTab(QWidget):
         self.name_column_width = name_column_width
         self.calls: list[str] = []
         self.selection_replacement: Path | None = None
+        self.drop_result = True
 
     def navigate_to(self, path: Path) -> None:
         self.calls.append(f"navigate:{path}")
@@ -57,7 +58,7 @@ class FakeBrowserTab(QWidget):
         select_after=None,
     ) -> bool:
         self.calls.append(f"drop:{paths}:{dest_dir}:{move}:{select_after}")
-        return True
+        return self.drop_result
 
     def selection_replacement_for_removed_paths(self, paths: list[Path]) -> Path | None:
         self.calls.append(f"replacement:{paths}")
@@ -425,6 +426,34 @@ def test_drop_before_hover_delay_keeps_current_tab_and_restores_source_selection
     assert container._tabs.currentIndex() == 0
     assert any(call.startswith("drop:") for call in target_tab.calls)
     assert source_tab.calls[-1] == f"restore:{[dragged]}:{source_tab.selection_replacement}"
+
+
+def test_partial_move_failure_still_restores_source_selection(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    source_tab = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "source"))
+    target_tab = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "target"))
+    container._tabs.setCurrentIndex(0)
+    source_tab.selection_replacement = tmp_path / "source" / "before.txt"
+    target_tab.drop_result = False
+    tab_bar = container._tabs.tabBar()
+    monkeypatch.setattr(tab_bar, "tabAt", lambda _point: 1)
+    paths = [
+        tmp_path / "source" / "moved.txt",
+        tmp_path / "source" / "conflict.txt",
+    ]
+    urls = [QUrl.fromLocalFile(str(path)) for path in paths]
+
+    drop = StubEvent(QEvent.Type.Drop, urls=urls)
+    assert container.eventFilter(tab_bar, cast(QEvent, drop))
+
+    assert any(call.startswith("drop:") for call in target_tab.calls)
+    assert source_tab.calls[-1] == f"restore:{paths}:{source_tab.selection_replacement}"
 
 
 def test_drop_after_hover_delay_selects_moved_item_in_target_tab(

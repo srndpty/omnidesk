@@ -260,10 +260,11 @@ class TabContainer(QWidget):
             move,
             select_after=select_after,
         )
-        if not succeeded or not move:
+        if not move:
             return
         if select_in_target:
-            target_tab.focus_view()
+            if succeeded:
+                target_tab.focus_view()
             return
         if source_tab is not None and source_tab is not target_tab and not select_in_target:
             source_tab.restore_selection_after_removed_paths(paths, source_replacement)
