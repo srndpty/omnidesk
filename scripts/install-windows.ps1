@@ -15,13 +15,35 @@ function ConvertTo-Argument([string]$Value) {
     return '"' + $Value.Replace('"', '\"') + '"'
 }
 
+function Test-ChildPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Parent
+    )
+
+    $directorySeparators = @(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators)
+    $fullParent = [System.IO.Path]::GetFullPath($Parent).TrimEnd($directorySeparators)
+    if ([string]::Equals($fullPath, $fullParent, [StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    $parentWithSeparator = $fullParent + [System.IO.Path]::DirectorySeparatorChar
+    return $fullPath.StartsWith($parentWithSeparator, [StringComparison]::OrdinalIgnoreCase)
+}
+
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $Source = Join-Path $RepoRoot "dist\OmniDesk"
 $DestinationFullPath = [System.IO.Path]::GetFullPath($Destination)
 $ExpectedProgramFilesRoot = [System.IO.Path]::GetFullPath($env:ProgramFiles)
 
-if (-not $DestinationFullPath.StartsWith($ExpectedProgramFilesRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Destination must be under Program Files: $DestinationFullPath"
+if (-not (Test-ChildPath -Path $DestinationFullPath -Parent $ExpectedProgramFilesRoot)) {
+    throw "Destination must be a child directory under Program Files: $DestinationFullPath"
 }
 
 if (-not (Test-Administrator)) {
