@@ -70,8 +70,8 @@ function Test-OnedirInstall {
     )
 
     return (
-        (Test-Path (Join-Path $Path "OmniDesk.exe")) -and
-        (Test-Path (Join-Path $Path "_internal"))
+        (Test-Path (Join-Path $Path "OmniDesk.exe") -PathType Leaf) -and
+        (Test-Path (Join-Path $Path "_internal") -PathType Container)
     )
 }
 
@@ -175,10 +175,10 @@ try {
     if (-not (Test-Path $Source -PathType Container)) {
         throw "Build output was not found: $Source. Run build_windows.bat first, or pass -Build."
     }
-    if (-not (Test-Path (Join-Path $Source "OmniDesk.exe"))) {
+    if (-not (Test-Path (Join-Path $Source "OmniDesk.exe") -PathType Leaf)) {
         throw "Build output was not found: $Source. Run build_windows.bat first, or pass -Build."
     }
-    if (-not (Test-Path (Join-Path $Source "_internal"))) {
+    if (-not (Test-Path (Join-Path $Source "_internal") -PathType Container)) {
         throw "Build output is incomplete: $Source\_internal was not found."
     }
 
