@@ -125,7 +125,19 @@ pre-commit run --all-files
    ```
    または `.\scripts\build-windows.ps1` を実行すると、Ruff・Pyright・pytest・PyInstaller の順に実行し、配布用の `dist/OmniDesk.zip` も生成します。`build_windows.bat` は互換用ラッパーとして同じスクリプトを呼び出します。
 3. 成功すると `dist/OmniDesk/OmniDesk.exe` が生成されます。`.\scripts\build-windows.ps1` を実行した場合は、配布用の `dist/OmniDesk.zip` も生成されます。`_internal` フォルダも同じディレクトリに置いたまま配布してください。初回起動時は Windows SmartScreen により警告が表示される場合があります。
-4. 単体exeが必要な場合は、別ターゲットとして次を実行します。
+4. ローカル環境でビルド済みの `dist\OmniDesk` を `C:\Program Files\OmniDesk` に配置して使う場合は、次を実行します。未管理者権限で実行した場合は UAC で昇格してからコピーします。
+   ```powershell
+   .\install_windows.bat
+   ```
+   ビルドからインストールまで一度に行う場合:
+   ```powershell
+   .\install_windows.bat -Build
+   ```
+   既定では `C:\Program Files\OmniDesk` を置き換えます。配置先を変える場合は、`Program Files` 配下のパスを指定してください。
+   ```powershell
+   .\install_windows.bat -Destination "C:\Program Files\OmniDesk-dev"
+   ```
+5. 単体exeが必要な場合は、別ターゲットとして次を実行します。
    ```bash
    pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build-onefile --distpath dist packaging\pyinstaller\OmniDesk-onefile.spec
    ```
