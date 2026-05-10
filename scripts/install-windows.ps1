@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# 権限確認と引数クォート用の小さなヘルパー。
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -15,6 +16,7 @@ function ConvertTo-Argument([string]$Value) {
     return '"' + $Value.Replace('"', '\"') + '"'
 }
 
+# インストール先の安全確認。宛先の中身を削除するため厳しめに判定する。
 function Test-ChildPath {
     param(
         [Parameter(Mandatory = $true)]
@@ -37,15 +39,34 @@ function Test-ChildPath {
     return $fullPath.StartsWith($parentWithSeparator, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-OmniDeskInstallDirectoryName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $directorySeparators = @(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $leafName = Split-Path -Leaf ([System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators))
+    return $leafName -eq "OmniDesk" -or $leafName.StartsWith("OmniDesk-", [StringComparison]::OrdinalIgnoreCase)
+}
+
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $Source = Join-Path $RepoRoot "dist\OmniDesk"
 $DestinationFullPath = [System.IO.Path]::GetFullPath($Destination)
 $ExpectedProgramFilesRoot = [System.IO.Path]::GetFullPath($env:ProgramFiles)
 
+# 昇格を求める前に、広すぎる宛先や無関係な宛先を拒否する。
 if (-not (Test-ChildPath -Path $DestinationFullPath -Parent $ExpectedProgramFilesRoot)) {
     throw "Destination must be a child directory under Program Files: $DestinationFullPath"
 }
+if (-not (Test-OmniDeskInstallDirectoryName -Path $DestinationFullPath)) {
+    throw "Destination directory name must be OmniDesk or OmniDesk-*: $DestinationFullPath"
+}
 
+# Program Files へ書き込むため、未昇格なら管理者として再実行する。
 if (-not (Test-Administrator)) {
     $argsList = @(
         "-NoProfile",
@@ -63,6 +84,7 @@ if (-not (Test-Administrator)) {
     exit $process.ExitCode
 }
 
+# 必要ならビルドし、インストール先ディレクトリの中身を置き換える。
 Push-Location $RepoRoot
 try {
     if ($Build) {
@@ -84,10 +106,12 @@ try {
         New-Item -ItemType Directory -Path $DestinationFullPath | Out-Null
     }
 
+    # 古いインストーラ方式で残った一時ディレクトリを掃除する。
     Remove-Item -LiteralPath "$DestinationFullPath.tmp" -Recurse -Force -ErrorAction SilentlyContinue
     Get-ChildItem -LiteralPath $Source -Force |
         Copy-Item -Destination $DestinationFullPath -Recurse -Force
 
+    # onedir 配置として使えないコピー結果なら明示的に失敗させる。
     if (-not (Test-Path (Join-Path $DestinationFullPath "OmniDesk.exe"))) {
         throw "Install failed: OmniDesk.exe was not copied to $DestinationFullPath"
     }
