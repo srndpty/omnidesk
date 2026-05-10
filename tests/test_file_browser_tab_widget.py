@@ -8,6 +8,7 @@ from PyQt6.QtGui import QKeyEvent, QShortcut
 from PyQt6.QtWidgets import QMessageBox
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
+from omnidesk.ui.file_browser_status import BrowserStatus
 from omnidesk.ui.file_browser_tab import FileBrowserTab
 
 
@@ -716,6 +717,54 @@ def test_file_browser_tab_request_settled_thumbnails_resets_scrolling(
 
     assert not tab._is_scrolling_for_thumbnails
     assert calls == [False]
+
+
+def test_file_browser_tab_selection_status_uses_cached_item_counts(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    selected = tmp_path / "selected.txt"
+    selected.write_bytes(b"abc")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._status_folder_count = 4
+    tab._status_file_count = 5
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [selected])
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_item_counts",
+        lambda _path: (_ for _ in ()).throw(AssertionError("must not scan")),
+    )
+    statuses: list[object] = []
+    tab.statusChanged.connect(statuses.append)
+
+    tab._update_action_states()
+
+    status = cast(BrowserStatus, statuses[-1])
+    assert status.folder_count == 4
+    assert status.file_count == 5
+    assert status.selected_count == 1
+    assert status.selected_file_size == 3
+
+
+def test_file_browser_tab_directory_loaded_updates_status_item_counts(
+    monkeypatch,
+    qtbot,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(file_browser_tab_module, "directory_item_counts", lambda _path: (2, 3))
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [])
+    statuses: list[object] = []
+    tab.statusChanged.connect(statuses.append)
+
+    tab._on_directory_loaded("")
+
+    status = cast(BrowserStatus, statuses[-1])
+    assert tab._status_folder_count == 2
+    assert tab._status_file_count == 3
+    assert status.total_count == 5
 
 
 class _FakeFileInfo:

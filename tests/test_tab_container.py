@@ -7,6 +7,7 @@ from PyQt6.QtCore import QEvent, QPoint, Qt, QUrl, pyqtSignal
 from PyQt6.QtWidgets import QWidget
 
 import omnidesk.ui.tab_container as tab_container_module
+from omnidesk.ui.file_browser_status import BrowserStatus
 from omnidesk.ui.tab_container import TabContainer
 
 
@@ -14,6 +15,7 @@ class FakeBrowserTab(QWidget):
     directoryChanged = pyqtSignal(Path)
     requestOpenInNewTab = pyqtSignal(Path)
     nameColumnWidthChanged = pyqtSignal(int)
+    statusChanged = pyqtSignal(object)
     DEFAULT_NAME_COLUMN_WIDTH = 420
 
     def __init__(self, parent=None, *, name_column_width=None):
@@ -30,6 +32,9 @@ class FakeBrowserTab(QWidget):
 
     def current_path(self) -> Path:
         return self._path
+
+    def status_summary(self) -> BrowserStatus:
+        return BrowserStatus()
 
     def go_up(self) -> None:
         self.calls.append("go_up")

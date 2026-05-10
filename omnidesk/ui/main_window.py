@@ -6,12 +6,13 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThreadPool
 from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import QFileDialog, QMainWindow, QStackedWidget, QToolBar
+from PyQt6.QtWidgets import QFileDialog, QLabel, QMainWindow, QSizePolicy, QStackedWidget, QToolBar
 
 from ..utils.config import AppSettings, load_settings, save_settings
 from ..utils.paths import get_default_start_path
 from ..utils.windows_theme import apply_dark_title_bar
 from .column_browser import ColumnBrowser
+from .file_browser_status import BrowserStatus, browser_status_for, format_browser_details
 from .icons import application_icon
 from .tab_container import TabContainer
 
@@ -27,9 +28,14 @@ class MainWindow(QMainWindow):
 
         self._settings = AppSettings.from_raw(load_settings())
         name_column_width = self._settings.name_column_width()
+        self._status_path = get_default_start_path()
+        self._status_summary = BrowserStatus()
+        self._status_path_label = QLabel(self)
+        self._status_detail_label = QLabel(self)
 
         self._tab_container = TabContainer(self, name_column_width=name_column_width)
         self._tab_container.currentPathChanged.connect(self._update_status_path)
+        self._tab_container.statusChanged.connect(self._update_status_summary)
         self._tab_container.tabCountChanged.connect(self._update_action_state)
         self._tab_container.nameColumnWidthChanged.connect(self._handle_name_column_width_changed)
 
@@ -44,8 +50,7 @@ class MainWindow(QMainWindow):
 
         self._create_actions()
         self._setup_toolbar()
-
-        self.statusBar().showMessage("Starting...")
+        self._setup_status_bar()
 
         self._restore_initial_state()
         apply_dark_title_bar(self)
@@ -134,6 +139,22 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._toggle_view_action)
         self.addToolBar(toolbar)
 
+    def _setup_status_bar(self) -> None:
+        self._status_path_label.setMinimumWidth(0)
+        self._status_path_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        self._status_detail_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._status_detail_label.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.statusBar().addWidget(self._status_path_label, 1)
+        self.statusBar().addPermanentWidget(self._status_detail_label, 0)
+
     # ------------------------------------------------------------------
     def _handle_new_tab(self) -> None:
         current = self._tab_container.current_tab()
@@ -215,8 +236,36 @@ class MainWindow(QMainWindow):
         return self._column_browser.current_path()
 
     def _update_status_path(self, path: Path) -> None:
-        self.statusBar().showMessage(str(path))
+        self._status_path = path
+        self._status_summary = browser_status_for(path)
+        self._show_status()
         self.setWindowTitle(f"OmniDesk - {path}")
+
+    def _update_status_summary(self, path: Path, status: object) -> None:
+        if not isinstance(status, BrowserStatus):
+            return
+        self._status_path = path
+        self._status_summary = status
+        self._show_status()
+        self.setWindowTitle(f"OmniDesk - {path}")
+
+    def _show_status(self) -> None:
+        path_text = str(self._status_path)
+        self._status_path_label.setToolTip(path_text)
+        self._status_path_label.setText(self._elided_status_path())
+        self._status_detail_label.setText(format_browser_details(self._status_summary))
+        self._status_detail_label.setToolTip(self._status_detail_label.text())
+
+    def _elided_status_path(self) -> str:
+        path_text = str(self._status_path)
+        width = self._status_path_label.width()
+        if width <= 0:
+            return path_text
+        return self._status_path_label.fontMetrics().elidedText(
+            path_text,
+            Qt.TextElideMode.ElideMiddle,
+            width,
+        )
 
     def _update_action_state(self) -> None:
         in_tabs = self._is_tab_mode()
@@ -242,6 +291,10 @@ class MainWindow(QMainWindow):
             self._tab_container.focus_current()
         else:
             self._column_browser.focus_view()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._show_status()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         QThreadPool.globalInstance().waitForDone()

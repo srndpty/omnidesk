@@ -81,6 +81,11 @@ from .file_browser_selection import (
     rubber_band_intersecting_rows,
     rubber_band_target_rows,
 )
+from .file_browser_status import (
+    BrowserStatus,
+    browser_status_from_counts,
+    directory_item_counts,
+)
 from .file_browser_visible import index_identity, tile_probe_points, tile_probe_step
 from .file_operations import (
     create_file,
@@ -378,6 +383,7 @@ class FileBrowserTab(QWidget):
     directoryChanged = pyqtSignal(Path)
     requestOpenInNewTab = pyqtSignal(Path)
     nameColumnWidthChanged = pyqtSignal(int)
+    statusChanged = pyqtSignal(object)
 
     def __init__(
         self,
@@ -440,6 +446,8 @@ class FileBrowserTab(QWidget):
         self._manual_media_mode: bool | None = None
         self._clipboard: _ClipboardPayload | None = None
         self._pending_selection_path: Path | None = None
+        self._status_folder_count = 0
+        self._status_file_count = 0
         self._create_actions()
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")
@@ -597,6 +605,7 @@ class FileBrowserTab(QWidget):
         self._new_file_action.setEnabled(states["new_file"])
         self._new_folder_action.setEnabled(states["new_folder"])
         self._update_navigation_button_states()
+        self._emit_status_changed(paths)
 
     def _update_navigation_button_states(self) -> None:
         if not hasattr(self, "_back_button") or not hasattr(self, "_forward_button"):
@@ -621,6 +630,13 @@ class FileBrowserTab(QWidget):
     def _selected_paths(self) -> list[Path]:
         view = self._active_view()
         return cast(_BaseFileViewMixin, view).selected_paths()
+
+    def status_summary(self) -> BrowserStatus:
+        return browser_status_from_counts(
+            self._status_folder_count,
+            self._status_file_count,
+            self._selected_paths(),
+        )
 
     def _select_all(self) -> None:
         view = self._active_view()
@@ -1035,10 +1051,12 @@ class FileBrowserTab(QWidget):
     # internal slots
     # ------------------------------------------------------------------
     def _on_directory_loaded(self, _: str) -> None:
+        self._update_status_item_counts()
         self._update_media_mode(self._current_path, select_default=False)
         self._select_pending_or_first_row()
         self._configure_header_sections()
         self._apply_name_column_width()
+        self._emit_status_changed()
 
     def _handle_path_entered(self) -> None:
         text = self._path_edit.text().strip()
@@ -1345,3 +1363,17 @@ class FileBrowserTab(QWidget):
 
     def _handle_selection_changed(self, *_args) -> None:
         self._update_action_states()
+
+    def _emit_status_changed(self, selected_paths: list[Path] | None = None) -> None:
+        self.statusChanged.emit(
+            browser_status_from_counts(
+                self._status_folder_count,
+                self._status_file_count,
+                selected_paths,
+            )
+        )
+
+    def _update_status_item_counts(self) -> None:
+        self._status_folder_count, self._status_file_count = directory_item_counts(
+            self._current_path
+        )

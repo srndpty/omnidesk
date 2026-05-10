@@ -61,6 +61,7 @@ class TabContainer(QWidget):
     """Container for multiple FileBrowserTab widgets."""
 
     currentPathChanged = pyqtSignal(Path)
+    statusChanged = pyqtSignal(Path, object)
     tabCountChanged = pyqtSignal(int)
     nameColumnWidthChanged = pyqtSignal(int)
 
@@ -300,6 +301,7 @@ class TabContainer(QWidget):
         tab = FileBrowserTab(self, name_column_width=self._name_column_width)
         tab.navigate_to(path)
         tab.directoryChanged.connect(self._make_directory_changed_handler(tab))
+        tab.statusChanged.connect(partial(self._handle_tab_status_changed, source=tab))
         tab.requestOpenInNewTab.connect(self._open_requested_path_in_new_tab)
         tab.nameColumnWidthChanged.connect(
             partial(self._handle_name_column_width_changed, source=tab)
@@ -464,6 +466,7 @@ class TabContainer(QWidget):
                 widget.activate()
                 # 以前 _emit_current_path がやっていた処理もここで行う
                 self.currentPathChanged.emit(widget.current_path())
+                self.statusChanged.emit(widget.current_path(), widget.status_summary())
             # それ以外のタブは deactivate する
             else:
                 widget.deactivate()
@@ -479,6 +482,10 @@ class TabContainer(QWidget):
                 self.currentPathChanged.emit(path)
 
         return handler
+
+    def _handle_tab_status_changed(self, status: object, *, source: FileBrowserTab) -> None:
+        if self._tabs.currentWidget() is source:
+            self.statusChanged.emit(source.current_path(), status)
 
     def _handle_name_column_width_changed(self, width: int, *, source: FileBrowserTab) -> None:
         if width <= 0 or width == self._name_column_width:

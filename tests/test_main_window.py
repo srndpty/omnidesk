@@ -7,6 +7,7 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget
 
 import omnidesk.ui.main_window as main_window_module
+from omnidesk.ui.file_browser_status import BrowserStatus
 from omnidesk.ui.main_window import MainWindow
 
 
@@ -35,6 +36,7 @@ class FakeTab(QWidget):
 
 class FakeTabContainer(QWidget):
     currentPathChanged = pyqtSignal(Path)
+    statusChanged = pyqtSignal(Path, object)
     tabCountChanged = pyqtSignal(int)
     nameColumnWidthChanged = pyqtSignal(int)
 
@@ -234,3 +236,53 @@ def test_main_window_persists_width_and_session(monkeypatch, qtbot, tmp_path: Pa
     assert settings["session"]["pinned_tabs"] == [False]
     assert settings["session"]["view_mode"] == "tabs"
     assert saved
+
+
+def test_main_window_status_bar_shows_counts_and_selection(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    saved: list[dict] = []
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("file", encoding="utf-8")
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window._status_path_label.toolTip() == str(tmp_path)
+    assert window._status_detail_label.text() == "2個の項目（フォルダ1個/ファイル1個）"
+
+    status = BrowserStatus(
+        total_count=2,
+        folder_count=1,
+        file_count=1,
+        selected_count=2,
+        selected_file_size=4,
+    )
+    window._tab_container.statusChanged.emit(tmp_path, status)
+
+    assert window._status_detail_label.text().startswith("2個選択中（ファイル合計 4 B）")
+    assert window._status_detail_label.text().endswith("2個の項目（フォルダ1個/ファイル1個）")
+
+
+def test_main_window_status_path_elides_when_space_is_limited(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    saved: list[dict] = []
+    nested = tmp_path / "very-long-folder-name" / "another-long-folder-name"
+    nested.mkdir(parents=True)
+    _patch_main_window(monkeypatch, {}, nested, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._status_path_label.resize(30, window._status_path_label.height())
+
+    window._show_status()
+
+    assert window._status_path_label.toolTip() == str(nested)
+    assert window._status_path_label.text() != str(nested)
+    assert "…" in window._status_path_label.text()

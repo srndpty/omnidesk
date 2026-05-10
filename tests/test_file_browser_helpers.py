@@ -9,6 +9,14 @@ from omnidesk.ui.file_browser_helpers import (
     resolve_destination,
     resolve_windows_program,
 )
+from omnidesk.ui.file_browser_status import (
+    BrowserStatus,
+    browser_status_for,
+    browser_status_from_counts,
+    format_browser_details,
+    format_browser_status,
+    format_size,
+)
 
 
 def test_resolve_destination_returns_original_when_available(tmp_path: Path) -> None:
@@ -153,3 +161,58 @@ def test_resolve_windows_program_returns_none_when_missing(tmp_path: Path) -> No
         environ={"PATHEXT": ".EXE"},
         which=lambda _program: None,
     ) == (None, False)
+
+
+def test_browser_status_counts_items_and_selected_file_size(tmp_path: Path) -> None:
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    file_a = tmp_path / "a.txt"
+    file_b = tmp_path / "b.txt"
+    file_a.write_bytes(b"abc")
+    file_b.write_bytes(b"defgh")
+
+    status = browser_status_for(tmp_path, [folder, file_a, file_b])
+
+    assert status == BrowserStatus(
+        total_count=3,
+        folder_count=1,
+        file_count=2,
+        selected_count=3,
+        selected_file_size=8,
+    )
+
+
+def test_browser_status_from_counts_does_not_scan_directory(tmp_path: Path) -> None:
+    selected = tmp_path / "selected.txt"
+    selected.write_bytes(b"abc")
+
+    status = browser_status_from_counts(10, 20, [selected])
+
+    assert status == BrowserStatus(
+        total_count=30,
+        folder_count=10,
+        file_count=20,
+        selected_count=1,
+        selected_file_size=3,
+    )
+
+
+def test_format_browser_status_includes_selection_summary(tmp_path: Path) -> None:
+    status = BrowserStatus(
+        total_count=4,
+        folder_count=1,
+        file_count=3,
+        selected_count=2,
+        selected_file_size=1536,
+    )
+
+    assert format_size(1536) == "1.50 KB"
+    assert (
+        format_browser_details(status) == "2個選択中（ファイル合計 1.50 KB） | "
+        "4個の項目（フォルダ1個/ファイル3個）"
+    )
+    assert (
+        format_browser_status(tmp_path, status)
+        == f"{tmp_path} | 2個選択中（ファイル合計 1.50 KB） | "
+        "4個の項目（フォルダ1個/ファイル3個）"
+    )
