@@ -95,6 +95,9 @@ try {
     if (-not (Test-Path (Join-Path $Source "OmniDesk.exe"))) {
         throw "Build output was not found: $Source. Run build_windows.bat first, or pass -Build."
     }
+    if (-not (Test-Path (Join-Path $Source "_internal"))) {
+        throw "Build output is incomplete: $Source\_internal was not found."
+    }
 
     Write-Host "Installing from $Source"
     Write-Host "Installing to   $DestinationFullPath"
