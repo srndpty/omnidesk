@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$Build,
     [string]$Destination = (Join-Path $env:ProgramFiles "OmniDesk")
 )
@@ -8,12 +8,12 @@ $ErrorActionPreference = "Stop"
 # 権限確認と引数クォート用の小さなヘルパー。
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $principal = New-Object Security.Principal.WindowsPrincipal -ArgumentList $identity
+    return ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 }
 
 function ConvertTo-Argument([string]$Value) {
-    return '"' + $Value.Replace('"', '\"') + '"'
+    return ('"' + $Value.Replace('"', '\"') + '"')
 }
 
 # インストール先の安全確認。宛先の中身を削除するため厳しめに判定する。
@@ -36,7 +36,7 @@ function Test-ChildPath {
         return $false
     }
     $parentWithSeparator = $fullParent + [System.IO.Path]::DirectorySeparatorChar
-    return $fullPath.StartsWith($parentWithSeparator, [StringComparison]::OrdinalIgnoreCase)
+    return ($fullPath.StartsWith($parentWithSeparator, [StringComparison]::OrdinalIgnoreCase))
 }
 
 function Test-OmniDeskInstallDirectoryName {
@@ -50,7 +50,10 @@ function Test-OmniDeskInstallDirectoryName {
         [System.IO.Path]::AltDirectorySeparatorChar
     )
     $leafName = Split-Path -Leaf ([System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators))
-    return $leafName -eq "OmniDesk" -or $leafName.StartsWith("OmniDesk-", [StringComparison]::OrdinalIgnoreCase)
+    return (
+        $leafName -eq "OmniDesk" -or
+        $leafName.StartsWith("OmniDesk-", [StringComparison]::OrdinalIgnoreCase)
+    )
 }
 
 function Test-OnedirInstall {
@@ -59,8 +62,10 @@ function Test-OnedirInstall {
         [string]$Path
     )
 
-    return (Test-Path (Join-Path $Path "OmniDesk.exe")) -and
+    return (
+        (Test-Path (Join-Path $Path "OmniDesk.exe")) -and
         (Test-Path (Join-Path $Path "_internal"))
+    )
 }
 
 function Test-OmniDeskProcessInDirectory {
@@ -73,8 +78,10 @@ function Test-OmniDeskProcessInDirectory {
         [System.IO.Path]::DirectorySeparatorChar,
         [System.IO.Path]::AltDirectorySeparatorChar
     )
-    $installRoot = [System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators) +
+    $installRoot = (
+        [System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators) +
         [System.IO.Path]::DirectorySeparatorChar
+    )
 
     foreach ($process in Get-Process -Name "OmniDesk" -ErrorAction SilentlyContinue) {
         try {
