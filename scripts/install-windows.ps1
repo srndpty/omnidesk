@@ -143,6 +143,17 @@ if (-not (Test-OmniDeskInstallDirectoryName -Path $DestinationFullPath)) {
     throw "Destination directory name must be OmniDesk or OmniDesk-*: $DestinationFullPath"
 }
 
+# ビルドは通常ユーザーの venv/PATH で実行し、コピーだけを昇格する。
+if ($Build) {
+    Push-Location $RepoRoot
+    try {
+        Write-Host "Building OmniDesk..."
+        & (Join-Path $PSScriptRoot "build-windows.ps1")
+    } finally {
+        Pop-Location
+    }
+}
+
 # Program Files へ書き込むため、未昇格なら管理者として再実行する。
 if (-not (Test-Administrator)) {
     $argsList = @(
@@ -154,21 +165,13 @@ if (-not (Test-Administrator)) {
         "-Destination",
         (ConvertTo-Argument $DestinationFullPath)
     )
-    if ($Build) {
-        $argsList += "-Build"
-    }
     $process = Start-Process -FilePath "powershell" -ArgumentList $argsList -Verb RunAs -Wait -PassThru
     exit $process.ExitCode
 }
 
-# 必要ならビルドし、検証済みのステージングからインストール先を置き換える。
+# 検証済みのステージングからインストール先を置き換える。
 Push-Location $RepoRoot
 try {
-    if ($Build) {
-        Write-Host "Building OmniDesk..."
-        & (Join-Path $PSScriptRoot "build-windows.ps1")
-    }
-
     if (-not (Test-Path $Source -PathType Container)) {
         throw "Build output was not found: $Source. Run build_windows.bat first, or pass -Build."
     }

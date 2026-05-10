@@ -129,7 +129,7 @@ pre-commit run --all-files
    ```powershell
    .\install_windows.bat
    ```
-   ビルドからインストールまで一度に行う場合:
+   ビルドからインストールまで一度に行う場合は、ビルドを通常ユーザーで実行してからコピー時だけ昇格します。
    ```powershell
    .\install_windows.bat -Build
    ```
