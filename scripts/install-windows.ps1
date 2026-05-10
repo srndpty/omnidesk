@@ -5,6 +5,11 @@
 
 $ErrorActionPreference = "Stop"
 
+$Script:DirectorySeparators = @(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+)
+
 # 権限確認と引数クォート用の小さなヘルパー。
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -19,11 +24,7 @@ function ConvertTo-Argument([string]$Value) {
 }
 
 function ConvertTo-FullDirectoryPath([string]$Path) {
-    $directorySeparators = @(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar
-    )
-    return ([System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators))
+    return ([System.IO.Path]::GetFullPath($Path).TrimEnd($Script:DirectorySeparators))
 }
 
 # インストール先の安全確認。宛先の中身を削除するため厳しめに判定する。
@@ -36,12 +37,8 @@ function Test-DirectChildPath {
         [string]$Parent
     )
 
-    $directorySeparators = @(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar
-    )
-    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators)
-    $fullParent = [System.IO.Path]::GetFullPath($Parent).TrimEnd($directorySeparators)
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd($Script:DirectorySeparators)
+    $fullParent = [System.IO.Path]::GetFullPath($Parent).TrimEnd($Script:DirectorySeparators)
     $actualParent = Split-Path -Parent $fullPath
     return ([string]::Equals($actualParent, $fullParent, [StringComparison]::OrdinalIgnoreCase))
 }
@@ -52,11 +49,7 @@ function Test-OmniDeskInstallDirectoryName {
         [string]$Path
     )
 
-    $directorySeparators = @(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar
-    )
-    $leafName = Split-Path -Leaf ([System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators))
+    $leafName = Split-Path -Leaf ([System.IO.Path]::GetFullPath($Path).TrimEnd($Script:DirectorySeparators))
     return (
         $leafName -eq "OmniDesk" -or
         $leafName.StartsWith("OmniDesk-", [StringComparison]::OrdinalIgnoreCase)
@@ -101,12 +94,8 @@ function Test-OmniDeskProcessInDirectory {
         [string]$Path
     )
 
-    $directorySeparators = @(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar
-    )
     $installRoot = (
-        [System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators) +
+        [System.IO.Path]::GetFullPath($Path).TrimEnd($Script:DirectorySeparators) +
         [System.IO.Path]::DirectorySeparatorChar
     )
 
