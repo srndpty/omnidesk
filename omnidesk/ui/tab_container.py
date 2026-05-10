@@ -9,7 +9,7 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QContextMenuEvent,
@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 PINNED_TAB_DATA = "pinned"
 PINNED_TAB_ACCENT = QColor("#f59e0b")
+DRAG_HOVER_ACTIVATE_MS = 1200
 
 
 class _PinnedTabBar(QTabBar):
@@ -73,6 +74,11 @@ class TabContainer(QWidget):
         self._tabs = QTabWidget(self)
         self._tabs.setTabBar(_PinnedTabBar(self._tabs))
         self._closed_tabs: list[tuple[Path, bool]] = []
+        self._drag_hover_tab_index: int | None = None
+        self._drag_hover_activate_ms = DRAG_HOVER_ACTIVATE_MS
+        self._drag_hover_timer = QTimer(self)
+        self._drag_hover_timer.setSingleShot(True)
+        self._drag_hover_timer.timeout.connect(self._activate_drag_hover_tab)
 
         # 4. QTabWidget自体の設定を行う
         self._tabs.setDocumentMode(True)
@@ -135,6 +141,7 @@ class TabContainer(QWidget):
             if event.type() == QEvent.Type.DragEnter:
                 drag_event = cast(QDragEnterEvent, event)
                 if drag_event.mimeData().hasUrls():
+                    self._clear_drag_hover_tab()
                     drag_event.acceptProposedAction()
                     return True
                 return False
@@ -145,16 +152,18 @@ class TabContainer(QWidget):
                 if drag_event.mimeData().hasUrls():
                     idx = tab_bar.tabAt(drag_event.position().toPoint())
                     if idx != -1:
-                        tab_bar.setCurrentIndex(idx)  # 視覚的に対象タブをハイライト
+                        self._schedule_drag_hover_tab(idx)
                         action = tab_drop_action(drag_event.modifiers())
                         drag_event.setDropAction(action)
                         drag_event.accept()
                         return True
+                    self._clear_drag_hover_tab()
                 return False
 
             # ドロップ：対象タブのフォルダへ移動（またはコピー）
             if event.type() == QEvent.Type.Drop:
                 drop_event = cast(QDropEvent, event)
+                self._clear_drag_hover_tab()
                 if drop_event.mimeData().hasUrls():
                     idx = tab_bar.tabAt(drop_event.position().toPoint())
                     if idx != -1:
@@ -164,13 +173,20 @@ class TabContainer(QWidget):
                             move = (
                                 tab_drop_action(drop_event.modifiers()) == Qt.DropAction.MoveAction
                             )
-                            dest_dir = target_tab.current_path()
-                            target_tab._handle_external_drop(paths, dest_dir, move)
+                            self._handle_tab_bar_drop(
+                                target_index=idx,
+                                target_tab=target_tab,
+                                paths=paths,
+                                move=move,
+                            )
                             drop_event.setDropAction(
                                 Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction
                             )
                             drop_event.acceptProposedAction()
                             return True
+                return False
+            if event.type() == QEvent.Type.DragLeave:
+                self._clear_drag_hover_tab()
                 return False
             if event.type() == QEvent.Type.Wheel:
                 wheel = cast(QWheelEvent, event)
@@ -200,6 +216,58 @@ class TabContainer(QWidget):
                     return True
 
         return super().eventFilter(obj, event)
+
+    def _schedule_drag_hover_tab(self, index: int) -> None:
+        if index == self._tabs.currentIndex():
+            self._clear_drag_hover_tab()
+            return
+        if self._drag_hover_tab_index == index and self._drag_hover_timer.isActive():
+            return
+        self._drag_hover_tab_index = index
+        self._drag_hover_timer.start(self._drag_hover_activate_ms)
+
+    def _clear_drag_hover_tab(self) -> None:
+        self._drag_hover_tab_index = None
+        self._drag_hover_timer.stop()
+
+    def _activate_drag_hover_tab(self) -> None:
+        index = self._drag_hover_tab_index
+        self._drag_hover_tab_index = None
+        if index is None or not 0 <= index < self._tabs.count():
+            return
+        self._tabs.setCurrentIndex(index)
+
+    def _handle_tab_bar_drop(
+        self,
+        *,
+        target_index: int,
+        target_tab: FileBrowserTab,
+        paths: list[Path],
+        move: bool,
+    ) -> None:
+        source_tab = self.current_tab()
+        select_in_target = target_index == self._tabs.currentIndex()
+        source_replacement = (
+            source_tab.selection_replacement_for_removed_paths(paths)
+            if move and source_tab is not None and source_tab is not target_tab
+            else None
+        )
+        dest_dir = target_tab.current_path()
+        select_after = [dest_dir / path.name for path in paths] if move and select_in_target else []
+        succeeded = target_tab._handle_external_drop(
+            paths,
+            dest_dir,
+            move,
+            select_after=select_after,
+        )
+        if not move:
+            return
+        if select_in_target:
+            if succeeded:
+                target_tab.focus_view()
+            return
+        if source_tab is not None and source_tab is not target_tab and not select_in_target:
+            source_tab.restore_selection_after_removed_paths(paths, source_replacement)
 
     def _scroll_tabstrip(self, *, go_left: bool, count: int = 1) -> None:
         """内部スクローラーボタンを擬似クリックして帯だけをスクロール"""
