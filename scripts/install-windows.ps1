@@ -13,7 +13,17 @@ function Test-Administrator {
 }
 
 function ConvertTo-Argument([string]$Value) {
-    return ('"' + $Value.Replace('"', '\"') + '"')
+    $escaped = $Value -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    return ('"' + $escaped + '"')
+}
+
+function ConvertTo-FullDirectoryPath([string]$Path) {
+    $directorySeparators = @(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    return ([System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators))
 }
 
 # インストール先の安全確認。宛先の中身を削除するため厳しめに判定する。
@@ -122,8 +132,8 @@ function Clear-DirectoryContents {
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $Source = Join-Path $RepoRoot "dist\OmniDesk"
-$DestinationFullPath = [System.IO.Path]::GetFullPath($Destination)
-$ExpectedProgramFilesRoot = [System.IO.Path]::GetFullPath($env:ProgramFiles)
+$DestinationFullPath = ConvertTo-FullDirectoryPath $Destination
+$ExpectedProgramFilesRoot = ConvertTo-FullDirectoryPath $env:ProgramFiles
 
 # 昇格を求める前に、広すぎる宛先や無関係な宛先を拒否する。
 if (-not (Test-DirectChildPath -Path $DestinationFullPath -Parent $ExpectedProgramFilesRoot)) {
