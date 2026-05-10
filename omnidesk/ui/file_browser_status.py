@@ -49,6 +49,15 @@ def selection_file_size(paths: list[Path]) -> int:
 def browser_status_for(path: Path, selected_paths: list[Path] | None = None) -> BrowserStatus:
     selected = selected_paths or []
     folder_count, file_count = directory_item_counts(path)
+    return browser_status_from_counts(folder_count, file_count, selected)
+
+
+def browser_status_from_counts(
+    folder_count: int,
+    file_count: int,
+    selected_paths: list[Path] | None = None,
+) -> BrowserStatus:
+    selected = selected_paths or []
     return BrowserStatus(
         total_count=folder_count + file_count,
         folder_count=folder_count,

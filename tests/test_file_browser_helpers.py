@@ -12,6 +12,7 @@ from omnidesk.ui.file_browser_helpers import (
 from omnidesk.ui.file_browser_status import (
     BrowserStatus,
     browser_status_for,
+    browser_status_from_counts,
     format_browser_details,
     format_browser_status,
     format_size,
@@ -178,6 +179,21 @@ def test_browser_status_counts_items_and_selected_file_size(tmp_path: Path) -> N
         file_count=2,
         selected_count=3,
         selected_file_size=8,
+    )
+
+
+def test_browser_status_from_counts_does_not_scan_directory(tmp_path: Path) -> None:
+    selected = tmp_path / "selected.txt"
+    selected.write_bytes(b"abc")
+
+    status = browser_status_from_counts(10, 20, [selected])
+
+    assert status == BrowserStatus(
+        total_count=30,
+        folder_count=10,
+        file_count=20,
+        selected_count=1,
+        selected_file_size=3,
     )
 
 
