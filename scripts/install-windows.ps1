@@ -195,8 +195,7 @@ try {
         throw "OmniDesk is running from $DestinationFullPath. Close it before installing."
     }
 
-    # 古いインストーラ方式で残った一時ディレクトリを掃除する。
-    Remove-Item -LiteralPath "$DestinationFullPath.tmp" -Recurse -Force -ErrorAction SilentlyContinue
+    # 今回の実行で使う一時ディレクトリだけを事前に掃除する。
     Remove-Item -LiteralPath $stagingDestination -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $backupDestination -Recurse -Force -ErrorAction SilentlyContinue
 
