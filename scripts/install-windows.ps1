@@ -129,11 +129,20 @@ function Copy-DirectoryContents {
         [string]$Source,
 
         [Parameter(Mandatory = $true)]
-        [string]$Destination
+        [string]$Destination,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Description
     )
 
-    Get-ChildItem -LiteralPath $Source -Force |
-        Copy-Item -Destination $Destination -Recurse -Force
+    Write-Verbose "Copying $Description from $Source to $Destination"
+    try {
+        foreach ($item in Get-ChildItem -LiteralPath $Source -Force) {
+            Copy-Item -LiteralPath $item.FullName -Destination $Destination -Recurse -Force
+        }
+    } catch {
+        throw ("Failed to copy {0} from {1} to {2}: {3}" -f $Description, $Source, $Destination, $_.Exception.Message)
+    }
 }
 
 function Clear-DirectoryContents {
@@ -231,7 +240,7 @@ try {
         Remove-Item -LiteralPath $backupDestination -Recurse -Force -ErrorAction SilentlyContinue
 
         [System.IO.Directory]::CreateDirectory($stagingDestination) | Out-Null
-        Copy-DirectoryContents -Source $Source -Destination $stagingDestination
+        Copy-DirectoryContents -Source $Source -Destination $stagingDestination -Description "build output to staging"
 
         # onedir 配置として使えないコピー結果なら、既存インストールを触る前に失敗させる。
         if (-not (Test-OnedirInstall -Path $stagingDestination)) {
@@ -247,13 +256,13 @@ try {
 
             [System.IO.Directory]::CreateDirectory($backupDestination) | Out-Null
             $backupCreated = $true
-            Copy-DirectoryContents -Source $DestinationFullPath -Destination $backupDestination
+            Copy-DirectoryContents -Source $DestinationFullPath -Destination $backupDestination -Description "existing install to backup"
             $backupReady = $true
         }
 
         try {
             Clear-DirectoryContents -Path $DestinationFullPath
-            Copy-DirectoryContents -Source $stagingDestination -Destination $DestinationFullPath
+            Copy-DirectoryContents -Source $stagingDestination -Destination $DestinationFullPath -Description "staging to install destination"
 
             if (-not (Test-OnedirInstall -Path $DestinationFullPath)) {
                 throw "Install failed: destination directory is incomplete: $DestinationFullPath"
@@ -263,10 +272,11 @@ try {
                 Write-Warning "Install failed. Restoring previous install from $backupDestination"
                 try {
                     Clear-DirectoryContents -Path $DestinationFullPath
-                    Copy-DirectoryContents -Source $backupDestination -Destination $DestinationFullPath
+                    Copy-DirectoryContents -Source $backupDestination -Destination $DestinationFullPath -Description "backup to install destination"
                 } catch {
                     $keepBackup = $true
                     Write-Warning "Rollback failed. Backup remains at $backupDestination"
+                    Write-Warning "Restore manually by copying the backup directory contents to $DestinationFullPath"
                 }
             }
             throw
