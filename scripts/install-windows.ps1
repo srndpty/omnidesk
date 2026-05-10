@@ -17,7 +17,7 @@ function ConvertTo-Argument([string]$Value) {
 }
 
 # インストール先の安全確認。宛先の中身を削除するため厳しめに判定する。
-function Test-ChildPath {
+function Test-DirectChildPath {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path,
@@ -32,11 +32,8 @@ function Test-ChildPath {
     )
     $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd($directorySeparators)
     $fullParent = [System.IO.Path]::GetFullPath($Parent).TrimEnd($directorySeparators)
-    if ([string]::Equals($fullPath, $fullParent, [StringComparison]::OrdinalIgnoreCase)) {
-        return $false
-    }
-    $parentWithSeparator = $fullParent + [System.IO.Path]::DirectorySeparatorChar
-    return ($fullPath.StartsWith($parentWithSeparator, [StringComparison]::OrdinalIgnoreCase))
+    $actualParent = Split-Path -Parent $fullPath
+    return ([string]::Equals($actualParent, $fullParent, [StringComparison]::OrdinalIgnoreCase))
 }
 
 function Test-OmniDeskInstallDirectoryName {
@@ -129,8 +126,8 @@ $DestinationFullPath = [System.IO.Path]::GetFullPath($Destination)
 $ExpectedProgramFilesRoot = [System.IO.Path]::GetFullPath($env:ProgramFiles)
 
 # 昇格を求める前に、広すぎる宛先や無関係な宛先を拒否する。
-if (-not (Test-ChildPath -Path $DestinationFullPath -Parent $ExpectedProgramFilesRoot)) {
-    throw "Destination must be a child directory under Program Files: $DestinationFullPath"
+if (-not (Test-DirectChildPath -Path $DestinationFullPath -Parent $ExpectedProgramFilesRoot)) {
+    throw "Destination must be a direct child directory under Program Files: $DestinationFullPath"
 }
 if (-not (Test-OmniDeskInstallDirectoryName -Path $DestinationFullPath)) {
     throw "Destination directory name must be OmniDesk or OmniDesk-*: $DestinationFullPath"
