@@ -106,7 +106,7 @@ class _ClipboardPayload(TypedDict):
 
 
 def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
-    tab._select_path(path)
+    tab._select_path(path, QAbstractItemView.ScrollHint.PositionAtCenter)
 
 
 def _configure_arrow_button(
@@ -446,6 +446,7 @@ class FileBrowserTab(QWidget):
         self._manual_media_mode: bool | None = None
         self._clipboard: _ClipboardPayload | None = None
         self._pending_selection_path: Path | None = None
+        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._status_folder_count = 0
         self._status_file_count = 0
         self._create_actions()
@@ -694,7 +695,11 @@ class FileBrowserTab(QWidget):
         self.refresh()
         self._select_path(target)
 
-    def _select_path(self, path: Path) -> bool:
+    def _select_path(
+        self,
+        path: Path,
+        scroll_hint: QAbstractItemView.ScrollHint = QAbstractItemView.ScrollHint.EnsureVisible,
+    ) -> bool:
         index = self._model.index(str(path))
         if not index.isValid():
             return False
@@ -705,7 +710,7 @@ class FileBrowserTab(QWidget):
                 index,
                 QItemSelectionModel.SelectionFlag.ClearAndSelect,
             )
-        view.scrollTo(index)
+        view.scrollTo(index, scroll_hint)
         return True
 
     def _show_context_menu(self, view: QAbstractItemView, point) -> None:
@@ -998,14 +1003,17 @@ class FileBrowserTab(QWidget):
             return
         previous_path = self._current_path
         old_pending = self._pending_selection_path
+        old_scroll_hint = self._pending_selection_scroll_hint
         if has_selection_path_in_directory(previous_path, step.target):
             self._pending_selection_path = previous_path
+            self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.PositionAtCenter
         if self.navigate_to(step.target, from_history=True):
             self._navigation_history = step.back_history
             self._forward_history = step.forward_history
             self._update_navigation_button_states()
         else:
             self._pending_selection_path = old_pending
+            self._pending_selection_scroll_hint = old_scroll_hint
 
     def go_forward(self) -> None:
         """Navigate to the next directory in this tab's history."""
@@ -1222,8 +1230,11 @@ class FileBrowserTab(QWidget):
 
     def _select_pending_or_first_row(self) -> None:
         pending = self._pending_selection_path
+        pending_scroll_hint = self._pending_selection_scroll_hint
         pending_exists = bool(pending and pending.exists())
-        selected_pending = bool(pending and pending_exists and self._select_path(pending))
+        selected_pending = bool(
+            pending and pending_exists and self._select_path(pending, pending_scroll_hint)
+        )
         action = pending_selection_action(
             pending,
             pending_exists=pending_exists,
@@ -1232,12 +1243,14 @@ class FileBrowserTab(QWidget):
         )
         if action == "selected_pending":
             self._pending_selection_path = None
+            self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
             return
         if action == "wait_for_pending":
             return
         if action == "keep_current":
             return
         self._pending_selection_path = None
+        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._select_first_row()
 
     def _has_current_selection_in_current_directory(self) -> bool:

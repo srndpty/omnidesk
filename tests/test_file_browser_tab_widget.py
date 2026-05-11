@@ -5,7 +5,7 @@ from typing import cast
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeyEvent, QShortcut
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QAbstractItemView, QMessageBox
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
 from omnidesk.ui.file_browser_status import BrowserStatus
@@ -58,17 +58,24 @@ def test_file_browser_tab_go_up_selects_previous_folder(monkeypatch, qtbot, tmp_
     parent = tmp_path / "parent"
     child = parent / "child"
     child.mkdir(parents=True)
-    selected: list[Path] = []
+    selected: list[tuple[Path, QAbstractItemView.ScrollHint]] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab.navigate_to(child)
-    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
+    monkeypatch.setattr(
+        tab,
+        "_select_path",
+        lambda path, scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible: selected.append(
+            (path, scroll_hint)
+        )
+        or True,
+    )
 
     tab.go_up()
     qtbot.wait(20)
 
     assert tab.current_path() == parent
-    assert selected == [child]
+    assert selected == [(child, QAbstractItemView.ScrollHint.PositionAtCenter)]
 
 
 def test_file_browser_tab_navigation_buttons_use_modern_arrow_text(qtbot) -> None:
@@ -139,17 +146,24 @@ def test_file_browser_tab_go_back_selects_folder_left_behind(
     parent = tmp_path / "parent"
     child = parent / "child"
     child.mkdir(parents=True)
-    selected: list[Path] = []
+    selected: list[tuple[Path, QAbstractItemView.ScrollHint]] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab.navigate_to(parent)
     tab.navigate_to(child)
-    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
+    monkeypatch.setattr(
+        tab,
+        "_select_path",
+        lambda path, scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible: selected.append(
+            (path, scroll_hint)
+        )
+        or True,
+    )
 
     tab.go_back()
 
     assert tab.current_path() == parent
-    assert selected == [child]
+    assert selected == [(child, QAbstractItemView.ScrollHint.PositionAtCenter)]
 
 
 def test_file_browser_tab_failed_history_navigation_keeps_stacks(
