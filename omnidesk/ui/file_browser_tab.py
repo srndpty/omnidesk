@@ -32,8 +32,10 @@ from PyQt6.QtGui import (
     QAction,
     QDesktopServices,
     QDrag,
+    QIcon,
     QKeyEvent,
     QKeySequence,
+    QPainter,
     QShortcut,
 )
 from PyQt6.QtWidgets import (
@@ -48,6 +50,9 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QRubberBand,
     QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QToolButton,
     QTreeView,
     QVBoxLayout,
@@ -397,8 +402,113 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setSpacing(16)
         self.setUniformItemSizes(True)
         self.setWordWrap(True)
+        self.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionRectVisible(True)
+        self.setItemDelegate(_TwoLineTileNameDelegate(self))
+
+
+class _TwoLineTileNameDelegate(QStyledItemDelegate):
+    LABEL_LINES = 2
+    HORIZONTAL_PADDING = 12
+    ICON_TOP_PADDING = 4
+    LABEL_TOP_PADDING = 8
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        view_option = QStyleOptionViewItem(option)
+        self.initStyleOption(view_option, index)
+
+        style = view_option.widget.style() if view_option.widget else QApplication.style()
+        icon_rect, text_rect = self._tile_rects(view_option)
+        text = self._two_line_text(view_option.text, view_option.fontMetrics, text_rect.width())
+
+        painter.save()
+        self._draw_tile_background(painter, view_option, style)
+
+        view_option.icon.paint(
+            painter,
+            icon_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            QIcon.Mode.Normal,
+            QIcon.State.Off,
+        )
+
+        if view_option.state & QStyle.StateFlag.State_Selected:
+            painter.setPen(view_option.palette.highlightedText().color())
+        else:
+            painter.setPen(view_option.palette.text().color())
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+            text,
+        )
+        painter.restore()
+
+    def _draw_tile_background(
+        self, painter: QPainter, option: QStyleOptionViewItem, style: QStyle
+    ) -> None:
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+            return
+
+        background_option = QStyleOptionViewItem(option)
+        background_option.text = ""
+        background_option.icon = QIcon()
+        background_option.state &= ~QStyle.StateFlag.State_HasFocus
+        style.drawPrimitive(
+            QStyle.PrimitiveElement.PE_PanelItemViewItem,
+            background_option,
+            painter,
+            option.widget,
+        )
+
+    def _tile_rects(self, option: QStyleOptionViewItem) -> tuple[QRect, QRect]:
+        rect = option.rect
+        icon_size = option.decorationSize
+        icon_width = min(icon_size.width(), rect.width())
+        icon_height = min(icon_size.height(), rect.height())
+        icon_x = rect.x() + (rect.width() - icon_width) // 2
+        icon_y = rect.y() + self.ICON_TOP_PADDING
+        icon_rect = QRect(icon_x, icon_y, icon_width, icon_height)
+
+        line_height = option.fontMetrics.lineSpacing()
+        text_height = line_height * self.LABEL_LINES
+        text_y = icon_rect.bottom() + 1 + self.LABEL_TOP_PADDING
+        text_rect = QRect(
+            rect.x() + self.HORIZONTAL_PADDING // 2,
+            text_y,
+            max(1, rect.width() - self.HORIZONTAL_PADDING),
+            text_height,
+        )
+        return icon_rect, text_rect
+
+    @classmethod
+    def _two_line_text(cls, text: str, font_metrics, width: int) -> str:
+        if not text:
+            return text
+
+        remaining = text
+        lines: list[str] = []
+        for _line_number in range(cls.LABEL_LINES):
+            line, remaining = cls._take_line(remaining, font_metrics, width)
+            lines.append(line)
+            if not remaining:
+                return "\n".join(lines)
+
+        lines[-1] = font_metrics.elidedText(
+            lines[-1] + remaining, Qt.TextElideMode.ElideRight, width
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _take_line(text: str, font_metrics, width: int) -> tuple[str, str]:
+        line = ""
+        for index, character in enumerate(text):
+            candidate = line + character
+            if line and font_metrics.horizontalAdvance(candidate) > width:
+                return line.rstrip(), text[index:].lstrip()
+            line = candidate
+        return line.rstrip(), ""
 
 
 class FileBrowserTab(QWidget):

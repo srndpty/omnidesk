@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QModelIndex, Qt, QThreadPool
-from PyQt6.QtGui import QKeyEvent, QShortcut
-from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox
+from PyQt6.QtCore import QModelIndex, QRect, QSize, Qt, QThreadPool
+from PyQt6.QtGui import QKeyEvent, QPainter, QPixmap, QShortcut
+from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox, QStyle, QStyleOptionViewItem
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
 from omnidesk.ui.file_browser_status import BrowserStatus
@@ -261,6 +261,58 @@ def test_file_browser_tab_tile_view_uses_single_pass_fixed_grid(qtbot) -> None:
     assert tile_view.movement() == QListView.Movement.Static
     assert tile_view.layoutMode() == QListView.LayoutMode.SinglePass
     assert tile_view.uniformItemSizes()
+    assert tile_view.wordWrap()
+    assert tile_view.textElideMode() == Qt.TextElideMode.ElideNone
+
+
+def test_file_browser_tab_tile_view_wraps_long_names_by_character(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    name = "(C56) [ART THEATER] M.F.H.H. M&D (宇宙海賊ミトの大冒険、おジャ魔女どれみ)"
+
+    wrapped = delegate._two_line_text(name, tab._tile_view.fontMetrics(), 120)
+    lines = wrapped.splitlines()
+
+    assert len(lines) == 2
+    assert lines[0] != name
+    assert all(line for line in lines)
+
+
+def test_file_browser_tab_tile_delegate_places_two_line_label_below_icon(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 184, 222)
+    option.decorationSize = QSize(160, 160)
+    option.fontMetrics = tab._tile_view.fontMetrics()
+
+    icon_rect, text_rect = delegate._tile_rects(option)
+
+    assert icon_rect == QRect(12, 4, 160, 160)
+    assert text_rect.y() > icon_rect.bottom()
+    assert text_rect.height() == option.fontMetrics.lineSpacing() * 2
+    assert text_rect.bottom() <= option.rect.bottom()
+
+
+def test_file_browser_tab_tile_delegate_fills_selected_tile_background(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 20, 20)
+    option.palette = tab._tile_view.palette()
+    option.state = QStyle.StateFlag.State_Selected
+    pixmap = QPixmap(option.rect.size())
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+
+    delegate._draw_tile_background(painter, option, tab._tile_view.style())
+    painter.end()
+
+    assert pixmap.toImage().pixelColor(0, 0) == option.palette.highlight().color()
+    assert pixmap.toImage().pixelColor(19, 19) == option.palette.highlight().color()
 
 
 def test_file_browser_tab_address_bar_opens_existing_file(
