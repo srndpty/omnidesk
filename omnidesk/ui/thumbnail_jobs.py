@@ -11,8 +11,6 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QRunnable, Qt, pyqtSignal
 from PyQt6.QtGui import QImage
 
-from ..utils.perf import log_perf, perf_debug_enabled, perf_start
-
 logger = logging.getLogger(__name__)
 
 
@@ -52,15 +50,11 @@ class FolderScanJob(QRunnable):
         self._extensions = extensions
         self._token = token
         self.signals = FolderScanSignals()
-        self._perf_debug = perf_debug_enabled()
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
-        perf = perf_start() if self._perf_debug else 0.0
         image_path: Path | None = None
-        entry_count = 0
         try:
             entries = sorted(self._path.iterdir(), key=lambda p: p.name)
-            entry_count = len(entries)
             for entry in entries:
                 if self._token.cancelled:
                     return
@@ -71,15 +65,6 @@ class FolderScanJob(QRunnable):
             logger.exception("Failed to scan folder for thumbnail: %s", self._path)
             image_path = None
         if not self._token.cancelled:
-            log_perf(
-                logger,
-                "thumbnail.folder_scan",
-                perf,
-                enabled=self._perf_debug,
-                path=self._path,
-                entries=entry_count,
-                found=bool(image_path),
-            )
             self.signals.found.emit(self._key, self._token.generation, image_path)
 
 
