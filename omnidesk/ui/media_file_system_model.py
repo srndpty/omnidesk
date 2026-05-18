@@ -11,6 +11,7 @@ from PyQt6.QtCore import QMimeData, QModelIndex, QSize, Qt, QThreadPool
 from PyQt6.QtGui import QFileSystemModel, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import QFileIconProvider
 
+from ..utils.perf import log_perf, perf_debug_enabled, perf_start
 from ..utils.thumbnail_cache import file_thumbnail_cache, folder_preview_cache
 from .media_icon_provider import MediaThumbnailProvider
 from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
@@ -52,6 +53,7 @@ class MediaFileSystemModel(QFileSystemModel):
             "yes",
             "on",
         }
+        self._perf_debug = perf_debug_enabled()
 
     # ------------------------------------------------------------------
     @property
@@ -117,6 +119,7 @@ class MediaFileSystemModel(QFileSystemModel):
         self, indexes: list[QModelIndex], *, request_limit: int | None = None
     ) -> None:
         """Request thumbnails only for currently visible model indexes."""
+        perf = perf_start() if self._perf_debug else 0.0
         ordered: list[tuple[str, Path, bool]] = []
         seen: set[str] = set()
         for index in indexes:
@@ -142,11 +145,31 @@ class MediaFileSystemModel(QFileSystemModel):
         )
 
         requested = 0
+        folder_count = 0
+        file_count = 0
         for key, path, is_dir in ordered:
+            if is_dir:
+                folder_count += 1
+            else:
+                file_count += 1
             if request_limit is not None and requested >= request_limit:
                 break
             if self._request_visible_key(key, path, is_dir):
                 requested += 1
+        log_perf(
+            logger,
+            "thumbnail.visible_targets",
+            perf,
+            enabled=self._perf_debug,
+            indexes=len(indexes),
+            visible=len(new_visible),
+            folders=folder_count,
+            files=file_count,
+            requested=requested,
+            pending=len(self._pending),
+            failed=len(self._failed),
+            request_limit=request_limit,
+        )
 
     def _request_visible_key(self, key: str, path: Path, is_dir: bool) -> bool:
         if key in self._pending or key in self._failed:

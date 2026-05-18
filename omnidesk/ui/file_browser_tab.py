@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..utils.perf import log_perf, perf_debug_enabled, perf_start
 from .file_browser_actions import file_action_states
 from .file_browser_drop import (
     drop_action_for_modifiers,
@@ -357,6 +358,8 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
 
 
 class _FileTileView(_BaseFileViewMixin, QListView):
+    LAYOUT_BATCH_SIZE = 128
+
     def __init__(self, tab: FileBrowserTab) -> None:
         QListView.__init__(self, tab)
         self._init_file_view(tab)
@@ -364,9 +367,11 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setFlow(QListView.Flow.LeftToRight)
         self.setWrapping(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
-        self.setMovement(QListView.Movement.Free)
+        self.setMovement(QListView.Movement.Static)
+        self.setLayoutMode(QListView.LayoutMode.Batched)
+        self.setBatchSize(self.LAYOUT_BATCH_SIZE)
         self.setSpacing(16)
-        self.setUniformItemSizes(False)
+        self.setUniformItemSizes(True)
         self.setWordWrap(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionRectVisible(True)
@@ -392,6 +397,7 @@ class FileBrowserTab(QWidget):
         name_column_width: int | None = None,
     ) -> None:
         super().__init__(parent)
+        self._perf_debug = perf_debug_enabled()
         self._media_icon_mode = False
         self._current_path = Path.home()
         self._navigation_history: list[Path] = []
@@ -436,7 +442,6 @@ class FileBrowserTab(QWidget):
         self._tile_view.doubleClicked.connect(self._handle_index_activated)
         self._tile_view.activated.connect(self._handle_index_activated)
         self._tile_view.setIconSize(QSize(128, 128))
-        self._tile_view.setLayoutMode(QListView.LayoutMode.SinglePass)
 
         self._view_stack = QStackedWidget(self)
         self._view_stack.addWidget(self._tree_view)
@@ -700,17 +705,64 @@ class FileBrowserTab(QWidget):
         path: Path,
         scroll_hint: QAbstractItemView.ScrollHint = QAbstractItemView.ScrollHint.EnsureVisible,
     ) -> bool:
+        perf = perf_start() if self._perf_debug else 0.0
+        step = perf_start() if self._perf_debug else 0.0
         index = self._model.index(str(path))
+        log_perf(
+            logger,
+            "file_browser.select_path.model_index",
+            step,
+            enabled=self._perf_debug,
+            path=path,
+            valid=index.isValid(),
+        )
         if not index.isValid():
+            log_perf(
+                logger,
+                "file_browser.select_path",
+                perf,
+                enabled=self._perf_debug,
+                path=path,
+                selected=False,
+                reason="invalid_index",
+            )
             return False
         view = self._active_view()
         selection_model = view.selectionModel()
         if selection_model:
+            step = perf_start() if self._perf_debug else 0.0
             selection_model.setCurrentIndex(
                 index,
                 QItemSelectionModel.SelectionFlag.ClearAndSelect,
             )
+            log_perf(
+                logger,
+                "file_browser.select_path.set_current",
+                step,
+                enabled=self._perf_debug,
+                path=path,
+                view=type(view).__name__,
+            )
+        step = perf_start() if self._perf_debug else 0.0
         view.scrollTo(index, scroll_hint)
+        log_perf(
+            logger,
+            "file_browser.select_path.scroll_to",
+            step,
+            enabled=self._perf_debug,
+            path=path,
+            view=type(view).__name__,
+            hint=scroll_hint.name,
+        )
+        log_perf(
+            logger,
+            "file_browser.select_path",
+            perf,
+            enabled=self._perf_debug,
+            path=path,
+            selected=True,
+            view=type(view).__name__,
+        )
         return True
 
     def _show_context_menu(self, view: QAbstractItemView, point) -> None:
@@ -851,6 +903,7 @@ class FileBrowserTab(QWidget):
     # ------------------------------------------------------------------
     def navigate_to(self, path: Path, *, from_history: bool = False) -> bool:
         """Display the given directory as the current root."""
+        perf = perf_start() if self._perf_debug else 0.0
         if not path.exists():
             QMessageBox.warning(self, "Cannot navigate", f"{path} does not exist.")
             return False
@@ -866,18 +919,96 @@ class FileBrowserTab(QWidget):
         self._current_path = target
         self._has_loaded_root = True
         self._path_edit.setText(str(target))
+
+        step = perf_start() if self._perf_debug else 0.0
         root_index = self._model.setRootPath(str(target))
+        log_perf(
+            logger,
+            "file_browser.navigate.set_root_path",
+            step,
+            enabled=self._perf_debug,
+            target=target,
+            root_valid=root_index.isValid(),
+        )
+
+        step = perf_start() if self._perf_debug else 0.0
         self._tree_view.setRootIndex(root_index)
         self._tile_view.setRootIndex(root_index)
+        log_perf(
+            logger,
+            "file_browser.navigate.set_root_indexes",
+            step,
+            enabled=self._perf_debug,
+            target=target,
+        )
+
+        step = perf_start() if self._perf_debug else 0.0
         self._update_media_mode(target, select_default=False)
+        log_perf(
+            logger,
+            "file_browser.navigate.update_media_mode",
+            step,
+            enabled=self._perf_debug,
+            target=target,
+            media_mode=self._media_icon_mode,
+        )
+
+        step = perf_start() if self._perf_debug else 0.0
         self._configure_header_sections()
         self._apply_name_column_width()
+        log_perf(
+            logger,
+            "file_browser.navigate.configure_columns",
+            step,
+            enabled=self._perf_debug,
+            target=target,
+            media_mode=self._media_icon_mode,
+        )
+
+        step = perf_start() if self._perf_debug else 0.0
         self._connect_selection_signals()
+        log_perf(
+            logger,
+            "file_browser.navigate.connect_selection",
+            step,
+            enabled=self._perf_debug,
+            target=target,
+            view=type(self._active_view()).__name__,
+        )
         self.directoryChanged.emit(target)
+
+        step = perf_start() if self._perf_debug else 0.0
         self._select_pending_or_first_row()
+        log_perf(
+            logger,
+            "file_browser.navigate.select_initial",
+            step,
+            enabled=self._perf_debug,
+            target=target,
+            pending=bool(self._pending_selection_path),
+        )
+
+        step = perf_start() if self._perf_debug else 0.0
         self._restart_thumbnail_requests()  # ナビゲート後にサムネイル要求を再開
         self._update_navigation_button_states()
+        log_perf(
+            logger,
+            "file_browser.navigate.restart_thumbnails",
+            step,
+            enabled=self._perf_debug,
+            target=target,
+            active=self._is_active,
+        )
         logger.debug("Navigated to %s and restarted thumbnail requests", target)
+        log_perf(
+            logger,
+            "file_browser.navigate_to",
+            perf,
+            enabled=self._perf_debug,
+            target=target,
+            from_history=from_history,
+            media_mode=self._media_icon_mode,
+        )
         return True
 
     # ★★★ 3. activate と deactivate メソッドを追加 ★★★
@@ -938,6 +1069,7 @@ class FileBrowserTab(QWidget):
         if not view:
             return
 
+        perf = perf_start() if self._perf_debug else 0.0
         visible_indexes: list[QModelIndex] = []
         if isinstance(view, QTreeView):
             visible_indexes = self._visible_tree_indexes(view)
@@ -946,6 +1078,16 @@ class FileBrowserTab(QWidget):
 
         request_limit = 6 if scrolling else None
         self._model.set_visible_thumbnail_targets(visible_indexes, request_limit=request_limit)
+        log_perf(
+            logger,
+            "file_browser.visible_thumbnails",
+            perf,
+            enabled=self._perf_debug,
+            view=type(view).__name__,
+            visible=len(visible_indexes),
+            scrolling=scrolling,
+            request_limit=request_limit,
+        )
 
     def _visible_tree_indexes(self, view: QTreeView) -> list[QModelIndex]:
         indexes: list[QModelIndex] = []
@@ -1059,12 +1201,62 @@ class FileBrowserTab(QWidget):
     # internal slots
     # ------------------------------------------------------------------
     def _on_directory_loaded(self, _: str) -> None:
+        perf = perf_start() if self._perf_debug else 0.0
         self._update_status_item_counts()
+
+        step = perf_start() if self._perf_debug else 0.0
         self._update_media_mode(self._current_path, select_default=False)
+        log_perf(
+            logger,
+            "file_browser.directory_loaded.update_media_mode",
+            step,
+            enabled=self._perf_debug,
+            path=self._current_path,
+            media_mode=self._media_icon_mode,
+        )
+
+        step = perf_start() if self._perf_debug else 0.0
         self._select_pending_or_first_row()
+        log_perf(
+            logger,
+            "file_browser.directory_loaded.select_initial",
+            step,
+            enabled=self._perf_debug,
+            path=self._current_path,
+            pending=bool(self._pending_selection_path),
+        )
+
+        step = perf_start() if self._perf_debug else 0.0
         self._configure_header_sections()
         self._apply_name_column_width()
+        log_perf(
+            logger,
+            "file_browser.directory_loaded.configure_columns",
+            step,
+            enabled=self._perf_debug,
+            path=self._current_path,
+            media_mode=self._media_icon_mode,
+        )
+
+        step = perf_start() if self._perf_debug else 0.0
         self._emit_status_changed()
+        log_perf(
+            logger,
+            "file_browser.directory_loaded.emit_status",
+            step,
+            enabled=self._perf_debug,
+            path=self._current_path,
+        )
+        log_perf(
+            logger,
+            "file_browser.directory_loaded",
+            perf,
+            enabled=self._perf_debug,
+            path=self._current_path,
+            folders=self._status_folder_count,
+            files=self._status_file_count,
+            media_mode=self._media_icon_mode,
+        )
 
     def _handle_path_entered(self) -> None:
         text = self._path_edit.text().strip()
@@ -1214,6 +1406,7 @@ class FileBrowserTab(QWidget):
         return Path(file_info.absoluteFilePath())
 
     def _select_first_row(self) -> None:
+        perf = perf_start() if self._perf_debug else 0.0
         view = self._active_view()
         model = view.model()
         if not model:
@@ -1227,8 +1420,17 @@ class FileBrowserTab(QWidget):
                     first_index,
                     QItemSelectionModel.SelectionFlag.ClearAndSelect,
                 )
+        log_perf(
+            logger,
+            "file_browser.select_first_row",
+            perf,
+            enabled=self._perf_debug,
+            view=type(view).__name__,
+            root_valid=root_index.isValid(),
+        )
 
     def _select_pending_or_first_row(self) -> None:
+        perf = perf_start() if self._perf_debug else 0.0
         pending = self._pending_selection_path
         pending_scroll_hint = self._pending_selection_scroll_hint
         pending_exists = bool(pending and pending.exists())
@@ -1244,14 +1446,46 @@ class FileBrowserTab(QWidget):
         if action == "selected_pending":
             self._pending_selection_path = None
             self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
+            log_perf(
+                logger,
+                "file_browser.select_pending_or_first",
+                perf,
+                enabled=self._perf_debug,
+                action=action,
+                pending=pending,
+            )
             return
         if action == "wait_for_pending":
+            log_perf(
+                logger,
+                "file_browser.select_pending_or_first",
+                perf,
+                enabled=self._perf_debug,
+                action=action,
+                pending=pending,
+            )
             return
         if action == "keep_current":
+            log_perf(
+                logger,
+                "file_browser.select_pending_or_first",
+                perf,
+                enabled=self._perf_debug,
+                action=action,
+                pending=pending,
+            )
             return
         self._pending_selection_path = None
         self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._select_first_row()
+        log_perf(
+            logger,
+            "file_browser.select_pending_or_first",
+            perf,
+            enabled=self._perf_debug,
+            action=action,
+            pending=pending,
+        )
 
     def _has_current_selection_in_current_directory(self) -> bool:
         selection_model = self._active_view().selectionModel()
@@ -1326,6 +1560,7 @@ class FileBrowserTab(QWidget):
 
     # ------------------------------------------------------------------
     def _update_media_mode(self, directory: Path, *, select_default: bool = True) -> None:
+        perf = perf_start() if self._perf_debug else 0.0
         # should_enable = self._is_media_heavy(directory)
         should_enable = True  # 常にサムネイルモードにする
         if should_enable != self._media_icon_mode:
@@ -1333,15 +1568,43 @@ class FileBrowserTab(QWidget):
             self._apply_media_mode(select_default=select_default)
         elif self._media_icon_mode:
             self._apply_media_mode(select_default=select_default)
+        log_perf(
+            logger,
+            "file_browser.update_media_mode",
+            perf,
+            enabled=self._perf_debug,
+            directory=directory,
+            should_enable=should_enable,
+            media_mode=self._media_icon_mode,
+            select_default=select_default,
+        )
 
     def _apply_media_mode(self, *, select_default: bool = True) -> None:
+        perf = perf_start() if self._perf_debug else 0.0
         if self._media_icon_mode:
             icon_edge = 160
+            step = perf_start() if self._perf_debug else 0.0
             self._model.set_thumbnail_edge(icon_edge)
             self._tile_view.setIconSize(QSize(icon_edge, icon_edge))
             self._tile_view.setGridSize(self._calculate_grid_size(icon_edge))
+            log_perf(
+                logger,
+                "file_browser.apply_media_mode.tile_geometry",
+                step,
+                enabled=self._perf_debug,
+                icon_edge=icon_edge,
+            )
+            step = perf_start() if self._perf_debug else 0.0
             self._view_stack.setCurrentWidget(self._tile_view)
+            log_perf(
+                logger,
+                "file_browser.apply_media_mode.current_widget",
+                step,
+                enabled=self._perf_debug,
+                widget=type(self._tile_view).__name__,
+            )
         else:
+            icon_edge = 96
             self._model.set_thumbnail_edge(96)
             self._tree_view.setIconSize(QSize(32, 32))
             self._view_stack.setCurrentWidget(self._tree_view)
@@ -1349,6 +1612,16 @@ class FileBrowserTab(QWidget):
         self._connect_selection_signals()
         if select_default:
             self._select_pending_or_first_row()
+        log_perf(
+            logger,
+            "file_browser.apply_media_mode",
+            perf,
+            enabled=self._perf_debug,
+            media_mode=self._media_icon_mode,
+            select_default=select_default,
+            icon_edge=icon_edge,
+            view=type(self._active_view()).__name__,
+        )
 
     def _handle_view_toggle_clicked(self) -> None:
         target = not self._media_icon_mode
@@ -1387,6 +1660,16 @@ class FileBrowserTab(QWidget):
         )
 
     def _update_status_item_counts(self) -> None:
+        perf = perf_start() if self._perf_debug else 0.0
         self._status_folder_count, self._status_file_count = directory_item_counts(
             self._current_path
+        )
+        log_perf(
+            logger,
+            "file_browser.status_counts",
+            perf,
+            enabled=self._perf_debug,
+            path=self._current_path,
+            folders=self._status_folder_count,
+            files=self._status_file_count,
         )

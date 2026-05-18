@@ -5,7 +5,7 @@ from typing import cast
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeyEvent, QShortcut
-from PyQt6.QtWidgets import QAbstractItemView, QMessageBox
+from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
 from omnidesk.ui.file_browser_status import BrowserStatus
@@ -249,6 +249,18 @@ def test_file_browser_tab_name_column_width_and_view_toggle(qtbot) -> None:
 
     assert tab._media_icon_mode is (not before)
     assert tab._toggle_view_button.text() in {"List View", "Tile View"}
+
+
+def test_file_browser_tab_tile_view_uses_batched_fixed_grid(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    tile_view = tab._tile_view
+
+    assert tile_view.movement() == QListView.Movement.Static
+    assert tile_view.layoutMode() == QListView.LayoutMode.Batched
+    assert tile_view.batchSize() == 128
+    assert tile_view.uniformItemSizes()
 
 
 def test_file_browser_tab_address_bar_opens_existing_file(
