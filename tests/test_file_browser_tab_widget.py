@@ -252,15 +252,14 @@ def test_file_browser_tab_name_column_width_and_view_toggle(qtbot) -> None:
     assert tab._toggle_view_button.text() in {"List View", "Tile View"}
 
 
-def test_file_browser_tab_tile_view_uses_batched_fixed_grid(qtbot) -> None:
+def test_file_browser_tab_tile_view_uses_single_pass_fixed_grid(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
 
     tile_view = tab._tile_view
 
     assert tile_view.movement() == QListView.Movement.Static
-    assert tile_view.layoutMode() == QListView.LayoutMode.Batched
-    assert tile_view.batchSize() == 128
+    assert tile_view.layoutMode() == QListView.LayoutMode.SinglePass
     assert tile_view.uniformItemSizes()
 
 

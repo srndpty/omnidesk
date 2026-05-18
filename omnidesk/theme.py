@@ -94,15 +94,28 @@ QTabBar::tab:selected {
     color: #ffffff;
 }
 
-QScrollBar:vertical, QScrollBar:horizontal {
+QScrollBar:vertical {
     background: #1e1f22;
     width: 12px;
     margin: 0px;
 }
 
-QScrollBar::handle {
+QScrollBar:horizontal {
+    background: #1e1f22;
+    height: 12px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
     background: #3d3f45;
     border-radius: 6px;
+    min-height: 36px;
+}
+
+QScrollBar::handle:horizontal {
+    background: #3d3f45;
+    border-radius: 6px;
+    min-width: 36px;
 }
 
 QScrollBar::handle:hover {

@@ -392,7 +392,7 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setWrapping(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Static)
-        self.setLayoutMode(QListView.LayoutMode.Batched)
+        self.setLayoutMode(QListView.LayoutMode.SinglePass)
         self.setBatchSize(self.LAYOUT_BATCH_SIZE)
         self.setSpacing(16)
         self.setUniformItemSizes(True)
