@@ -425,15 +425,21 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
         painter.save()
         self._draw_tile_background(painter, view_option, style)
 
+        icon_mode = (
+            QIcon.Mode.Selected
+            if view_option.state & QStyle.StateFlag.State_Selected
+            else QIcon.Mode.Normal
+        )
         view_option.icon.paint(
             painter,
             icon_rect,
             Qt.AlignmentFlag.AlignCenter,
-            QIcon.Mode.Normal,
+            icon_mode,
             QIcon.State.Off,
         )
 
         if view_option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(text_rect, view_option.palette.highlight())
             painter.setPen(view_option.palette.highlightedText().color())
         else:
             painter.setPen(view_option.palette.text().color())
@@ -447,13 +453,10 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
     def _draw_tile_background(
         self, painter: QPainter, option: QStyleOptionViewItem, style: QStyle
     ) -> None:
-        if option.state & QStyle.StateFlag.State_Selected:
-            painter.fillRect(option.rect, option.palette.highlight())
-            return
-
         background_option = QStyleOptionViewItem(option)
         background_option.text = ""
         background_option.icon = QIcon()
+        background_option.state &= ~QStyle.StateFlag.State_Selected
         background_option.state &= ~QStyle.StateFlag.State_HasFocus
         style.drawPrimitive(
             QStyle.PrimitiveElement.PE_PanelItemViewItem,

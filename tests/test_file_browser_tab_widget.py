@@ -296,7 +296,7 @@ def test_file_browser_tab_tile_delegate_places_two_line_label_below_icon(qtbot) 
     assert text_rect.bottom() <= option.rect.bottom()
 
 
-def test_file_browser_tab_tile_delegate_fills_selected_tile_background(qtbot) -> None:
+def test_file_browser_tab_tile_delegate_does_not_fill_selected_tile_background(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
@@ -311,8 +311,8 @@ def test_file_browser_tab_tile_delegate_fills_selected_tile_background(qtbot) ->
     delegate._draw_tile_background(painter, option, tab._tile_view.style())
     painter.end()
 
-    assert pixmap.toImage().pixelColor(0, 0) == option.palette.highlight().color()
-    assert pixmap.toImage().pixelColor(19, 19) == option.palette.highlight().color()
+    assert pixmap.toImage().pixelColor(0, 0) != option.palette.highlight().color()
+    assert pixmap.toImage().pixelColor(19, 19) != option.palette.highlight().color()
 
 
 def test_file_browser_tab_address_bar_opens_existing_file(
