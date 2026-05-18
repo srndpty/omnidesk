@@ -163,6 +163,7 @@ def test_file_browser_tab_go_back_selects_folder_left_behind(
     tab.go_back()
 
     assert tab.current_path() == parent
+    qtbot.waitUntil(lambda: bool(selected), timeout=1000)
     assert selected == [(child, QAbstractItemView.ScrollHint.PositionAtCenter)]
 
 
@@ -782,12 +783,13 @@ def test_file_browser_tab_directory_loaded_updates_status_item_counts(
     qtbot.addWidget(tab)
     monkeypatch.setattr(file_browser_tab_module, "directory_item_counts", lambda _path: (2, 3))
     monkeypatch.setattr(tab, "_selected_paths", lambda: [])
-    statuses: list[object] = []
-    tab.statusChanged.connect(statuses.append)
+    statuses: list[BrowserStatus] = []
+    tab.statusChanged.connect(lambda status: statuses.append(cast(BrowserStatus, status)))
 
     tab._on_directory_loaded("")
 
-    status = cast(BrowserStatus, statuses[-1])
+    qtbot.waitUntil(lambda: bool(statuses) and statuses[-1].total_count == 5, timeout=1000)
+    status = statuses[-1]
     assert tab._status_folder_count == 2
     assert tab._status_file_count == 3
     assert status.total_count == 5

@@ -16,11 +16,14 @@ from PyQt6.QtCore import (
     QItemSelectionModel,
     QMimeData,
     QModelIndex,
+    QObject,
     QPoint,
     QProcess,
     QRect,
+    QRunnable,
     QSize,
     Qt,
+    QThreadPool,
     QTimer,
     QUrl,
     pyqtSignal,
@@ -108,6 +111,28 @@ class _ClipboardPayload(TypedDict):
 
 def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
     tab._select_path(path, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+
+class _DirectoryCountSignals(QObject):
+    counted = pyqtSignal(str, int, int, int)  # path, generation, folders, files
+
+
+class _DirectoryCountJob(QRunnable):
+    def __init__(self, path: Path, generation: int) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._path = path
+        self._generation = generation
+        self.signals = _DirectoryCountSignals()
+
+    def run(self) -> None:  # noqa: D401 - QRunnable contract
+        folder_count, file_count = directory_item_counts(self._path)
+        self.signals.counted.emit(
+            str(self._path),
+            self._generation,
+            folder_count,
+            file_count,
+        )
 
 
 def _configure_arrow_button(
@@ -454,6 +479,9 @@ class FileBrowserTab(QWidget):
         self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._status_folder_count = 0
         self._status_file_count = 0
+        self._status_count_generation = 0
+        self._status_count_jobs: dict[int, _DirectoryCountJob] = {}
+        self._status_count_pool = QThreadPool.globalInstance()
         self._create_actions()
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")
@@ -537,6 +565,10 @@ class FileBrowserTab(QWidget):
         self._thumbnail_scroll_settle_timer.setInterval(160)
         self._thumbnail_scroll_settle_timer.setSingleShot(True)
         self._thumbnail_scroll_settle_timer.timeout.connect(self._request_settled_thumbnails)
+
+        self._selection_restore_timer = QTimer(self)
+        self._selection_restore_timer.setSingleShot(True)
+        self._selection_restore_timer.timeout.connect(self._select_pending_or_first_row)
 
         self._tree_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self._tile_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
@@ -978,7 +1010,11 @@ class FileBrowserTab(QWidget):
         self.directoryChanged.emit(target)
 
         step = perf_start() if self._perf_debug else 0.0
-        self._select_pending_or_first_row()
+        deferred_selection = from_history and self._pending_selection_path is not None
+        if deferred_selection:
+            self._schedule_select_pending_or_first_row()
+        else:
+            self._select_pending_or_first_row()
         log_perf(
             logger,
             "file_browser.navigate.select_initial",
@@ -986,6 +1022,7 @@ class FileBrowserTab(QWidget):
             enabled=self._perf_debug,
             target=target,
             pending=bool(self._pending_selection_path),
+            deferred=deferred_selection,
         )
 
         step = perf_start() if self._perf_debug else 0.0
@@ -1202,7 +1239,7 @@ class FileBrowserTab(QWidget):
     # ------------------------------------------------------------------
     def _on_directory_loaded(self, _: str) -> None:
         perf = perf_start() if self._perf_debug else 0.0
-        self._update_status_item_counts()
+        self._request_status_item_counts(self._current_path)
 
         step = perf_start() if self._perf_debug else 0.0
         self._update_media_mode(self._current_path, select_default=False)
@@ -1216,7 +1253,9 @@ class FileBrowserTab(QWidget):
         )
 
         step = perf_start() if self._perf_debug else 0.0
-        self._select_pending_or_first_row()
+        deferred_selection = self._selection_restore_timer.isActive()
+        if not deferred_selection:
+            self._select_pending_or_first_row()
         log_perf(
             logger,
             "file_browser.directory_loaded.select_initial",
@@ -1224,6 +1263,7 @@ class FileBrowserTab(QWidget):
             enabled=self._perf_debug,
             path=self._current_path,
             pending=bool(self._pending_selection_path),
+            deferred=deferred_selection,
         )
 
         step = perf_start() if self._perf_debug else 0.0
@@ -1238,15 +1278,6 @@ class FileBrowserTab(QWidget):
             media_mode=self._media_icon_mode,
         )
 
-        step = perf_start() if self._perf_debug else 0.0
-        self._emit_status_changed()
-        log_perf(
-            logger,
-            "file_browser.directory_loaded.emit_status",
-            step,
-            enabled=self._perf_debug,
-            path=self._current_path,
-        )
         log_perf(
             logger,
             "file_browser.directory_loaded",
@@ -1657,6 +1688,62 @@ class FileBrowserTab(QWidget):
                 self._status_file_count,
                 selected_paths,
             )
+        )
+
+    def _schedule_select_pending_or_first_row(self) -> None:
+        self._selection_restore_timer.stop()
+        self._selection_restore_timer.start(0)
+
+    def _request_status_item_counts(self, path: Path) -> None:
+        perf = perf_start() if self._perf_debug else 0.0
+        self._status_count_generation += 1
+        generation = self._status_count_generation
+        job = _DirectoryCountJob(path, generation)
+        job.signals.counted.connect(self._handle_status_item_counts_ready)
+        self._status_count_jobs[generation] = job
+        self._status_count_pool.start(job)
+        log_perf(
+            logger,
+            "file_browser.status_counts_queued",
+            perf,
+            enabled=self._perf_debug,
+            path=path,
+            generation=generation,
+        )
+
+    def _handle_status_item_counts_ready(
+        self,
+        path_text: str,
+        generation: int,
+        folder_count: int,
+        file_count: int,
+    ) -> None:
+        perf = perf_start() if self._perf_debug else 0.0
+        self._status_count_jobs.pop(generation, None)
+        path = Path(path_text)
+        if generation != self._status_count_generation or path != self._current_path:
+            log_perf(
+                logger,
+                "file_browser.status_counts_discarded",
+                perf,
+                enabled=self._perf_debug,
+                path=path,
+                generation=generation,
+                current_generation=self._status_count_generation,
+            )
+            return
+        self._status_folder_count = folder_count
+        self._status_file_count = file_count
+        self._emit_status_changed()
+        log_perf(
+            logger,
+            "file_browser.status_counts_ready",
+            perf,
+            enabled=self._perf_debug,
+            path=path,
+            folders=folder_count,
+            files=file_count,
+            generation=generation,
         )
 
     def _update_status_item_counts(self) -> None:

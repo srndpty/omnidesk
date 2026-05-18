@@ -253,7 +253,6 @@ def test_main_window_status_bar_shows_counts_and_selection(
     qtbot.addWidget(window)
 
     assert window._status_path_label.toolTip() == str(tmp_path)
-    assert window._status_detail_label.text() == "2個の項目（フォルダ1個/ファイル1個）"
 
     status = BrowserStatus(
         total_count=2,

@@ -12,7 +12,7 @@ from ..utils.config import AppSettings, load_settings, save_settings
 from ..utils.paths import get_default_start_path
 from ..utils.windows_theme import apply_dark_title_bar
 from .column_browser import ColumnBrowser
-from .file_browser_status import BrowserStatus, browser_status_for, format_browser_details
+from .file_browser_status import BrowserStatus, format_browser_details
 from .icons import application_icon
 from .tab_container import TabContainer
 
@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
 
     def _update_status_path(self, path: Path) -> None:
         self._status_path = path
-        self._status_summary = browser_status_for(path)
+        self._status_summary = BrowserStatus()
         self._show_status()
         self.setWindowTitle(f"OmniDesk - {path}")
 
