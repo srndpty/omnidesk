@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QModelIndex, Qt, QThreadPool
 from PyQt6.QtGui import QKeyEvent, QShortcut
-from PyQt6.QtWidgets import QAbstractItemView, QMessageBox
+from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
 from omnidesk.ui.file_browser_status import BrowserStatus
@@ -163,6 +163,7 @@ def test_file_browser_tab_go_back_selects_folder_left_behind(
     tab.go_back()
 
     assert tab.current_path() == parent
+    qtbot.waitUntil(lambda: bool(selected), timeout=1000)
     assert selected == [(child, QAbstractItemView.ScrollHint.PositionAtCenter)]
 
 
@@ -249,6 +250,17 @@ def test_file_browser_tab_name_column_width_and_view_toggle(qtbot) -> None:
 
     assert tab._media_icon_mode is (not before)
     assert tab._toggle_view_button.text() in {"List View", "Tile View"}
+
+
+def test_file_browser_tab_tile_view_uses_single_pass_fixed_grid(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    tile_view = tab._tile_view
+
+    assert tile_view.movement() == QListView.Movement.Static
+    assert tile_view.layoutMode() == QListView.LayoutMode.SinglePass
+    assert tile_view.uniformItemSizes()
 
 
 def test_file_browser_tab_address_bar_opens_existing_file(
@@ -392,6 +404,7 @@ def test_file_browser_tab_activate_deactivate_thumbnail_state(qtbot) -> None:
     assert not tab._is_active
     assert not tab._thumbnail_request_timer.isActive()
     assert not tab._thumbnail_scroll_settle_timer.isActive()
+    assert not tab._thumbnail_idle_batch_timer.isActive()
 
 
 def test_file_browser_tab_external_drop_warns_for_missing_destination(
@@ -733,6 +746,39 @@ def test_file_browser_tab_request_settled_thumbnails_resets_scrolling(
     assert calls == [False]
 
 
+def test_file_browser_tab_request_visible_thumbnails_batches_idle_work(
+    monkeypatch,
+    qtbot,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._is_active = True
+    monkeypatch.setattr(tab, "_visible_tile_indexes", lambda _view: [QModelIndex()])
+    calls: list[tuple[int | None, bool]] = []
+
+    def set_visible_thumbnail_targets(indexes, *, request_limit=None, allow_folder_preview=True):
+        calls.append((request_limit, allow_folder_preview))
+        return 1
+
+    monkeypatch.setattr(
+        tab._model,
+        "set_visible_thumbnail_targets",
+        set_visible_thumbnail_targets,
+    )
+
+    tab._request_visible_thumbnails(scrolling=False)
+
+    assert calls == [(6, True)]
+    assert tab._thumbnail_idle_batch_timer.isActive()
+
+    tab._thumbnail_idle_batch_timer.stop()
+    calls.clear()
+    tab._request_visible_thumbnails(scrolling=True)
+
+    assert calls == [(6, False)]
+    assert not tab._thumbnail_idle_batch_timer.isActive()
+
+
 def test_file_browser_tab_selection_status_uses_cached_item_counts(
     monkeypatch,
     qtbot,
@@ -770,15 +816,77 @@ def test_file_browser_tab_directory_loaded_updates_status_item_counts(
     qtbot.addWidget(tab)
     monkeypatch.setattr(file_browser_tab_module, "directory_item_counts", lambda _path: (2, 3))
     monkeypatch.setattr(tab, "_selected_paths", lambda: [])
-    statuses: list[object] = []
-    tab.statusChanged.connect(statuses.append)
+    statuses: list[BrowserStatus] = []
+    tab.statusChanged.connect(lambda status: statuses.append(cast(BrowserStatus, status)))
 
     tab._on_directory_loaded("")
 
-    status = cast(BrowserStatus, statuses[-1])
+    qtbot.waitUntil(lambda: bool(statuses) and statuses[-1].total_count == 5, timeout=1000)
+    status = statuses[-1]
     assert tab._status_folder_count == 2
     assert tab._status_file_count == 3
     assert status.total_count == 5
+
+
+def test_file_browser_tab_request_status_counts_clears_stale_counts(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    selected = tmp_path / "selected.txt"
+    selected.write_bytes(b"abc")
+
+    class NoopThreadPool:
+        def __init__(self) -> None:
+            self.jobs: list[object] = []
+
+        def start(self, job: object) -> None:
+            self.jobs.append(job)
+
+    pool = NoopThreadPool()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._status_folder_count = 8
+    tab._status_file_count = 13
+    tab._status_count_pool = cast(QThreadPool, pool)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [selected])
+    statuses: list[BrowserStatus] = []
+    tab.statusChanged.connect(lambda status: statuses.append(cast(BrowserStatus, status)))
+
+    tab._request_status_item_counts(tmp_path)
+
+    assert pool.jobs
+    assert tab._status_folder_count == 0
+    assert tab._status_file_count == 0
+    status = statuses[-1]
+    assert status.folder_count == 0
+    assert status.file_count == 0
+    assert status.selected_count == 1
+    assert status.selected_file_size == 3
+
+
+def test_file_browser_tab_async_status_counts_keep_current_selection(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    selected = tmp_path / "selected.txt"
+    selected.write_bytes(b"abc")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    tab._status_count_generation = 7
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [selected])
+    statuses: list[BrowserStatus] = []
+    tab.statusChanged.connect(lambda status: statuses.append(cast(BrowserStatus, status)))
+
+    tab._handle_status_item_counts_ready(str(tmp_path), 7, 2, 3)
+
+    status = statuses[-1]
+    assert status.folder_count == 2
+    assert status.file_count == 3
+    assert status.selected_count == 1
+    assert status.selected_file_size == 3
 
 
 class _FakeFileInfo:

@@ -114,8 +114,12 @@ class MediaFileSystemModel(QFileSystemModel):
         return folder_preview_cache if is_dir else file_thumbnail_cache
 
     def set_visible_thumbnail_targets(
-        self, indexes: list[QModelIndex], *, request_limit: int | None = None
-    ) -> None:
+        self,
+        indexes: list[QModelIndex],
+        *,
+        request_limit: int | None = None,
+        allow_folder_preview: bool = True,
+    ) -> int:
         """Request thumbnails only for currently visible model indexes."""
         ordered: list[tuple[str, Path, bool]] = []
         seen: set[str] = set()
@@ -145,8 +149,14 @@ class MediaFileSystemModel(QFileSystemModel):
         for key, path, is_dir in ordered:
             if request_limit is not None and requested >= request_limit:
                 break
+            if is_dir and not allow_folder_preview:
+                key = self._normalise_key(path)
+                cache = self._cache_for_info(is_dir)
+                if cache.get_memory(key) is None and not cache.disk_path(key).exists():
+                    continue
             if self._request_visible_key(key, path, is_dir):
                 requested += 1
+        return requested
 
     def _request_visible_key(self, key: str, path: Path, is_dir: bool) -> bool:
         if key in self._pending or key in self._failed:

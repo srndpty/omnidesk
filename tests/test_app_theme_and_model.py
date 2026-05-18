@@ -31,6 +31,13 @@ def test_dark_theme_styles_disabled_menu_items() -> None:
     assert "color: #6f7680;" in DARK_STYLESHEET
 
 
+def test_dark_theme_scrollbar_handles_have_minimum_extent() -> None:
+    assert "QScrollBar::handle:vertical" in DARK_STYLESHEET
+    assert "min-height: 36px;" in DARK_STYLESHEET
+    assert "QScrollBar::handle:horizontal" in DARK_STYLESHEET
+    assert "min-width: 36px;" in DARK_STYLESHEET
+
+
 def test_create_app_reuses_existing_application(monkeypatch, qapp: QApplication) -> None:
     monkeypatch.setattr(app_module, "application_icon", lambda: QIcon())
 

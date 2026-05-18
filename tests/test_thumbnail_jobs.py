@@ -59,6 +59,19 @@ def test_folder_scan_job_emits_none_for_unreadable_or_empty_folder(qtbot, tmp_pa
     assert blocker.args == ["folder-key", 4, None]
 
 
+def test_folder_scan_job_stops_at_scan_limit(qtbot, tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("ignored", encoding="utf-8")
+    media_after_limit = tmp_path / "b.jpg"
+    media_after_limit.write_bytes(b"media")
+    token = CancellationToken(5)
+    job = FolderScanJob("folder-key", tmp_path, {".jpg"}, token, scan_limit=1)
+
+    with qtbot.waitSignal(job.signals.found, timeout=1000) as blocker:
+        job.run()
+
+    assert blocker.args == ["folder-key", 5, None]
+
+
 def test_cache_load_job_loads_png_and_emits_image(qtbot, tmp_path: Path) -> None:
     cache_path = tmp_path / "cache.png"
     image = QImage(20, 10, QImage.Format.Format_RGB32)

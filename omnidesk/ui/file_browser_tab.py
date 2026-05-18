@@ -16,11 +16,14 @@ from PyQt6.QtCore import (
     QItemSelectionModel,
     QMimeData,
     QModelIndex,
+    QObject,
     QPoint,
     QProcess,
     QRect,
+    QRunnable,
     QSize,
     Qt,
+    QThreadPool,
     QTimer,
     QUrl,
     pyqtSignal,
@@ -107,6 +110,28 @@ class _ClipboardPayload(TypedDict):
 
 def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
     tab._select_path(path, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+
+class _DirectoryCountSignals(QObject):
+    counted = pyqtSignal(str, int, int, int)  # path, generation, folders, files
+
+
+class _DirectoryCountJob(QRunnable):
+    def __init__(self, path: Path, generation: int) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._path = path
+        self._generation = generation
+        self.signals = _DirectoryCountSignals()
+
+    def run(self) -> None:  # noqa: D401 - QRunnable contract
+        folder_count, file_count = directory_item_counts(self._path)
+        self.signals.counted.emit(
+            str(self._path),
+            self._generation,
+            folder_count,
+            file_count,
+        )
 
 
 def _configure_arrow_button(
@@ -357,6 +382,8 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
 
 
 class _FileTileView(_BaseFileViewMixin, QListView):
+    LAYOUT_BATCH_SIZE = 128
+
     def __init__(self, tab: FileBrowserTab) -> None:
         QListView.__init__(self, tab)
         self._init_file_view(tab)
@@ -364,9 +391,11 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setFlow(QListView.Flow.LeftToRight)
         self.setWrapping(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
-        self.setMovement(QListView.Movement.Free)
+        self.setMovement(QListView.Movement.Static)
+        self.setLayoutMode(QListView.LayoutMode.SinglePass)
+        self.setBatchSize(self.LAYOUT_BATCH_SIZE)
         self.setSpacing(16)
-        self.setUniformItemSizes(False)
+        self.setUniformItemSizes(True)
         self.setWordWrap(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionRectVisible(True)
@@ -436,7 +465,6 @@ class FileBrowserTab(QWidget):
         self._tile_view.doubleClicked.connect(self._handle_index_activated)
         self._tile_view.activated.connect(self._handle_index_activated)
         self._tile_view.setIconSize(QSize(128, 128))
-        self._tile_view.setLayoutMode(QListView.LayoutMode.SinglePass)
 
         self._view_stack = QStackedWidget(self)
         self._view_stack.addWidget(self._tree_view)
@@ -449,6 +477,9 @@ class FileBrowserTab(QWidget):
         self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._status_folder_count = 0
         self._status_file_count = 0
+        self._status_count_generation = 0
+        self._status_count_jobs: dict[int, _DirectoryCountJob] = {}
+        self._status_count_pool = QThreadPool.globalInstance()
         self._create_actions()
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")
@@ -532,6 +563,17 @@ class FileBrowserTab(QWidget):
         self._thumbnail_scroll_settle_timer.setInterval(160)
         self._thumbnail_scroll_settle_timer.setSingleShot(True)
         self._thumbnail_scroll_settle_timer.timeout.connect(self._request_settled_thumbnails)
+
+        self._thumbnail_idle_batch_timer = QTimer(self)
+        self._thumbnail_idle_batch_timer.setInterval(220)
+        self._thumbnail_idle_batch_timer.setSingleShot(True)
+        self._thumbnail_idle_batch_timer.timeout.connect(
+            lambda: self._request_visible_thumbnails(scrolling=False)
+        )
+
+        self._selection_restore_timer = QTimer(self)
+        self._selection_restore_timer.setSingleShot(True)
+        self._selection_restore_timer.timeout.connect(self._select_pending_or_first_row)
 
         self._tree_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self._tile_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
@@ -866,6 +908,7 @@ class FileBrowserTab(QWidget):
         self._current_path = target
         self._has_loaded_root = True
         self._path_edit.setText(str(target))
+
         root_index = self._model.setRootPath(str(target))
         self._tree_view.setRootIndex(root_index)
         self._tile_view.setRootIndex(root_index)
@@ -874,7 +917,13 @@ class FileBrowserTab(QWidget):
         self._apply_name_column_width()
         self._connect_selection_signals()
         self.directoryChanged.emit(target)
-        self._select_pending_or_first_row()
+
+        deferred_selection = from_history and self._pending_selection_path is not None
+        if deferred_selection:
+            self._schedule_select_pending_or_first_row()
+        else:
+            self._select_pending_or_first_row()
+
         self._restart_thumbnail_requests()  # ナビゲート後にサムネイル要求を再開
         self._update_navigation_button_states()
         logger.debug("Navigated to %s and restarted thumbnail requests", target)
@@ -899,6 +948,7 @@ class FileBrowserTab(QWidget):
         # 保留中のサムネイル要求があればキャンセルする
         self._thumbnail_request_timer.stop()
         self._thumbnail_scroll_settle_timer.stop()
+        self._thumbnail_idle_batch_timer.stop()
         self._model.clear_visible_thumbnail_targets()
 
     # 場所は _on_directory_loaded や _on_scroll の近くが分かりやすい
@@ -918,6 +968,7 @@ class FileBrowserTab(QWidget):
     def _on_scroll(self) -> None:
         if self._is_active:  # アクティブなタブだけがスクロールに応答
             self._is_scrolling_for_thumbnails = True
+            self._thumbnail_idle_batch_timer.stop()
             if not self._thumbnail_request_timer.isActive():
                 self._thumbnail_request_timer.start()
             self._thumbnail_scroll_settle_timer.start()
@@ -928,6 +979,7 @@ class FileBrowserTab(QWidget):
             self._thumbnail_request_timer.stop()
             self._thumbnail_request_timer.start()
             self._thumbnail_scroll_settle_timer.start()
+            self._thumbnail_idle_batch_timer.stop()
 
     def _request_settled_thumbnails(self) -> None:
         self._is_scrolling_for_thumbnails = False
@@ -944,8 +996,14 @@ class FileBrowserTab(QWidget):
         elif isinstance(view, QListView):
             visible_indexes = self._visible_tile_indexes(view)
 
-        request_limit = 6 if scrolling else None
-        self._model.set_visible_thumbnail_targets(visible_indexes, request_limit=request_limit)
+        request_limit = 6
+        requested = self._model.set_visible_thumbnail_targets(
+            visible_indexes,
+            request_limit=request_limit,
+            allow_folder_preview=not scrolling,
+        )
+        if not scrolling and requested > 0 and self._is_active:
+            self._thumbnail_idle_batch_timer.start()
 
     def _visible_tree_indexes(self, view: QTreeView) -> list[QModelIndex]:
         indexes: list[QModelIndex] = []
@@ -1059,12 +1117,15 @@ class FileBrowserTab(QWidget):
     # internal slots
     # ------------------------------------------------------------------
     def _on_directory_loaded(self, _: str) -> None:
-        self._update_status_item_counts()
+        self._request_status_item_counts(self._current_path)
         self._update_media_mode(self._current_path, select_default=False)
-        self._select_pending_or_first_row()
+
+        deferred_selection = self._selection_restore_timer.isActive()
+        if not deferred_selection:
+            self._select_pending_or_first_row()
+
         self._configure_header_sections()
         self._apply_name_column_width()
-        self._emit_status_changed()
 
     def _handle_path_entered(self) -> None:
         text = self._path_edit.text().strip()
@@ -1385,6 +1446,36 @@ class FileBrowserTab(QWidget):
                 selected_paths,
             )
         )
+
+    def _schedule_select_pending_or_first_row(self) -> None:
+        self._selection_restore_timer.stop()
+        self._selection_restore_timer.start(0)
+
+    def _request_status_item_counts(self, path: Path) -> None:
+        self._status_count_generation += 1
+        generation = self._status_count_generation
+        self._status_folder_count = 0
+        self._status_file_count = 0
+        self._emit_status_changed(self._selected_paths())
+        job = _DirectoryCountJob(path, generation)
+        job.signals.counted.connect(self._handle_status_item_counts_ready)
+        self._status_count_jobs[generation] = job
+        self._status_count_pool.start(job)
+
+    def _handle_status_item_counts_ready(
+        self,
+        path_text: str,
+        generation: int,
+        folder_count: int,
+        file_count: int,
+    ) -> None:
+        self._status_count_jobs.pop(generation, None)
+        path = Path(path_text)
+        if generation != self._status_count_generation or path != self._current_path:
+            return
+        self._status_folder_count = folder_count
+        self._status_file_count = file_count
+        self._emit_status_changed(self._selected_paths())
 
     def _update_status_item_counts(self) -> None:
         self._status_folder_count, self._status_file_count = directory_item_counts(

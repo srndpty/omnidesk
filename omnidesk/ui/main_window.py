@@ -212,16 +212,18 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     def _switch_to_columns(self) -> None:
-        self._column_browser.set_root_path(self._current_active_path())
-        self._stack.setCurrentWidget(self._column_browser)
+        target = self._current_active_path()
         self._view_mode = "columns"
+        self._column_browser.set_root_path(target)
+        self._stack.setCurrentWidget(self._column_browser)
         self._toggle_view_action.setText("Switch to Tab View")
         self._update_action_state()
 
     def _switch_to_tabs(self) -> None:
-        self._tab_container.navigate_current_to(self._current_active_path())
-        self._stack.setCurrentWidget(self._tab_container)
+        target = self._current_active_path()
         self._view_mode = "tabs"
+        self._tab_container.navigate_current_to(target)
+        self._stack.setCurrentWidget(self._tab_container)
         self._toggle_view_action.setText("Switch to Column View")
         self._update_action_state()
 
@@ -237,7 +239,10 @@ class MainWindow(QMainWindow):
 
     def _update_status_path(self, path: Path) -> None:
         self._status_path = path
-        self._status_summary = browser_status_for(path)
+        if self._is_tab_mode():
+            self._status_summary = BrowserStatus()
+        else:
+            self._status_summary = browser_status_for(path)
         self._show_status()
         self.setWindowTitle(f"OmniDesk - {path}")
 
