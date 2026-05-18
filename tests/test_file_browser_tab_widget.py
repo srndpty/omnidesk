@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QModelIndex, Qt
+from PyQt6.QtCore import QModelIndex, Qt, QThreadPool
 from PyQt6.QtGui import QKeyEvent, QShortcut
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox
 
@@ -826,6 +826,43 @@ def test_file_browser_tab_directory_loaded_updates_status_item_counts(
     assert tab._status_folder_count == 2
     assert tab._status_file_count == 3
     assert status.total_count == 5
+
+
+def test_file_browser_tab_request_status_counts_clears_stale_counts(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    selected = tmp_path / "selected.txt"
+    selected.write_bytes(b"abc")
+
+    class NoopThreadPool:
+        def __init__(self) -> None:
+            self.jobs: list[object] = []
+
+        def start(self, job: object) -> None:
+            self.jobs.append(job)
+
+    pool = NoopThreadPool()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._status_folder_count = 8
+    tab._status_file_count = 13
+    tab._status_count_pool = cast(QThreadPool, pool)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [selected])
+    statuses: list[BrowserStatus] = []
+    tab.statusChanged.connect(lambda status: statuses.append(cast(BrowserStatus, status)))
+
+    tab._request_status_item_counts(tmp_path)
+
+    assert pool.jobs
+    assert tab._status_folder_count == 0
+    assert tab._status_file_count == 0
+    status = statuses[-1]
+    assert status.folder_count == 0
+    assert status.file_count == 0
+    assert status.selected_count == 1
+    assert status.selected_file_size == 3
 
 
 def test_file_browser_tab_async_status_counts_keep_current_selection(

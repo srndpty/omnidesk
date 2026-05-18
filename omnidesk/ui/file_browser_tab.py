@@ -1454,6 +1454,9 @@ class FileBrowserTab(QWidget):
     def _request_status_item_counts(self, path: Path) -> None:
         self._status_count_generation += 1
         generation = self._status_count_generation
+        self._status_folder_count = 0
+        self._status_file_count = 0
+        self._emit_status_changed(self._selected_paths())
         job = _DirectoryCountJob(path, generation)
         job.signals.counted.connect(self._handle_status_item_counts_ready)
         self._status_count_jobs[generation] = job
