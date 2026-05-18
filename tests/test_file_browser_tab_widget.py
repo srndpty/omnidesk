@@ -828,6 +828,30 @@ def test_file_browser_tab_directory_loaded_updates_status_item_counts(
     assert status.total_count == 5
 
 
+def test_file_browser_tab_async_status_counts_keep_current_selection(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    selected = tmp_path / "selected.txt"
+    selected.write_bytes(b"abc")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    tab._status_count_generation = 7
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [selected])
+    statuses: list[BrowserStatus] = []
+    tab.statusChanged.connect(lambda status: statuses.append(cast(BrowserStatus, status)))
+
+    tab._handle_status_item_counts_ready(str(tmp_path), 7, 2, 3)
+
+    status = statuses[-1]
+    assert status.folder_count == 2
+    assert status.file_count == 3
+    assert status.selected_count == 1
+    assert status.selected_file_size == 3
+
+
 class _FakeFileInfo:
     def __init__(self, path: Path, *, is_dir: bool) -> None:
         self._path = path

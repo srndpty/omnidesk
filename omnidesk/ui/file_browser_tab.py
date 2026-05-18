@@ -1472,7 +1472,7 @@ class FileBrowserTab(QWidget):
             return
         self._status_folder_count = folder_count
         self._status_file_count = file_count
-        self._emit_status_changed()
+        self._emit_status_changed(self._selected_paths())
 
     def _update_status_item_counts(self) -> None:
         self._status_folder_count, self._status_file_count = directory_item_counts(
