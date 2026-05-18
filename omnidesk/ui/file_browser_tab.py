@@ -564,6 +564,13 @@ class FileBrowserTab(QWidget):
         self._thumbnail_scroll_settle_timer.setSingleShot(True)
         self._thumbnail_scroll_settle_timer.timeout.connect(self._request_settled_thumbnails)
 
+        self._thumbnail_idle_batch_timer = QTimer(self)
+        self._thumbnail_idle_batch_timer.setInterval(220)
+        self._thumbnail_idle_batch_timer.setSingleShot(True)
+        self._thumbnail_idle_batch_timer.timeout.connect(
+            lambda: self._request_visible_thumbnails(scrolling=False)
+        )
+
         self._selection_restore_timer = QTimer(self)
         self._selection_restore_timer.setSingleShot(True)
         self._selection_restore_timer.timeout.connect(self._select_pending_or_first_row)
@@ -941,6 +948,7 @@ class FileBrowserTab(QWidget):
         # 保留中のサムネイル要求があればキャンセルする
         self._thumbnail_request_timer.stop()
         self._thumbnail_scroll_settle_timer.stop()
+        self._thumbnail_idle_batch_timer.stop()
         self._model.clear_visible_thumbnail_targets()
 
     # 場所は _on_directory_loaded や _on_scroll の近くが分かりやすい
@@ -960,6 +968,7 @@ class FileBrowserTab(QWidget):
     def _on_scroll(self) -> None:
         if self._is_active:  # アクティブなタブだけがスクロールに応答
             self._is_scrolling_for_thumbnails = True
+            self._thumbnail_idle_batch_timer.stop()
             if not self._thumbnail_request_timer.isActive():
                 self._thumbnail_request_timer.start()
             self._thumbnail_scroll_settle_timer.start()
@@ -970,6 +979,7 @@ class FileBrowserTab(QWidget):
             self._thumbnail_request_timer.stop()
             self._thumbnail_request_timer.start()
             self._thumbnail_scroll_settle_timer.start()
+            self._thumbnail_idle_batch_timer.stop()
 
     def _request_settled_thumbnails(self) -> None:
         self._is_scrolling_for_thumbnails = False
@@ -986,8 +996,14 @@ class FileBrowserTab(QWidget):
         elif isinstance(view, QListView):
             visible_indexes = self._visible_tile_indexes(view)
 
-        request_limit = 6 if scrolling else None
-        self._model.set_visible_thumbnail_targets(visible_indexes, request_limit=request_limit)
+        request_limit = 6
+        requested = self._model.set_visible_thumbnail_targets(
+            visible_indexes,
+            request_limit=request_limit,
+            allow_folder_preview=not scrolling,
+        )
+        if not scrolling and requested > 0 and self._is_active:
+            self._thumbnail_idle_batch_timer.start()
 
     def _visible_tree_indexes(self, view: QTreeView) -> list[QModelIndex]:
         indexes: list[QModelIndex] = []

@@ -42,6 +42,8 @@ class FolderScanJob(QRunnable):
         path: Path,
         extensions: set[str],
         token: CancellationToken,
+        *,
+        scan_limit: int = 128,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
@@ -49,17 +51,19 @@ class FolderScanJob(QRunnable):
         self._path = path
         self._extensions = extensions
         self._token = token
+        self._scan_limit = max(1, scan_limit)
         self.signals = FolderScanSignals()
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
         image_path: Path | None = None
         try:
-            entries = sorted(self._path.iterdir(), key=lambda p: p.name)
-            for entry in entries:
+            for scanned, entry in enumerate(self._path.iterdir(), start=1):
                 if self._token.cancelled:
                     return
                 if entry.is_file() and entry.suffix.lower() in self._extensions:
                     image_path = entry
+                    break
+                if scanned >= self._scan_limit:
                     break
         except OSError:
             logger.exception("Failed to scan folder for thumbnail: %s", self._path)

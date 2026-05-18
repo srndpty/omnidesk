@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QModelIndex, Qt
 from PyQt6.QtGui import QKeyEvent, QShortcut
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox
 
@@ -404,6 +404,7 @@ def test_file_browser_tab_activate_deactivate_thumbnail_state(qtbot) -> None:
     assert not tab._is_active
     assert not tab._thumbnail_request_timer.isActive()
     assert not tab._thumbnail_scroll_settle_timer.isActive()
+    assert not tab._thumbnail_idle_batch_timer.isActive()
 
 
 def test_file_browser_tab_external_drop_warns_for_missing_destination(
@@ -743,6 +744,39 @@ def test_file_browser_tab_request_settled_thumbnails_resets_scrolling(
 
     assert not tab._is_scrolling_for_thumbnails
     assert calls == [False]
+
+
+def test_file_browser_tab_request_visible_thumbnails_batches_idle_work(
+    monkeypatch,
+    qtbot,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._is_active = True
+    monkeypatch.setattr(tab, "_visible_tile_indexes", lambda _view: [QModelIndex()])
+    calls: list[tuple[int | None, bool]] = []
+
+    def set_visible_thumbnail_targets(indexes, *, request_limit=None, allow_folder_preview=True):
+        calls.append((request_limit, allow_folder_preview))
+        return 1
+
+    monkeypatch.setattr(
+        tab._model,
+        "set_visible_thumbnail_targets",
+        set_visible_thumbnail_targets,
+    )
+
+    tab._request_visible_thumbnails(scrolling=False)
+
+    assert calls == [(6, True)]
+    assert tab._thumbnail_idle_batch_timer.isActive()
+
+    tab._thumbnail_idle_batch_timer.stop()
+    calls.clear()
+    tab._request_visible_thumbnails(scrolling=True)
+
+    assert calls == [(6, False)]
+    assert not tab._thumbnail_idle_batch_timer.isActive()
 
 
 def test_file_browser_tab_selection_status_uses_cached_item_counts(
