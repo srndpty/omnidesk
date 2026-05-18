@@ -267,6 +267,26 @@ def test_main_window_status_bar_shows_counts_and_selection(
     assert window._status_detail_label.text().endswith("2個の項目（フォルダ1個/ファイル1個）")
 
 
+def test_main_window_status_path_counts_items_in_column_mode(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    saved: list[dict] = []
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("file", encoding="utf-8")
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window._view_mode = "columns"
+    window._update_status_path(tmp_path)
+
+    assert window._status_detail_label.text() == "2個の項目（フォルダ1個/ファイル1個）"
+
+
 def test_main_window_status_path_elides_when_space_is_limited(
     monkeypatch,
     qtbot,
