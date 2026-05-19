@@ -209,6 +209,15 @@ class TabContainer(QWidget):
                         self._close_tab(index)
                         return True
 
+            elif event.type() == QEvent.Type.MouseButtonDblClick:
+                mouse = cast(QMouseEvent, event)
+                if (
+                    mouse.button() == Qt.MouseButton.LeftButton
+                    and tab_bar.tabAt(mouse.position().toPoint()) == -1
+                ):
+                    self.duplicate_current_tab()
+                    return True
+
             elif event.type() == QEvent.Type.ContextMenu:
                 context_event = cast(QContextMenuEvent, event)
                 index = tab_bar.tabAt(context_event.pos())
@@ -298,6 +307,19 @@ class TabContainer(QWidget):
     # public API
     # ------------------------------------------------------------------
     def open_in_new_tab(self, path: Path, *, pinned: bool = False) -> FileBrowserTab:
+        return self._add_tab(path, pinned=pinned)
+
+    def duplicate_current_tab(self) -> FileBrowserTab | None:
+        index = self._tabs.currentIndex()
+        return self._duplicate_tab(index)
+
+    def _add_tab(
+        self,
+        path: Path,
+        *,
+        pinned: bool = False,
+        insert_at: int | None = None,
+    ) -> FileBrowserTab:
         tab = FileBrowserTab(self, name_column_width=self._name_column_width)
         tab.navigate_to(path)
         tab.directoryChanged.connect(self._make_directory_changed_handler(tab))
@@ -306,7 +328,10 @@ class TabContainer(QWidget):
         tab.nameColumnWidthChanged.connect(
             partial(self._handle_name_column_width_changed, source=tab)
         )
-        index = self._tabs.addTab(tab, self._label_for(path))
+        if insert_at is None:
+            index = self._tabs.addTab(tab, self._label_for(path))
+        else:
+            index = self._tabs.insertTab(insert_at, tab, self._label_for(path))
         self._set_tab_pinned(index, pinned=pinned)
         self._tabs.setCurrentIndex(index)
         self.tabCountChanged.emit(self._tabs.count())
@@ -412,6 +437,8 @@ class TabContainer(QWidget):
         menu = QMenu(self)
         pin_action = menu.addAction("Unpin Tab" if self.is_tab_pinned(index) else "Pin Tab")
         pin_action.triggered.connect(partial(self._toggle_tab_pinned, index))
+        duplicate_action = menu.addAction("Duplicate Tab")
+        duplicate_action.triggered.connect(partial(self._handle_duplicate_tab_requested, index))
         close_action = menu.addAction("Close Tab")
         close_action.setEnabled(self._can_close_tab(index))
         close_action.triggered.connect(partial(self._close_tab, index))
@@ -421,6 +448,21 @@ class TabContainer(QWidget):
         if not 0 <= index < self._tabs.count():
             return
         self._set_tab_pinned(index, pinned=not self.is_tab_pinned(index))
+
+    def _handle_duplicate_tab_requested(self, index: int) -> None:
+        self._duplicate_tab(index)
+
+    def _duplicate_tab(self, index: int) -> FileBrowserTab | None:
+        if not 0 <= index < self._tabs.count():
+            return None
+        widget = self._tabs.widget(index)
+        if not isinstance(widget, FileBrowserTab):
+            return None
+        return self._add_tab(
+            widget.current_path(),
+            pinned=self.is_tab_pinned(index),
+            insert_at=index + 1,
+        )
 
     def _set_tab_pinned(self, index: int, *, pinned: bool) -> None:
         if not 0 <= index < self._tabs.count():
