@@ -227,15 +227,16 @@ def test_tab_context_menu_exposes_pin_and_close_actions(
     menu = container._create_tab_context_menu(0)
     actions = menu.actions()
 
-    assert [action.text() for action in actions] == ["Pin Tab", "Close Tab"]
-    assert actions[1].isEnabled()
+    assert [action.text() for action in actions] == ["Pin Tab", "Duplicate Tab", "Close Tab"]
+    assert actions[2].isEnabled()
 
     actions[0].trigger()
     pinned_menu = container._create_tab_context_menu(0)
 
     assert container.is_tab_pinned(0)
     assert pinned_menu.actions()[0].text() == "Unpin Tab"
-    assert not pinned_menu.actions()[1].isEnabled()
+    assert pinned_menu.actions()[1].text() == "Duplicate Tab"
+    assert not pinned_menu.actions()[2].isEnabled()
 
 
 def test_tab_context_menu_disables_close_for_last_tab(
@@ -250,8 +251,70 @@ def test_tab_context_menu_disables_close_for_last_tab(
 
     menu = container._create_tab_context_menu(0)
 
-    assert menu.actions()[1].text() == "Close Tab"
-    assert not menu.actions()[1].isEnabled()
+    assert menu.actions()[2].text() == "Close Tab"
+    assert not menu.actions()[2].isEnabled()
+
+
+def test_duplicate_tab_inserts_copy_to_the_right_and_preserves_pin(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one")
+    container.open_in_new_tab(tmp_path / "two", pinned=True)
+    container.open_in_new_tab(tmp_path / "three")
+
+    duplicated = container._duplicate_tab(1)
+
+    assert duplicated is not None
+    assert container.tab_paths() == [
+        tmp_path / "one",
+        tmp_path / "two",
+        tmp_path / "two",
+        tmp_path / "three",
+    ]
+    assert container.tab_pinned_states() == [False, True, True, False]
+    assert container._tabs.currentIndex() == 2
+
+
+def test_duplicate_current_tab_uses_current_index(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one")
+    container.open_in_new_tab(tmp_path / "two")
+    container._tabs.setCurrentIndex(0)
+
+    duplicated = container.duplicate_current_tab()
+
+    assert duplicated is not None
+    assert container.tab_paths() == [tmp_path / "one", tmp_path / "one", tmp_path / "two"]
+    assert container._tabs.currentIndex() == 1
+
+
+def test_context_menu_duplicate_action_duplicates_target_tab(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one")
+    container.open_in_new_tab(tmp_path / "two", pinned=True)
+
+    menu = container._create_tab_context_menu(1)
+    menu.actions()[1].trigger()
+
+    assert container.tab_paths() == [tmp_path / "one", tmp_path / "two", tmp_path / "two"]
+    assert container.tab_pinned_states() == [False, True, True]
 
 
 def test_pinned_tabs_cannot_be_closed_until_unpinned(
@@ -502,3 +565,28 @@ def test_event_filter_drag_enter_and_middle_click(monkeypatch, qtbot, tmp_path: 
     middle = StubEvent(QEvent.Type.MouseButtonRelease, button=Qt.MouseButton.MiddleButton)
     assert container.eventFilter(tab_bar, cast(QEvent, middle))
     assert container.tab_count() == 1
+
+
+def test_double_click_empty_tab_bar_duplicates_current_tab(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    container.open_in_new_tab(tmp_path / "one", pinned=True)
+    container.open_in_new_tab(tmp_path / "two")
+    container._tabs.setCurrentIndex(0)
+    tab_bar = container._tabs.tabBar()
+    monkeypatch.setattr(tab_bar, "tabAt", lambda _point: -1)
+
+    double_click = StubEvent(
+        QEvent.Type.MouseButtonDblClick,
+        button=Qt.MouseButton.LeftButton,
+    )
+    assert container.eventFilter(tab_bar, cast(QEvent, double_click))
+
+    assert container.tab_paths() == [tmp_path / "one", tmp_path / "one", tmp_path / "two"]
+    assert container.tab_pinned_states() == [True, True, False]
+    assert container._tabs.currentIndex() == 1
