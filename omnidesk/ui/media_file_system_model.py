@@ -390,12 +390,12 @@ class MediaFileSystemModel(QFileSystemModel):
     def supportedDropActions(self) -> Qt.DropAction:
         """このモデルがサポートするドロップアクションを宣言します。"""
         # コピーと移動の両方をサポートすることをビューに伝える
-        return Qt.DropAction.CopyAction | Qt.DropAction.MoveAction
+        return Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction
 
     def supportedDragActions(self) -> Qt.DropAction:
         """このモデルがサポートするドロップアクションを宣言します。"""
         # コピーと移動の両方をサポートすることをビューに伝える
-        return Qt.DropAction.CopyAction | Qt.DropAction.MoveAction
+        return Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         """各アイテムの振る舞いを定義するフラグを返します。"""
@@ -460,3 +460,19 @@ class MediaFileSystemModel(QFileSystemModel):
                 logger.exception("drop move failed: %s -> %s", src_path, dest_path)
 
         return moved
+
+    def canDropMimeData(
+        self, data: QMimeData, action: Qt.DropAction, row: int, column: int, parent: QModelIndex
+    ) -> bool:
+        """Allow URL drops onto directory items even while QFileSystemModel is read-only."""
+        if action == Qt.DropAction.IgnoreAction:
+            return True
+        if action not in (
+            Qt.DropAction.CopyAction,
+            Qt.DropAction.MoveAction,
+            Qt.DropAction.TargetMoveAction,
+        ):
+            return False
+        if not data.hasUrls():
+            return False
+        return parent.isValid() and self.isDir(parent)

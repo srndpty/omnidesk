@@ -12,6 +12,7 @@ from typing import Literal, TypedDict, cast
 
 from PyQt6.QtCore import (
     QDir,
+    QEvent,
     QItemSelection,
     QItemSelectionModel,
     QMimeData,
@@ -106,11 +107,72 @@ from .file_operations import (
 from .media_file_system_model import MediaFileSystemModel
 
 logger = logging.getLogger(__name__)
+DND_DEBUG = os.environ.get("OMNIDESK_DND_DEBUG", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+DND_EVENT_TYPES = {
+    QEvent.Type.DragEnter: "DragEnter",
+    QEvent.Type.DragMove: "DragMove",
+    QEvent.Type.Drop: "Drop",
+    QEvent.Type.DragLeave: "DragLeave",
+}
+
+
+def _debug_dnd(message: str, *args: object) -> None:
+    if DND_DEBUG:
+        logger.debug("[dnd] " + message, *args)
+
+
+def _dnd_event_name(event: QEvent) -> str:
+    return DND_EVENT_TYPES.get(event.type(), str(event.type()))
 
 
 class _ClipboardPayload(TypedDict):
     paths: list[Path]
     mode: Literal["copy", "move"]
+
+
+NAVIGATION_SELECTION_KEYS = {
+    Qt.Key.Key_Up,
+    Qt.Key.Key_Down,
+    Qt.Key.Key_Left,
+    Qt.Key.Key_Right,
+}
+
+NAVIGATION_CURSOR_ACTIONS = {
+    Qt.Key.Key_Up: QAbstractItemView.CursorAction.MoveUp,
+    Qt.Key.Key_Down: QAbstractItemView.CursorAction.MoveDown,
+    Qt.Key.Key_Left: QAbstractItemView.CursorAction.MoveLeft,
+    Qt.Key.Key_Right: QAbstractItemView.CursorAction.MoveRight,
+}
+
+
+def navigation_event_without_control(event: QKeyEvent) -> QKeyEvent | None:
+    """Return an equivalent navigation key event with Ctrl stripped."""
+    if event.key() not in NAVIGATION_SELECTION_KEYS:
+        return None
+    modifiers = event.modifiers()
+    if not modifiers & Qt.KeyboardModifier.ControlModifier:
+        return None
+    stripped_modifiers = Qt.KeyboardModifier(
+        modifiers.value & ~Qt.KeyboardModifier.ControlModifier.value
+    )
+    return QKeyEvent(
+        event.type(),
+        event.key(),
+        stripped_modifiers,
+        event.text(),
+        event.isAutoRepeat(),
+        event.count(),
+    )
+
+
+def navigation_cursor_action(key: int) -> QAbstractItemView.CursorAction | None:
+    """Return the view cursor action for a navigation key."""
+    return NAVIGATION_CURSOR_ACTIONS.get(Qt.Key(key))
 
 
 def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
@@ -186,8 +248,11 @@ class _BaseFileViewMixin:
         self._tab = tab
         self._drag_start_pos = None
         self._drag_on_item = False
+        self._drag_start_path: Path | None = None
         view.setDragEnabled(True)
         view.setAcceptDrops(True)
+        view.viewport().setAcceptDrops(True)
+        view.viewport().installEventFilter(view)
         view.setDropIndicatorShown(True)
         view.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         view.setDefaultDropAction(Qt.DropAction.MoveAction)
@@ -211,17 +276,28 @@ class _BaseFileViewMixin:
             # クリックされた位置にアイテムが存在するかどうかをチェック
             index_at_pos = cast(QAbstractItemView, self).indexAt(event.position().toPoint())
             self._drag_on_item = index_at_pos.isValid()
+            self._drag_start_path = self._path_from_index(index_at_pos)
+            _debug_dnd(
+                "press pos=%s on_item=%s start_path=%s",
+                event.position().toPoint(),
+                self._drag_on_item,
+                self._drag_start_path,
+            )
         super().mousePressEvent(event)  # type: ignore[attr-defined]
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if event.buttons() & Qt.MouseButton.LeftButton and self._drag_start_pos is not None:
             distance = (event.position() - self._drag_start_pos).manhattanLength()
-            if (
-                distance >= QApplication.startDragDistance()
-                and self._drag_on_item
-                and self.selected_paths()
-            ):
+            if distance >= QApplication.startDragDistance() and self._drag_on_item:
+                _debug_dnd(
+                    "threshold distance=%s selected=%s start_path=%s",
+                    distance,
+                    self.selected_paths(),
+                    self._drag_start_path,
+                )
                 self.startDrag(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
+                self._drag_start_pos = None
+                self._drag_start_path = None
                 return
         super().mouseMoveEvent(event)  # type: ignore[attr-defined]
 
@@ -243,40 +319,148 @@ class _BaseFileViewMixin:
             logger.debug("Forward mouse button pressed")
             self._tab.go_forward()
             event.accept()
+        self._drag_start_pos = None
+        self._drag_start_path = None
 
     def startDrag(self, supported_actions: Qt.DropAction) -> None:  # noqa: N802
-        paths = self.selected_paths()
+        paths = self._drag_paths()
         if not paths:
+            logger.debug("Ignoring drag start because no file paths are available")
             return
+        _debug_dnd("start paths=%s supported_actions=%s", paths, supported_actions)
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
         drag = QDrag(cast(QWidget, self))
         drag.setMimeData(mime)
+        if DND_DEBUG:
+            drag.actionChanged.connect(
+                lambda action: _debug_dnd("drag actionChanged action=%s", action)
+            )
+            drag.targetChanged.connect(
+                lambda target: _debug_dnd("drag targetChanged target=%s", target)
+            )
         default_action = Qt.DropAction.MoveAction
-        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction, default_action)
+        result = drag.exec(
+            Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction,
+            default_action,
+        )
+        _debug_dnd("exec finished result=%s", result)
+
+    def _drag_paths(self) -> list[Path]:
+        selected = self.selected_paths()
+        if not self._drag_start_path:
+            return selected
+        if not selected or self._drag_start_path not in selected:
+            return [self._drag_start_path]
+        return selected
+
+    def _path_from_index(self, index: QModelIndex) -> Path | None:
+        if not index.isValid():
+            return None
+        source = index.siblingAtColumn(0)
+        try:
+            path = self._tab._model.filePath(source)
+        except Exception:
+            logger.debug("Could not resolve drag start path", exc_info=True)
+            return None
+        if not path:
+            return None
+        return Path(path)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        view = cast(QAbstractItemView, self)
+        if obj is view.viewport():
+            if event.type() in DND_EVENT_TYPES:
+                _debug_dnd(
+                    "eventFilter viewport type=%s accepted=%s",
+                    _dnd_event_name(event),
+                    event.isAccepted(),
+                )
+            if event.type() == QEvent.Type.DragEnter:
+                return self._handle_drag_enter_event(event)
+            if event.type() == QEvent.Type.DragMove:
+                return self._handle_drag_move_event(event)
+            if event.type() == QEvent.Type.Drop:
+                return self._handle_drop_event(event)
+        return super().eventFilter(obj, event)  # type: ignore[misc]
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() in DND_EVENT_TYPES:
+            _debug_dnd(
+                "event view type=%s accepted=%s",
+                _dnd_event_name(event),
+                event.isAccepted(),
+            )
+        if event.type() == QEvent.Type.DragEnter:
+            return self._handle_drag_enter_event(event)
+        if event.type() == QEvent.Type.DragMove:
+            return self._handle_drag_move_event(event)
+        if event.type() == QEvent.Type.Drop:
+            return self._handle_drop_event(event)
+        return super().event(event)  # type: ignore[misc]
+
+    def viewportEvent(self, event: QEvent) -> bool:  # noqa: N802
+        if event.type() in DND_EVENT_TYPES:
+            _debug_dnd(
+                "viewportEvent type=%s accepted=%s",
+                _dnd_event_name(event),
+                event.isAccepted(),
+            )
+        return super().viewportEvent(event)  # type: ignore[misc]
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            event.ignore()
+        self._handle_drag_enter_event(event)
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
-        if event.mimeData().hasUrls():
-            action = drop_action_for_modifiers(event.modifiers())
-            event.setDropAction(action)
-            event.acceptProposedAction()
-        else:
-            event.ignore()
+        self._handle_drag_move_event(event)
 
     def dropEvent(self, event) -> None:  # noqa: N802
+        self._handle_drop_event(event)
+
+    def _handle_drag_enter_event(self, event) -> bool:
+        if event.mimeData().hasUrls():
+            action = drop_action_for_modifiers(event.modifiers())
+            _debug_dnd(
+                "enter formats=%s proposed=%s action=%s source=%s",
+                event.mimeData().formats(),
+                event.proposedAction(),
+                action,
+                event.source(),
+            )
+            event.setDropAction(action)
+            event.accept()
+            return True
+        _debug_dnd("enter ignored formats=%s", event.mimeData().formats())
+        event.ignore()
+        return False
+
+    def _handle_drag_move_event(self, event) -> bool:
+        if event.mimeData().hasUrls():
+            action = drop_action_for_modifiers(event.modifiers())
+            _debug_dnd(
+                "move pos=%s index_valid=%s proposed=%s action=%s",
+                event.position().toPoint(),
+                cast(QAbstractItemView, self).indexAt(event.position().toPoint()).isValid(),
+                event.proposedAction(),
+                action,
+            )
+            event.setDropAction(action)
+            event.accept()
+            return True
+        _debug_dnd("move ignored formats=%s", event.mimeData().formats())
+        event.ignore()
+        return False
+
+    def _handle_drop_event(self, event) -> bool:
         if not event.mimeData().hasUrls():
+            _debug_dnd("drop ignored formats=%s", event.mimeData().formats())
             event.ignore()
-            return
+            return False
         paths = local_paths_from_urls(event.mimeData().urls())
         if not paths:
+            _debug_dnd("drop ignored no local paths urls=%s", event.mimeData().urls())
             event.ignore()
-            return
+            return False
         pos = event.position().toPoint()
         index = cast(QAbstractItemView, self).indexAt(pos)
         target_dir = self._tab._current_path
@@ -287,13 +471,52 @@ class _BaseFileViewMixin:
                 Path(file_info.absoluteFilePath()),
                 item_is_dir=file_info.isDir(),
             )
+        _debug_dnd(
+            "drop paths=%s target_dir=%s drop_action=%s proposed=%s",
+            paths,
+            target_dir,
+            event.dropAction(),
+            event.proposedAction(),
+        )
         move = should_move_from_drop_action(
             event.dropAction(),
             event.modifiers(),
         )
         self._tab._handle_external_drop(paths, target_dir, move)
         event.setDropAction(Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction)
-        event.acceptProposedAction()
+        event.accept()
+        return True
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        modifiers = event.modifiers()
+        navigation_modifiers = modifiers & ~Qt.KeyboardModifier.KeypadModifier
+        if navigation_modifiers in (
+            Qt.KeyboardModifier.NoModifier,
+            Qt.KeyboardModifier.ControlModifier,
+        ) and self._select_single_navigation_target(event.key()):
+            event.accept()
+            return
+        replacement_event = navigation_event_without_control(event)
+        if replacement_event is not None:
+            super().keyPressEvent(replacement_event)  # type: ignore[attr-defined]
+            event.setAccepted(replacement_event.isAccepted())
+            return
+        super().keyPressEvent(event)  # type: ignore[attr-defined]
+
+    def _select_single_navigation_target(self, key: int) -> bool:
+        action = navigation_cursor_action(key)
+        if action is None:
+            return False
+        view = cast(QAbstractItemView, self)
+        selection_model = view.selectionModel()
+        if selection_model is None:
+            return False
+        target = view.moveCursor(action, Qt.KeyboardModifier.NoModifier)
+        if not target.isValid():
+            return False
+        selection_model.setCurrentIndex(target, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        view.scrollTo(target)
+        return True
 
 
 class _FileTreeView(_BaseFileViewMixin, QTreeView):

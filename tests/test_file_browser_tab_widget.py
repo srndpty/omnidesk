@@ -3,13 +3,36 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QModelIndex, QRect, QSize, Qt, QThreadPool
-from PyQt6.QtGui import QKeyEvent, QPainter, QPixmap, QShortcut
+from PyQt6.QtCore import (
+    QItemSelectionModel,
+    QMimeData,
+    QModelIndex,
+    QPoint,
+    QRect,
+    QSize,
+    Qt,
+    QThreadPool,
+    QUrl,
+)
+from PyQt6.QtGui import (
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QKeyEvent,
+    QPainter,
+    QPixmap,
+    QShortcut,
+    QStandardItem,
+    QStandardItemModel,
+)
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox, QStyle, QStyleOptionViewItem
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
 from omnidesk.ui.file_browser_status import BrowserStatus
-from omnidesk.ui.file_browser_tab import FileBrowserTab
+from omnidesk.ui.file_browser_tab import (
+    FileBrowserTab,
+    navigation_cursor_action,
+    navigation_event_without_control,
+)
 
 
 def test_file_browser_tab_initializes_and_navigates(qtbot, tmp_path: Path) -> None:
@@ -686,6 +709,135 @@ def test_file_browser_tab_ctrl_enter_opens_selected_folder(
         tab.keyPressEvent(event)
 
     assert blocker.args == [selected]
+
+
+def test_navigation_event_without_control_strips_ctrl_for_arrow_key() -> None:
+    event = QKeyEvent(
+        QKeyEvent.Type.KeyPress,
+        Qt.Key.Key_Down,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+    )
+
+    replacement = navigation_event_without_control(event)
+
+    assert replacement is not None
+    assert replacement.key() == Qt.Key.Key_Down
+    assert replacement.modifiers() == Qt.KeyboardModifier.ShiftModifier
+
+
+def test_navigation_event_without_control_ignores_non_navigation_key() -> None:
+    event = QKeyEvent(
+        QKeyEvent.Type.KeyPress,
+        Qt.Key.Key_A,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+
+    assert navigation_event_without_control(event) is None
+
+
+def test_navigation_cursor_action_maps_arrow_keys() -> None:
+    assert navigation_cursor_action(Qt.Key.Key_Down) == QAbstractItemView.CursorAction.MoveDown
+    assert navigation_cursor_action(Qt.Key.Key_A) is None
+
+
+def test_file_view_arrow_navigation_clears_extended_selection(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    model = QStandardItemModel()
+    for name in ("first", "second", "third"):
+        model.appendRow(QStandardItem(name))
+    view = tab._tree_view
+    view.setModel(model)
+    first = model.index(0, 0)
+    third = model.index(2, 0)
+    selection_model = view.selectionModel()
+    assert selection_model is not None
+    selection_model.setCurrentIndex(first, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+    selection_model.select(third, QItemSelectionModel.SelectionFlag.Select)
+
+    view.keyPressEvent(
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_Down,
+            Qt.KeyboardModifier.NoModifier,
+        )
+    )
+
+    selected_rows = [index.row() for index in selection_model.selectedRows()]
+    assert selected_rows == [1]
+
+
+def test_file_view_viewport_filter_accepts_url_drag_events(qtbot, tmp_path: Path) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(source))])
+    actions = Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction
+    view = tab._tile_view
+
+    enter_event = QDragEnterEvent(
+        QPoint(1, 1),
+        actions,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    move_event = QDragMoveEvent(
+        QPoint(1, 1),
+        actions,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert view.eventFilter(view.viewport(), enter_event)
+    assert enter_event.isAccepted()
+    assert enter_event.dropAction() == Qt.DropAction.MoveAction
+    assert view.eventFilter(view.viewport(), move_event)
+    assert move_event.isAccepted()
+    assert move_event.dropAction() == Qt.DropAction.MoveAction
+
+
+def test_file_view_event_accepts_url_drag_enter(qtbot, tmp_path: Path) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(source))])
+    actions = Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction
+    view = tab._tile_view
+    enter_event = QDragEnterEvent(
+        QPoint(1, 1),
+        actions,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert view.event(enter_event)
+    assert enter_event.isAccepted()
+    assert enter_event.dropAction() == Qt.DropAction.MoveAction
+
+
+def test_file_view_drag_paths_falls_back_to_drag_start_path(monkeypatch, qtbot, tmp_path: Path):
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    source = tmp_path / "source.txt"
+    selected = tmp_path / "other.txt"
+    view = tab._tile_view
+    view._drag_start_path = source
+
+    monkeypatch.setattr(view, "selected_paths", lambda: [])
+    assert view._drag_paths() == [source]
+
+    monkeypatch.setattr(view, "selected_paths", lambda: [selected])
+    assert view._drag_paths() == [source]
+
+    monkeypatch.setattr(view, "selected_paths", lambda: [source, selected])
+    assert view._drag_paths() == [source, selected]
 
 
 def test_file_browser_tab_copy_and_cut_selected_update_clipboard(

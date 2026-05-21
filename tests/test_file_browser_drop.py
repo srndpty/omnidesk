@@ -36,6 +36,10 @@ def test_should_move_from_drop_action_respects_ctrl_override() -> None:
         Qt.DropAction.MoveAction,
         Qt.KeyboardModifier.NoModifier,
     )
+    assert should_move_from_drop_action(
+        Qt.DropAction.TargetMoveAction,
+        Qt.KeyboardModifier.NoModifier,
+    )
     assert not should_move_from_drop_action(
         Qt.DropAction.MoveAction,
         Qt.KeyboardModifier.ControlModifier,
