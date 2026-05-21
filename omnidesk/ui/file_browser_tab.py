@@ -279,10 +279,6 @@ class _BaseFileViewMixin:
         このビュー上でマウスボタンが離されたときに呼び出される。
         戻る/進むボタンを処理し、親のタブコンテナに伝える。
         """
-        # まず、親クラス（QTreeView/QListView）のデフォルト処理を呼び出す
-        # これにより、通常のクリック選択などが壊れないようにする
-        super().mouseReleaseEvent(event)  # type: ignore[attr-defined]
-
         button = event.button()
         if button == Qt.MouseButton.BackButton:
             logger.debug("Back mouse button pressed")
@@ -292,6 +288,8 @@ class _BaseFileViewMixin:
             logger.debug("Forward mouse button pressed")
             self._tab.go_forward()
             event.accept()
+        else:
+            super().mouseReleaseEvent(event)  # type: ignore[attr-defined]
         self._drag_start_pos = None
         self._drag_start_path = None
 
@@ -343,6 +341,8 @@ class _BaseFileViewMixin:
         return Path(path)
 
     def event(self, event: QEvent) -> bool:
+        # QAbstractItemView can route internal drags through event() before
+        # dragEnterEvent()/dragMoveEvent(), so accept URL drops here as well.
         if event.type() == QEvent.Type.DragEnter:
             return self._handle_drag_enter_event(event)
         if event.type() == QEvent.Type.DragMove:
@@ -427,6 +427,8 @@ class _BaseFileViewMixin:
         super().keyPressEvent(event)  # type: ignore[attr-defined]
 
     def _select_single_navigation_target(self, key: int) -> bool:
+        if isinstance(self, QTreeView) and key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            return False
         action = navigation_cursor_action(key)
         if action is None:
             return False

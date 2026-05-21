@@ -52,6 +52,18 @@ class _MouseMoveStub:
         self.accepted = True
 
 
+class _MouseReleaseStub:
+    def __init__(self, button: Qt.MouseButton) -> None:
+        self._button = button
+        self.accepted = False
+
+    def button(self) -> Qt.MouseButton:
+        return self._button
+
+    def accept(self) -> None:
+        self.accepted = True
+
+
 def test_file_browser_tab_initializes_and_navigates(qtbot, tmp_path: Path) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
@@ -791,6 +803,47 @@ def test_navigation_event_without_control_ignores_non_navigation_key() -> None:
 def test_navigation_cursor_action_maps_arrow_keys() -> None:
     assert navigation_cursor_action(Qt.Key.Key_Down) == QAbstractItemView.CursorAction.MoveDown
     assert navigation_cursor_action(Qt.Key.Key_A) is None
+
+
+def test_tree_view_does_not_intercept_left_right_navigation(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    assert not tab._tree_view._select_single_navigation_target(Qt.Key.Key_Left)
+    assert not tab._tree_view._select_single_navigation_target(Qt.Key.Key_Right)
+
+
+def test_tile_view_allows_left_right_single_navigation(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    model = QStandardItemModel()
+    for name in ("first", "second"):
+        model.appendRow(QStandardItem(name))
+    view = tab._tile_view
+    view.setModel(model)
+    selection_model = view.selectionModel()
+    assert selection_model is not None
+    selection_model.setCurrentIndex(
+        model.index(0, 0), QItemSelectionModel.SelectionFlag.ClearAndSelect
+    )
+
+    assert view._select_single_navigation_target(Qt.Key.Key_Right)
+    assert [index.row() for index in selection_model.selectedRows()] == [1]
+
+
+def test_file_view_mouse_release_delegates_regular_buttons(monkeypatch, qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    calls: list[object] = []
+
+    monkeypatch.setattr(QListView, "mouseReleaseEvent", lambda _self, event: calls.append(event))
+    event = _MouseReleaseStub(Qt.MouseButton.LeftButton)
+
+    view.mouseReleaseEvent(event)
+
+    assert calls == [event]
+    assert not event.accepted
 
 
 def test_file_view_arrow_navigation_clears_extended_selection(qtbot) -> None:
