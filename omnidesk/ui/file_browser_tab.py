@@ -603,11 +603,12 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
 class _DropTargetItemDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         view_option = QStyleOptionViewItem(option)
-        if self._is_drop_target(view_option, index):
+        is_drop_target = self._is_drop_target(view_option, index)
+        if is_drop_target:
             view_option.state |= QStyle.StateFlag.State_Selected
             view_option.state |= QStyle.StateFlag.State_Active
         clipboard_mode = self._clipboard_visual_mode(view_option, index)
-        if clipboard_mode == "move":
+        if clipboard_mode == "move" and not is_drop_target:
             painter.save()
             painter.setOpacity(0.45)
             super().paint(painter, view_option, index)
@@ -633,13 +634,10 @@ class _DropTargetItemDelegate(QStyledItemDelegate):
     @staticmethod
     def _draw_copy_marker(painter: QPainter, option: QStyleOptionViewItem) -> None:
         accent = option.palette.highlight().color()
-        fill = QColor(accent)
-        fill.setAlpha(38)
         border = QColor(accent)
         border.setAlpha(130)
         marker_rect = QRect(option.rect.left(), option.rect.top(), 3, option.rect.height())
         painter.save()
-        painter.fillRect(option.rect.adjusted(1, 1, -1, -1), fill)
         painter.fillRect(marker_rect, border)
         painter.restore()
 
@@ -689,7 +687,7 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
         elif clipboard_mode == "copy":
             self._draw_copy_background(painter, view_option)
 
-        if clipboard_mode == "move":
+        if clipboard_mode == "move" and not is_drop_target:
             painter.setOpacity(0.45)
 
         icon_mode = (
@@ -884,6 +882,7 @@ class FileBrowserTab(QWidget):
         self._manual_media_mode: bool | None = None
         self._manual_media_mode: bool | None = None
         self._clipboard: _ClipboardPayload | None = None
+        self._clipboard_path_set: set[Path] = set()
         self._pending_selection_path: Path | None = None
         self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._status_folder_count = 0
@@ -1082,16 +1081,16 @@ class FileBrowserTab(QWidget):
         return paths
 
     def _set_clipboard(self, payload: _ClipboardPayload | None) -> None:
-        previous_paths = self._clipboard_paths()
+        previous_paths = self._clipboard_path_set
         self._clipboard = payload
-        current_paths = self._clipboard_paths()
-        self._repaint_clipboard_paths(previous_paths | current_paths)
+        self._clipboard_path_set = self._clipboard_paths_from_payload(payload)
+        self._repaint_clipboard_paths(previous_paths | self._clipboard_path_set)
         self._update_action_states()
 
-    def _clipboard_paths(self) -> set[Path]:
-        if not self._clipboard:
+    def _clipboard_paths_from_payload(self, payload: _ClipboardPayload | None) -> set[Path]:
+        if not payload:
             return set()
-        return {self._normalise_path(path) for path in self._clipboard["paths"]}
+        return {self._normalise_path(path) for path in payload["paths"]}
 
     def _clipboard_visual_mode_for_index(self, index: QModelIndex) -> _ClipboardVisualMode | None:
         if not self._clipboard or not index.isValid():
@@ -1100,7 +1099,7 @@ class FileBrowserTab(QWidget):
         path_text = self._model.filePath(source)
         if not path_text:
             return None
-        if self._normalise_path(Path(path_text)) not in self._clipboard_paths():
+        if self._normalise_path(Path(path_text)) not in self._clipboard_path_set:
             return None
         return self._clipboard["mode"]
 
@@ -1255,8 +1254,9 @@ class FileBrowserTab(QWidget):
         self._perform_copy_or_move(paths, self._current_path, move=move)
         if move:
             self._set_clipboard(None)
+        else:
+            self._update_action_states()
         self.refresh()
-        self._update_action_states()
 
     def _delete_selected(self) -> None:
         paths = self._selected_paths()
