@@ -370,14 +370,7 @@ class _BaseFileViewMixin:
 
     @staticmethod
     def _same_model_index(left: QModelIndex, right: QModelIndex) -> bool:
-        if not left.isValid() or not right.isValid():
-            return not left.isValid() and not right.isValid()
-        return (
-            left.model() is right.model()
-            and left.row() == right.row()
-            and left.column() == right.column()
-            and left.parent() == right.parent()
-        )
+        return left == right
 
     def _drag_paths(self) -> list[Path]:
         selected = self.selected_paths()

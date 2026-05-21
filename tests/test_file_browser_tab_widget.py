@@ -1031,6 +1031,63 @@ def test_file_view_drop_target_highlight_tracks_directory_indexes(
     assert updated[-1] == QRect(0, 0, 10, 10)
 
 
+def test_file_view_drop_target_highlight_ignores_initial_file_index(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    model = QStandardItemModel()
+    model.appendRow(QStandardItem("file.txt"))
+    view.setModel(model)
+    updated: list[QRect] = []
+
+    monkeypatch.setattr(view, "indexAt", lambda _pos: model.index(0, 0))
+    monkeypatch.setattr(
+        tab._model,
+        "fileInfo",
+        lambda _index: _FakeFileInfo(tmp_path / "file.txt", is_dir=False),
+    )
+    monkeypatch.setattr(view.viewport(), "update", lambda rect: updated.append(QRect(rect)))
+
+    view._update_drop_target_highlight(QPoint(0, 0))
+
+    assert not view._drop_target_index.isValid()
+    assert updated == []
+
+
+def test_file_browser_tab_tree_delegate_marks_only_drop_target_selected(monkeypatch, qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._DropTargetItemDelegate, tab._tree_view.itemDelegate())
+    model = QStandardItemModel()
+    model.appendRow([QStandardItem("folder"), QStandardItem("detail")])
+    model.appendRow([QStandardItem("other"), QStandardItem("detail")])
+    target = model.index(0, 0)
+    other = model.index(1, 0)
+    tab._tree_view.setModel(model)
+    tab._tree_view._drop_target_index = target
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 120, 20)
+    option.palette = tab._tree_view.palette()
+    option.widget = tab._tree_view
+    pixmap = QPixmap(option.rect.size())
+    painter = QPainter(pixmap)
+    states: list[QStyle.StateFlag] = []
+
+    def capture_paint(_self, _painter, painted_option, _index) -> None:
+        states.append(painted_option.state)
+
+    monkeypatch.setattr(file_browser_tab_module.QStyledItemDelegate, "paint", capture_paint)
+
+    delegate.paint(painter, option, target)
+    delegate.paint(painter, option, other)
+    painter.end()
+
+    assert states[0] & QStyle.StateFlag.State_Selected
+    assert not states[1] & QStyle.StateFlag.State_Selected
+
+
 def test_file_browser_tab_tile_delegate_uses_highlight_for_drop_target(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
