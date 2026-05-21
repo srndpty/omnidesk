@@ -228,6 +228,7 @@ class _BaseFileViewMixin:
         self._drag_start_pos = None
         self._drag_on_item = False
         self._drag_start_path: Path | None = None
+        self._drop_target_index = QModelIndex()
         view.setDragEnabled(True)
         view.setAcceptDrops(True)
         view.viewport().setAcceptDrops(True)
@@ -317,7 +318,59 @@ class _BaseFileViewMixin:
     def _clear_drag_selection_artifacts(self) -> None:
         view = cast(QAbstractItemView, self)
         view.setState(QAbstractItemView.State.NoState)
+        self._set_drop_target_index(QModelIndex())
         view.viewport().update()
+
+    def _drop_target_index_at(self, pos: QPoint) -> QModelIndex:
+        index = cast(QAbstractItemView, self).indexAt(pos)
+        if not index.isValid():
+            return QModelIndex()
+        source = index.siblingAtColumn(0)
+        try:
+            file_info = self._tab._model.fileInfo(source)
+        except Exception:
+            logger.debug("Could not resolve drop target path", exc_info=True)
+            return QModelIndex()
+        if not file_info.isDir():
+            return QModelIndex()
+        return source
+
+    def _set_drop_target_index(self, index: QModelIndex) -> None:
+        if self._same_model_index(self._drop_target_index, index):
+            return
+        previous = self._drop_target_index
+        self._drop_target_index = QModelIndex(index) if index.isValid() else QModelIndex()
+        self._update_drop_target_rect(previous)
+        self._update_drop_target_rect(self._drop_target_index)
+
+    def _update_drop_target_highlight(self, pos: QPoint) -> None:
+        self._set_drop_target_index(self._drop_target_index_at(pos))
+
+    def _update_drop_target_rect(self, index: QModelIndex) -> None:
+        if not index.isValid():
+            return
+        rect = self._drop_target_rect(index)
+        if rect.isValid():
+            cast(QAbstractItemView, self).viewport().update(rect)
+
+    def _drop_target_rect(self, index: QModelIndex) -> QRect:
+        view = cast(QAbstractItemView, self)
+        if isinstance(view, QTreeView):
+            model = view.model()
+            root = view.rootIndex()
+            column_count = model.columnCount(root)
+            rect = view.visualRect(index.siblingAtColumn(0))
+            for column in range(1, column_count):
+                rect = rect.united(view.visualRect(index.siblingAtColumn(column)))
+            return rect
+        return view.visualRect(index)
+
+    def _is_drop_target_index(self, index: QModelIndex) -> bool:
+        return self._same_model_index(index.siblingAtColumn(0), self._drop_target_index)
+
+    @staticmethod
+    def _same_model_index(left: QModelIndex, right: QModelIndex) -> bool:
+        return left == right
 
     def _drag_paths(self) -> list[Path]:
         selected = self.selected_paths()
@@ -377,18 +430,22 @@ class _BaseFileViewMixin:
             view = cast(QAbstractItemView, self)
             if view.state() != QAbstractItemView.State.NoState:
                 self._clear_drag_selection_artifacts()
+            self._update_drop_target_highlight(event.position().toPoint())
             event.setDropAction(action)
             event.accept()
             return True
+        self._set_drop_target_index(QModelIndex())
         event.ignore()
         return False
 
     def _handle_drop_event(self, event) -> bool:
         if not event.mimeData().hasUrls():
+            self._set_drop_target_index(QModelIndex())
             event.ignore()
             return False
         paths = local_paths_from_urls(event.mimeData().urls())
         if not paths:
+            self._set_drop_target_index(QModelIndex())
             event.ignore()
             return False
         pos = event.position().toPoint()
@@ -406,6 +463,7 @@ class _BaseFileViewMixin:
             event.modifiers(),
         )
         self._tab._handle_external_drop(paths, target_dir, move)
+        self._set_drop_target_index(QModelIndex())
         event.setDropAction(Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction)
         event.accept()
         return True
@@ -448,6 +506,7 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
     def __init__(self, tab: FileBrowserTab) -> None:
         QTreeView.__init__(self, tab)
         self._init_file_view(tab)
+        self.setItemDelegate(_DropTargetItemDelegate(self))
 
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
         self._rubber_band_origin: QPoint | None = None
@@ -534,6 +593,20 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
         selection_model.select(target_selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
 
+class _DropTargetItemDelegate(QStyledItemDelegate):
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        view_option = QStyleOptionViewItem(option)
+        if self._is_drop_target(view_option, index):
+            view_option.state |= QStyle.StateFlag.State_Selected
+            view_option.state |= QStyle.StateFlag.State_Active
+        super().paint(painter, view_option, index)
+
+    @staticmethod
+    def _is_drop_target(option: QStyleOptionViewItem, index: QModelIndex) -> bool:
+        checker = getattr(option.widget, "_is_drop_target_index", None)
+        return bool(checker and checker(index))
+
+
 class _FileTileView(_BaseFileViewMixin, QListView):
     LAYOUT_BATCH_SIZE = 128
 
@@ -569,13 +642,16 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
         style = view_option.widget.style() if view_option.widget else QApplication.style()
         icon_rect, text_rect = self._tile_rects(view_option)
         text = self._two_line_text(view_option.text, view_option.fontMetrics, text_rect.width())
+        is_drop_target = self._is_drop_target(view_option, index)
 
         painter.save()
         self._draw_tile_background(painter, view_option, style)
+        if is_drop_target:
+            self._draw_drop_target_background(painter, view_option)
 
         icon_mode = (
             QIcon.Mode.Selected
-            if view_option.state & QStyle.StateFlag.State_Selected
+            if view_option.state & QStyle.StateFlag.State_Selected or is_drop_target
             else QIcon.Mode.Normal
         )
         view_option.icon.paint(
@@ -586,7 +662,7 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
             QIcon.State.Off,
         )
 
-        if view_option.state & QStyle.StateFlag.State_Selected:
+        if view_option.state & QStyle.StateFlag.State_Selected or is_drop_target:
             painter.fillRect(text_rect, view_option.palette.highlight())
             painter.setPen(view_option.palette.highlightedText().color())
         else:
@@ -598,6 +674,11 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
             text,
         )
         painter.restore()
+
+    @staticmethod
+    def _is_drop_target(option: QStyleOptionViewItem, index: QModelIndex) -> bool:
+        checker = getattr(option.widget, "_is_drop_target_index", None)
+        return bool(checker and checker(index))
 
     def _draw_tile_background(
         self, painter: QPainter, option: QStyleOptionViewItem, style: QStyle
@@ -613,6 +694,14 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
             painter,
             option.widget,
         )
+
+    def _draw_drop_target_background(self, painter: QPainter, option: QStyleOptionViewItem) -> None:
+        fill_color = option.palette.highlight().color()
+        fill_color.setAlpha(70)
+        border_color = option.palette.highlight().color()
+        painter.fillRect(option.rect.adjusted(1, 1, -1, -1), fill_color)
+        painter.setPen(border_color)
+        painter.drawRect(option.rect.adjusted(1, 1, -2, -2))
 
     def _tile_rects(self, option: QStyleOptionViewItem) -> tuple[QRect, QRect]:
         rect = option.rect
@@ -1118,7 +1207,9 @@ class FileBrowserTab(QWidget):
             QMessageBox.warning(self, "Drop failed", f"Destination {target_dir} does not exist.")
             return False
         if move and has_blocked_self_move(paths, target_dir):
-            QMessageBox.warning(self, "Drop failed", "Cannot move a folder into itself.")
+            logger.info(
+                "Blocked moving a folder into itself: paths=%s target=%s", paths, target_dir
+            )
             return False
         errors = self._perform_copy_or_move(paths, target_dir, move=move)
         if not errors and select_after:

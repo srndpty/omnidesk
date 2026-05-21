@@ -588,7 +588,7 @@ def test_file_browser_tab_external_drop_blocks_moving_folder_into_itself(
 
     tab._handle_external_drop([source], nested, move=True)
 
-    assert warnings == [("Drop failed", "Cannot move a folder into itself.")]
+    assert warnings == []
     assert copied == []
 
 
@@ -978,12 +978,141 @@ def test_file_view_drag_leave_resets_drag_state(qtbot, tmp_path: Path) -> None:
     qtbot.addWidget(tab)
     view = tab._tile_view
     view._drag_start_path = tmp_path / "source.txt"
+    model = QStandardItemModel()
+    model.appendRow(QStandardItem("target"))
+    view.setModel(model)
+    view._drop_target_index = model.index(0, 0)
     view.setState(QAbstractItemView.State.DragSelectingState)
 
     view.event(QEvent(QEvent.Type.DragLeave))
 
     assert view._drag_start_path is None
+    assert not view._drop_target_index.isValid()
     assert view.state() == QAbstractItemView.State.NoState
+
+
+def test_file_view_drop_target_highlight_tracks_directory_indexes(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    model = QStandardItemModel()
+    for name in ("folder", "file.txt"):
+        model.appendRow(QStandardItem(name))
+    view.setModel(model)
+    folder = tmp_path / "folder"
+    file_path = tmp_path / "file.txt"
+    updated: list[QRect] = []
+
+    monkeypatch.setattr(
+        view,
+        "indexAt",
+        lambda pos: model.index(0, 0) if pos.x() == 0 else model.index(1, 0),
+    )
+    monkeypatch.setattr(
+        tab._model,
+        "fileInfo",
+        lambda index: _FakeFileInfo(
+            folder if index.row() == 0 else file_path, is_dir=index.row() == 0
+        ),
+    )
+    monkeypatch.setattr(view, "visualRect", lambda index: QRect(index.row() * 10, 0, 10, 10))
+    monkeypatch.setattr(view.viewport(), "update", lambda rect: updated.append(QRect(rect)))
+
+    view._update_drop_target_highlight(QPoint(0, 0))
+
+    assert view._is_drop_target_index(model.index(0, 0))
+    assert updated == [QRect(0, 0, 10, 10)]
+
+    view._update_drop_target_highlight(QPoint(1, 0))
+
+    assert not view._drop_target_index.isValid()
+    assert updated[-1] == QRect(0, 0, 10, 10)
+
+
+def test_file_view_drop_target_highlight_ignores_initial_file_index(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    model = QStandardItemModel()
+    model.appendRow(QStandardItem("file.txt"))
+    view.setModel(model)
+    updated: list[QRect] = []
+
+    monkeypatch.setattr(view, "indexAt", lambda _pos: model.index(0, 0))
+    monkeypatch.setattr(
+        tab._model,
+        "fileInfo",
+        lambda _index: _FakeFileInfo(tmp_path / "file.txt", is_dir=False),
+    )
+    monkeypatch.setattr(view.viewport(), "update", lambda rect: updated.append(QRect(rect)))
+
+    view._update_drop_target_highlight(QPoint(0, 0))
+
+    assert not view._drop_target_index.isValid()
+    assert updated == []
+
+
+def test_file_browser_tab_tree_delegate_marks_only_drop_target_selected(monkeypatch, qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._DropTargetItemDelegate, tab._tree_view.itemDelegate())
+    model = QStandardItemModel()
+    model.appendRow([QStandardItem("folder"), QStandardItem("detail")])
+    model.appendRow([QStandardItem("other"), QStandardItem("detail")])
+    target = model.index(0, 0)
+    other = model.index(1, 0)
+    tab._tree_view.setModel(model)
+    tab._tree_view._drop_target_index = target
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 120, 20)
+    option.palette = tab._tree_view.palette()
+    option.widget = tab._tree_view
+    pixmap = QPixmap(option.rect.size())
+    painter = QPainter(pixmap)
+    states: list[QStyle.StateFlag] = []
+
+    def capture_paint(_self, _painter, painted_option, _index) -> None:
+        states.append(painted_option.state)
+
+    monkeypatch.setattr(file_browser_tab_module.QStyledItemDelegate, "paint", capture_paint)
+
+    delegate.paint(painter, option, target)
+    delegate.paint(painter, option, other)
+    painter.end()
+
+    assert states[0] & QStyle.StateFlag.State_Selected
+    assert not states[1] & QStyle.StateFlag.State_Selected
+
+
+def test_file_browser_tab_tile_delegate_uses_highlight_for_drop_target(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    model = QStandardItemModel()
+    model.appendRow(QStandardItem("folder"))
+    index = model.index(0, 0)
+    tab._tile_view.setModel(model)
+    tab._tile_view._drop_target_index = index
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 184, 222)
+    option.decorationSize = QSize(160, 160)
+    option.fontMetrics = tab._tile_view.fontMetrics()
+    option.palette = tab._tile_view.palette()
+    option.widget = tab._tile_view
+    _, text_rect = delegate._tile_rects(option)
+    pixmap = QPixmap(option.rect.size())
+    pixmap.fill(option.palette.base().color())
+    painter = QPainter(pixmap)
+
+    delegate.paint(painter, option, index)
+    painter.end()
+
+    image = pixmap.toImage()
+    assert image.pixelColor(text_rect.center()) == option.palette.highlight().color()
 
 
 def test_file_browser_tab_selection_changed_repaints_selected_and_deselected(
