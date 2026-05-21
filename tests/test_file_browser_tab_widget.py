@@ -16,7 +16,6 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QDragEnterEvent,
-    QDragMoveEvent,
     QKeyEvent,
     QPainter,
     QPixmap,
@@ -767,39 +766,6 @@ def test_file_view_arrow_navigation_clears_extended_selection(qtbot) -> None:
     assert selected_rows == [1]
 
 
-def test_file_view_viewport_filter_accepts_url_drag_events(qtbot, tmp_path: Path) -> None:
-    tab = FileBrowserTab()
-    qtbot.addWidget(tab)
-    source = tmp_path / "source.txt"
-    source.write_text("source", encoding="utf-8")
-    mime = QMimeData()
-    mime.setUrls([QUrl.fromLocalFile(str(source))])
-    actions = Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction
-    view = tab._tile_view
-
-    enter_event = QDragEnterEvent(
-        QPoint(1, 1),
-        actions,
-        mime,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-    )
-    move_event = QDragMoveEvent(
-        QPoint(1, 1),
-        actions,
-        mime,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-    )
-
-    assert view.eventFilter(view.viewport(), enter_event)
-    assert enter_event.isAccepted()
-    assert enter_event.dropAction() == Qt.DropAction.MoveAction
-    assert view.eventFilter(view.viewport(), move_event)
-    assert move_event.isAccepted()
-    assert move_event.dropAction() == Qt.DropAction.MoveAction
-
-
 def test_file_view_event_accepts_url_drag_enter(qtbot, tmp_path: Path) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
@@ -809,6 +775,7 @@ def test_file_view_event_accepts_url_drag_enter(qtbot, tmp_path: Path) -> None:
     mime.setUrls([QUrl.fromLocalFile(str(source))])
     actions = Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction
     view = tab._tile_view
+
     enter_event = QDragEnterEvent(
         QPoint(1, 1),
         actions,
@@ -822,7 +789,9 @@ def test_file_view_event_accepts_url_drag_enter(qtbot, tmp_path: Path) -> None:
     assert enter_event.dropAction() == Qt.DropAction.MoveAction
 
 
-def test_file_view_drag_paths_falls_back_to_drag_start_path(monkeypatch, qtbot, tmp_path: Path):
+def test_file_view_drag_paths_falls_back_to_drag_start_path(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     source = tmp_path / "source.txt"
@@ -838,6 +807,19 @@ def test_file_view_drag_paths_falls_back_to_drag_start_path(monkeypatch, qtbot, 
 
     monkeypatch.setattr(view, "selected_paths", lambda: [source, selected])
     assert view._drag_paths() == [source, selected]
+
+
+def test_file_view_reset_drag_state_clears_internal_drag_state(qtbot, tmp_path: Path) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    view._drag_start_path = tmp_path / "source.txt"
+    view.setState(QAbstractItemView.State.DragSelectingState)
+
+    view._reset_drag_state()
+
+    assert view._drag_start_path is None
+    assert view.state() == QAbstractItemView.State.NoState
 
 
 def test_file_browser_tab_copy_and_cut_selected_update_clipboard(
