@@ -615,7 +615,7 @@ class _DropTargetItemDelegate(QStyledItemDelegate):
             painter.restore()
             return
         super().paint(painter, view_option, index)
-        if clipboard_mode == "copy":
+        if clipboard_mode == "copy" and index.column() == 0:
             self._draw_copy_marker(painter, view_option)
 
     @staticmethod
@@ -1090,7 +1090,7 @@ class FileBrowserTab(QWidget):
     def _clipboard_paths_from_payload(self, payload: _ClipboardPayload | None) -> set[Path]:
         if not payload:
             return set()
-        return {self._normalise_path(path) for path in payload["paths"]}
+        return {self._normalise_clipboard_path(path) for path in payload["paths"]}
 
     def _clipboard_visual_mode_for_index(self, index: QModelIndex) -> _ClipboardVisualMode | None:
         if not self._clipboard or not index.isValid():
@@ -1099,7 +1099,7 @@ class FileBrowserTab(QWidget):
         path_text = self._model.filePath(source)
         if not path_text:
             return None
-        if self._normalise_path(Path(path_text)) not in self._clipboard_path_set:
+        if self._normalise_clipboard_path(Path(path_text)) not in self._clipboard_path_set:
             return None
         return self._clipboard["mode"]
 
@@ -1119,9 +1119,9 @@ class FileBrowserTab(QWidget):
                 view.viewport().update(rect)
 
     @staticmethod
-    def _normalise_path(path: Path) -> Path:
+    def _normalise_clipboard_path(path: Path) -> Path:
         try:
-            return path.resolve(strict=False)
+            return Path(os.path.normcase(os.path.abspath(path)))
         except OSError:
             return path
 

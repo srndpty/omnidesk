@@ -453,6 +453,29 @@ def test_file_browser_tab_tree_delegate_marks_copy_clipboard_target(monkeypatch,
     assert pixmap.toImage().pixelColor(0, 10) != option.palette.base().color()
 
 
+def test_file_browser_tab_tree_delegate_marks_copy_only_on_first_column(monkeypatch, qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._DropTargetItemDelegate, tab._tree_view.itemDelegate())
+    model = QStandardItemModel()
+    model.appendRow([QStandardItem("copy-target.txt"), QStandardItem("detail")])
+    index = model.index(0, 1)
+    tab._tree_view.setModel(model)
+    monkeypatch.setattr(tab, "_clipboard_visual_mode_for_index", lambda _index: "copy")
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 120, 20)
+    option.palette = tab._tree_view.palette()
+    option.widget = tab._tree_view
+    pixmap = QPixmap(option.rect.size())
+    pixmap.fill(option.palette.base().color())
+    painter = QPainter(pixmap)
+
+    delegate.paint(painter, option, index)
+    painter.end()
+
+    assert pixmap.toImage().pixelColor(0, 10) == option.palette.base().color()
+
+
 def test_file_browser_tab_address_bar_opens_existing_file(
     monkeypatch, qtbot, tmp_path: Path
 ) -> None:
@@ -1257,6 +1280,25 @@ def test_file_browser_tab_clipboard_visual_mode_matches_normalized_path(
     assert tab._clipboard_visual_mode_for_index(index) is None
 
 
+def test_file_browser_tab_clipboard_path_normalization_does_not_resolve_symlinks(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    def fail_resolve(self, *args, **kwargs):
+        raise AssertionError(f"should not resolve {self}")
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+
+    normalized = tab._normalise_clipboard_path(tmp_path / "link.txt")
+
+    assert normalized.is_absolute()
+    assert normalized.name == "link.txt"
+
+
 def test_file_browser_tab_set_clipboard_repaints_previous_and_current_targets(
     monkeypatch,
     qtbot,
@@ -1268,14 +1310,19 @@ def test_file_browser_tab_set_clipboard_repaints_previous_and_current_targets(
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab._clipboard = {"paths": [previous], "mode": "copy"}
-    tab._clipboard_path_set = {previous.resolve(strict=False)}
+    tab._clipboard_path_set = {tab._normalise_clipboard_path(previous)}
     monkeypatch.setattr(tab, "_repaint_clipboard_paths", lambda paths: repainted.append(paths))
     monkeypatch.setattr(tab, "_update_action_states", lambda: None)
 
     tab._set_clipboard({"paths": [current], "mode": "move"})
 
     assert tab._clipboard == {"paths": [current], "mode": "move"}
-    assert repainted == [{previous.resolve(strict=False), current.resolve(strict=False)}]
+    assert repainted == [
+        {
+            tab._normalise_clipboard_path(previous),
+            tab._normalise_clipboard_path(current),
+        }
+    ]
 
 
 def test_file_browser_tab_set_clipboard_none_repaints_previous_target(
@@ -1288,7 +1335,7 @@ def test_file_browser_tab_set_clipboard_none_repaints_previous_target(
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab._clipboard = {"paths": [previous], "mode": "move"}
-    tab._clipboard_path_set = {previous.resolve(strict=False)}
+    tab._clipboard_path_set = {tab._normalise_clipboard_path(previous)}
     monkeypatch.setattr(tab, "_repaint_clipboard_paths", lambda paths: repainted.append(paths))
     monkeypatch.setattr(tab, "_update_action_states", lambda: None)
 
@@ -1296,7 +1343,7 @@ def test_file_browser_tab_set_clipboard_none_repaints_previous_target(
 
     assert tab._clipboard is None
     assert tab._clipboard_path_set == set()
-    assert repainted == [{previous.resolve(strict=False)}]
+    assert repainted == [{tab._normalise_clipboard_path(previous)}]
 
 
 def test_file_browser_tab_delete_selected_confirms_deletes_and_refreshes(
