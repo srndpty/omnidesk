@@ -34,7 +34,6 @@ from omnidesk.ui.file_browser_tab import (
     FileBrowserTab,
     navigation_cursor_action,
     navigation_event_without_control,
-    transparent_drag_pixmap,
 )
 
 
@@ -919,13 +918,6 @@ def test_file_view_mouse_move_on_item_before_drag_threshold_does_not_select(
     assert event.accepted
     assert started == []
     assert view.state() == QAbstractItemView.State.NoState
-
-
-def test_transparent_drag_pixmap_is_invisible(qtbot) -> None:
-    pixmap = transparent_drag_pixmap()
-
-    assert pixmap.size() == QSize(1, 1)
-    assert pixmap.toImage().pixelColor(0, 0).alpha() == 0
 
 
 def test_file_view_drag_leave_resets_drag_state(qtbot, tmp_path: Path) -> None:
