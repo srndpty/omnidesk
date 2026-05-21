@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import cast
 
 from PyQt6.QtCore import (
+    QItemSelection,
     QItemSelectionModel,
     QMimeData,
     QModelIndex,
@@ -335,6 +336,42 @@ def test_file_browser_tab_tile_delegate_does_not_fill_selected_tile_background(q
 
     assert pixmap.toImage().pixelColor(0, 0) != option.palette.highlight().color()
     assert pixmap.toImage().pixelColor(19, 19) != option.palette.highlight().color()
+
+
+def test_file_browser_tab_tile_delegate_clears_stale_label_highlight(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    model = QStandardItemModel()
+    model.appendRow(QStandardItem("AdwCleaner[C00].txt"))
+    index = model.index(0, 0)
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 184, 222)
+    option.decorationSize = QSize(160, 160)
+    option.fontMetrics = tab._tile_view.fontMetrics()
+    option.palette = tab._tile_view.palette()
+    option.widget = tab._tile_view
+    _, text_rect = delegate._tile_rects(option)
+    pixmap = QPixmap(option.rect.size())
+    pixmap.fill(option.palette.base().color())
+
+    selected_option = QStyleOptionViewItem(option)
+    selected_option.state = QStyle.StateFlag.State_Selected
+    painter = QPainter(pixmap)
+    delegate.paint(painter, selected_option, index)
+    painter.end()
+
+    unselected_option = QStyleOptionViewItem(option)
+    unselected_option.state = QStyle.StateFlag.State_None
+    painter = QPainter(pixmap)
+    delegate.paint(painter, unselected_option, index)
+    painter.end()
+
+    image = pixmap.toImage()
+    highlight = option.palette.highlight().color()
+    for x in range(text_rect.left(), text_rect.right() + 1):
+        assert image.pixelColor(x, text_rect.top()) != highlight
+        assert image.pixelColor(x, text_rect.bottom()) != highlight
 
 
 def test_file_browser_tab_address_bar_opens_existing_file(
@@ -820,6 +857,54 @@ def test_file_view_reset_drag_state_clears_internal_drag_state(qtbot, tmp_path: 
 
     assert view._drag_start_path is None
     assert view.state() == QAbstractItemView.State.NoState
+
+
+def test_file_browser_tab_selection_changed_repaints_selected_and_deselected(
+    monkeypatch, qtbot
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    model = QStandardItemModel()
+    for name in ("first.txt", "second.txt"):
+        model.appendRow(QStandardItem(name))
+    view = tab._tree_view
+    tab._media_icon_mode = False
+    view.setModel(model)
+    updated: list[QRect] = []
+    monkeypatch.setattr(view.viewport(), "update", lambda rect: updated.append(QRect(rect)))
+    monkeypatch.setattr(
+        view,
+        "visualRect",
+        lambda index: QRect(index.row() * 10, 0, 10, 10),
+    )
+    selected = QItemSelection(model.index(1, 0), model.index(1, 0))
+    deselected = QItemSelection(model.index(0, 0), model.index(0, 0))
+
+    tab._handle_selection_changed(selected, deselected)
+
+    assert len(updated) == 2
+    assert all(rect.isValid() for rect in updated)
+
+
+def test_file_browser_tab_tile_selection_changed_repaints_entire_viewport(
+    monkeypatch, qtbot
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    model = QStandardItemModel()
+    for name in ("first.txt", "second.txt"):
+        model.appendRow(QStandardItem(name))
+    view = tab._tile_view
+    tab._media_icon_mode = True
+    view.setModel(model)
+    update_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(view.viewport(), "update", lambda *args: update_calls.append(args))
+    selected = QItemSelection(model.index(1, 0), model.index(1, 0))
+    deselected = QItemSelection(model.index(0, 0), model.index(0, 0))
+
+    tab._handle_selection_changed(selected, deselected)
+
+    assert update_calls == [()]
 
 
 def test_file_browser_tab_copy_and_cut_selected_update_clipboard(

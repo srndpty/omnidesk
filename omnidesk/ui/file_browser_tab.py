@@ -107,6 +107,17 @@ from .file_operations import (
 from .media_file_system_model import MediaFileSystemModel
 
 logger = logging.getLogger(__name__)
+SELECTION_DEBUG = os.environ.get("OMNIDESK_SELECTION_DEBUG", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _debug_selection(message: str, *args: object) -> None:
+    if SELECTION_DEBUG:
+        logger.debug("[selection] " + message, *args)
 
 
 class _ClipboardPayload(TypedDict):
@@ -571,6 +582,7 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
             painter.fillRect(text_rect, view_option.palette.highlight())
             painter.setPen(view_option.palette.highlightedText().color())
         else:
+            painter.fillRect(text_rect, view_option.palette.base())
             painter.setPen(view_option.palette.text().color())
         painter.drawText(
             text_rect,
@@ -1677,8 +1689,57 @@ class FileBrowserTab(QWidget):
             scan_limit=self.MEDIA_SCAN_LIMIT,
         )
 
-    def _handle_selection_changed(self, *_args) -> None:
+    def _handle_selection_changed(
+        self, selected: QItemSelection | None = None, deselected: QItemSelection | None = None
+    ) -> None:
+        self._repaint_selection_delta(selected, deselected)
+        self._log_selection_change(selected, deselected)
         self._update_action_states()
+
+    def _repaint_selection_delta(
+        self, selected: QItemSelection | None, deselected: QItemSelection | None
+    ) -> None:
+        view = self._active_view()
+        viewport = view.viewport()
+        if view is self._tile_view:
+            viewport.update()
+            return
+        for selection in (selected, deselected):
+            if selection is None:
+                continue
+            for index in selection.indexes():
+                source = index.siblingAtColumn(0)
+                rect = view.visualRect(source)
+                if rect.isValid():
+                    viewport.update(rect)
+
+    def _log_selection_change(
+        self, selected: QItemSelection | None, deselected: QItemSelection | None
+    ) -> None:
+        if not SELECTION_DEBUG:
+            return
+        view = self._active_view()
+        selection_model = view.selectionModel()
+        if selection_model is None:
+            _debug_selection("changed without selection model")
+            return
+        current = selection_model.currentIndex()
+        selected_paths = self._selected_paths()
+        selected_count = len(selection_model.selectedIndexes())
+        selected_delta = self._paths_from_indexes(selected.indexes()) if selected else []
+        deselected_delta = self._paths_from_indexes(deselected.indexes()) if deselected else []
+        current_path = (
+            Path(self._model.filePath(current.siblingAtColumn(0))) if current.isValid() else None
+        )
+        _debug_selection(
+            "changed current=%s selected_count=%s selected_paths=%s delta_selected=%s "
+            "delta_deselected=%s",
+            current_path,
+            selected_count,
+            selected_paths,
+            selected_delta,
+            deselected_delta,
+        )
 
     def _emit_status_changed(self, selected_paths: list[Path] | None = None) -> None:
         self.statusChanged.emit(
