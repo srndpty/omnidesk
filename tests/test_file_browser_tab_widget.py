@@ -4,11 +4,13 @@ from pathlib import Path
 from typing import cast
 
 from PyQt6.QtCore import (
+    QEvent,
     QItemSelection,
     QItemSelectionModel,
     QMimeData,
     QModelIndex,
     QPoint,
+    QPointF,
     QRect,
     QSize,
     Qt,
@@ -32,7 +34,23 @@ from omnidesk.ui.file_browser_tab import (
     FileBrowserTab,
     navigation_cursor_action,
     navigation_event_without_control,
+    transparent_drag_pixmap,
 )
+
+
+class _MouseMoveStub:
+    def __init__(self, position: QPointF) -> None:
+        self._position = position
+        self.accepted = False
+
+    def buttons(self) -> Qt.MouseButton:
+        return Qt.MouseButton.LeftButton
+
+    def position(self) -> QPointF:
+        return self._position
+
+    def accept(self) -> None:
+        self.accepted = True
 
 
 def test_file_browser_tab_initializes_and_navigates(qtbot, tmp_path: Path) -> None:
@@ -846,14 +864,78 @@ def test_file_view_drag_paths_falls_back_to_drag_start_path(
     assert view._drag_paths() == [source, selected]
 
 
-def test_file_view_reset_drag_state_clears_internal_drag_state(qtbot, tmp_path: Path) -> None:
+def test_file_view_reset_drag_state_clears_internal_drag_state(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    view._drag_start_path = tmp_path / "source.txt"
+    view.setState(QAbstractItemView.State.DragSelectingState)
+    update_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(view.viewport(), "update", lambda *args: update_calls.append(args))
+
+    view._reset_drag_state()
+
+    assert view._drag_start_path is None
+    assert view.state() == QAbstractItemView.State.NoState
+    assert update_calls == [()]
+
+
+def test_file_view_clear_drag_selection_artifacts_keeps_drag_path(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    source = tmp_path / "source.txt"
+    view._drag_start_path = source
+    view.setState(QAbstractItemView.State.DragSelectingState)
+    update_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(view.viewport(), "update", lambda *args: update_calls.append(args))
+
+    view._clear_drag_selection_artifacts()
+
+    assert view._drag_start_path == source
+    assert view.state() == QAbstractItemView.State.NoState
+    assert update_calls == [()]
+
+
+def test_file_view_mouse_move_on_item_before_drag_threshold_does_not_select(
+    monkeypatch, qtbot
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    view._drag_start_pos = QPointF(10, 10)
+    view._drag_on_item = True
+    view.setState(QAbstractItemView.State.NoState)
+    started: list[Qt.DropAction] = []
+    monkeypatch.setattr(view, "startDrag", lambda actions: started.append(actions))
+    event = _MouseMoveStub(QPointF(12, 12))
+
+    view.mouseMoveEvent(event)
+
+    assert event.accepted
+    assert started == []
+    assert view.state() == QAbstractItemView.State.NoState
+
+
+def test_transparent_drag_pixmap_is_invisible(qtbot) -> None:
+    pixmap = transparent_drag_pixmap()
+
+    assert pixmap.size() == QSize(1, 1)
+    assert pixmap.toImage().pixelColor(0, 0).alpha() == 0
+
+
+def test_file_view_drag_leave_resets_drag_state(qtbot, tmp_path: Path) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     view = tab._tile_view
     view._drag_start_path = tmp_path / "source.txt"
     view.setState(QAbstractItemView.State.DragSelectingState)
 
-    view._reset_drag_state()
+    view.event(QEvent(QEvent.Type.DragLeave))
 
     assert view._drag_start_path is None
     assert view.state() == QAbstractItemView.State.NoState

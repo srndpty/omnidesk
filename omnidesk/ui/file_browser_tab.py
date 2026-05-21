@@ -37,6 +37,7 @@ from PyQt6.QtGui import (
     QKeyEvent,
     QKeySequence,
     QPainter,
+    QPixmap,
     QShortcut,
 )
 from PyQt6.QtWidgets import (
@@ -107,6 +108,12 @@ from .file_operations import (
 from .media_file_system_model import MediaFileSystemModel
 
 logger = logging.getLogger(__name__)
+DEBUG_DND = os.environ.get("OMNIDESK_DND_DEBUG", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 SELECTION_DEBUG = os.environ.get("OMNIDESK_SELECTION_DEBUG", "").lower() in {
     "1",
     "true",
@@ -115,9 +122,21 @@ SELECTION_DEBUG = os.environ.get("OMNIDESK_SELECTION_DEBUG", "").lower() in {
 }
 
 
+def _debug_dnd(message: str, *args: object) -> None:
+    if DEBUG_DND:
+        logger.debug("[dnd] " + message, *args)
+
+
 def _debug_selection(message: str, *args: object) -> None:
     if SELECTION_DEBUG:
         logger.debug("[selection] " + message, *args)
+
+
+def transparent_drag_pixmap() -> QPixmap:
+    """Return a transparent drag pixmap to avoid stale default drag artifacts."""
+    pixmap = QPixmap(1, 1)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    return pixmap
 
 
 class _ClipboardPayload(TypedDict):
@@ -266,12 +285,43 @@ class _BaseFileViewMixin:
             index_at_pos = cast(QAbstractItemView, self).indexAt(event.position().toPoint())
             self._drag_on_item = index_at_pos.isValid()
             self._drag_start_path = self._path_from_index(index_at_pos)
+            _debug_dnd(
+                "press pos=%s on_item=%s start_path=%s state=%s",
+                event.position().toPoint(),
+                self._drag_on_item,
+                self._drag_start_path,
+                cast(QAbstractItemView, self).state(),
+            )
         super().mousePressEvent(event)  # type: ignore[attr-defined]
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if event.buttons() & Qt.MouseButton.LeftButton and self._drag_start_pos is not None:
             distance = (event.position() - self._drag_start_pos).manhattanLength()
-            if distance >= QApplication.startDragDistance() and self._drag_on_item:
+            if not self._drag_on_item:
+                super().mouseMoveEvent(event)  # type: ignore[attr-defined]
+                return
+            if distance < QApplication.startDragDistance():
+                _debug_dnd(
+                    "pending pos=%s distance=%s start_distance=%s state=%s",
+                    event.position().toPoint(),
+                    distance,
+                    QApplication.startDragDistance(),
+                    cast(QAbstractItemView, self).state(),
+                )
+                event.accept()
+                return
+            if self._drag_on_item:
+                _debug_dnd(
+                    "threshold pos=%s distance=%s start_distance=%s selected=%s "
+                    "start_path=%s state=%s",
+                    event.position().toPoint(),
+                    distance,
+                    QApplication.startDragDistance(),
+                    self.selected_paths(),
+                    self._drag_start_path,
+                    cast(QAbstractItemView, self).state(),
+                )
+                self._clear_drag_selection_artifacts()
                 self.startDrag(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
                 self._drag_start_pos = None
                 self._drag_start_path = None
@@ -296,6 +346,12 @@ class _BaseFileViewMixin:
             logger.debug("Forward mouse button pressed")
             self._tab.go_forward()
             event.accept()
+        _debug_dnd(
+            "release button=%s pos=%s state=%s",
+            button,
+            event.position().toPoint(),
+            cast(QAbstractItemView, self).state(),
+        )
         self._drag_start_pos = None
         self._drag_start_path = None
 
@@ -304,21 +360,42 @@ class _BaseFileViewMixin:
         if not paths:
             logger.debug("Ignoring drag start because no file paths are available")
             return
+        view = cast(QAbstractItemView, self)
+        _debug_dnd(
+            "start paths=%s supported_actions=%s state_before=%s viewport_updates_pending=%s",
+            paths,
+            supported_actions,
+            view.state(),
+            view.viewport().updatesEnabled(),
+        )
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
         drag = QDrag(cast(QWidget, self))
         drag.setMimeData(mime)
+        drag.setPixmap(transparent_drag_pixmap())
+        drag.setHotSpot(QPoint(0, 0))
+        if DEBUG_DND:
+            drag.actionChanged.connect(lambda action: _debug_dnd("actionChanged %s", action))
+            drag.targetChanged.connect(lambda target: _debug_dnd("targetChanged %s", target))
         default_action = Qt.DropAction.MoveAction
-        drag.exec(
+        result = drag.exec(
             Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction,
             default_action,
         )
+        _debug_dnd("exec result=%s state_after_exec=%s", result, view.state())
         self._reset_drag_state()
 
     def _reset_drag_state(self) -> None:
         self._drag_start_pos = None
         self._drag_start_path = None
-        cast(QAbstractItemView, self).setState(QAbstractItemView.State.NoState)
+        self._clear_drag_selection_artifacts()
+
+    def _clear_drag_selection_artifacts(self) -> None:
+        view = cast(QAbstractItemView, self)
+        _debug_dnd("reset state_before=%s", view.state())
+        view.setState(QAbstractItemView.State.NoState)
+        view.viewport().update()
+        _debug_dnd("reset state_after=%s", view.state())
 
     def _drag_paths(self) -> list[Path]:
         selected = self.selected_paths()
@@ -348,6 +425,9 @@ class _BaseFileViewMixin:
             return self._handle_drag_move_event(event)
         if event.type() == QEvent.Type.Drop:
             return self._handle_drop_event(event)
+        if event.type() == QEvent.Type.DragLeave:
+            _debug_dnd("event DragLeave accepted=%s", event.isAccepted())
+            self._reset_drag_state()
         return super().event(event)  # type: ignore[misc]
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
@@ -362,6 +442,13 @@ class _BaseFileViewMixin:
     def _handle_drag_enter_event(self, event) -> bool:
         if event.mimeData().hasUrls():
             action = drop_action_for_modifiers(event.modifiers())
+            _debug_dnd(
+                "enter proposed=%s action=%s source=%s formats=%s",
+                event.proposedAction(),
+                action,
+                event.source(),
+                event.mimeData().formats(),
+            )
             event.setDropAction(action)
             event.accept()
             return True
@@ -371,6 +458,18 @@ class _BaseFileViewMixin:
     def _handle_drag_move_event(self, event) -> bool:
         if event.mimeData().hasUrls():
             action = drop_action_for_modifiers(event.modifiers())
+            view = cast(QAbstractItemView, self)
+            pos = event.position().toPoint()
+            if view.state() != QAbstractItemView.State.NoState:
+                self._clear_drag_selection_artifacts()
+            _debug_dnd(
+                "move pos=%s index_valid=%s proposed=%s action=%s state=%s",
+                pos,
+                view.indexAt(pos).isValid(),
+                event.proposedAction(),
+                action,
+                view.state(),
+            )
             event.setDropAction(action)
             event.accept()
             return True
@@ -398,6 +497,14 @@ class _BaseFileViewMixin:
         move = should_move_from_drop_action(
             event.dropAction(),
             event.modifiers(),
+        )
+        _debug_dnd(
+            "drop paths=%s target_dir=%s drop_action=%s proposed=%s move=%s",
+            paths,
+            target_dir,
+            event.dropAction(),
+            event.proposedAction(),
+            move,
         )
         self._tab._handle_external_drop(paths, target_dir, move)
         event.setDropAction(Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction)
