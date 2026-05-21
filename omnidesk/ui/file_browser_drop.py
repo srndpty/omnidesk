@@ -25,7 +25,7 @@ def should_move_from_drop_action(
 ) -> bool:
     """Return whether a drop should move rather than copy."""
     return (
-        drop_action == Qt.DropAction.MoveAction
+        drop_action in (Qt.DropAction.MoveAction, Qt.DropAction.TargetMoveAction)
         and not modifiers & Qt.KeyboardModifier.ControlModifier
     )
 

@@ -12,6 +12,7 @@ from typing import Literal, TypedDict, cast
 
 from PyQt6.QtCore import (
     QDir,
+    QEvent,
     QItemSelection,
     QItemSelectionModel,
     QMimeData,
@@ -113,6 +114,46 @@ class _ClipboardPayload(TypedDict):
     mode: Literal["copy", "move"]
 
 
+NAVIGATION_SELECTION_KEYS = {
+    Qt.Key.Key_Up,
+    Qt.Key.Key_Down,
+    Qt.Key.Key_Left,
+    Qt.Key.Key_Right,
+}
+
+NAVIGATION_CURSOR_ACTIONS = {
+    Qt.Key.Key_Up: QAbstractItemView.CursorAction.MoveUp,
+    Qt.Key.Key_Down: QAbstractItemView.CursorAction.MoveDown,
+    Qt.Key.Key_Left: QAbstractItemView.CursorAction.MoveLeft,
+    Qt.Key.Key_Right: QAbstractItemView.CursorAction.MoveRight,
+}
+
+
+def navigation_event_without_control(event: QKeyEvent) -> QKeyEvent | None:
+    """Return an equivalent navigation key event with Ctrl stripped."""
+    if event.key() not in NAVIGATION_SELECTION_KEYS:
+        return None
+    modifiers = event.modifiers()
+    if not modifiers & Qt.KeyboardModifier.ControlModifier:
+        return None
+    stripped_modifiers = Qt.KeyboardModifier(
+        modifiers.value & ~Qt.KeyboardModifier.ControlModifier.value
+    )
+    return QKeyEvent(
+        event.type(),
+        event.key(),
+        stripped_modifiers,
+        event.text(),
+        event.isAutoRepeat(),
+        event.count(),
+    )
+
+
+def navigation_cursor_action(key: int) -> QAbstractItemView.CursorAction | None:
+    """Return the view cursor action for a navigation key."""
+    return NAVIGATION_CURSOR_ACTIONS.get(Qt.Key(key))
+
+
 def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
     tab._select_path(path, QAbstractItemView.ScrollHint.PositionAtCenter)
 
@@ -186,8 +227,10 @@ class _BaseFileViewMixin:
         self._tab = tab
         self._drag_start_pos = None
         self._drag_on_item = False
+        self._drag_start_path: Path | None = None
         view.setDragEnabled(True)
         view.setAcceptDrops(True)
+        view.viewport().setAcceptDrops(True)
         view.setDropIndicatorShown(True)
         view.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         view.setDefaultDropAction(Qt.DropAction.MoveAction)
@@ -211,17 +254,23 @@ class _BaseFileViewMixin:
             # クリックされた位置にアイテムが存在するかどうかをチェック
             index_at_pos = cast(QAbstractItemView, self).indexAt(event.position().toPoint())
             self._drag_on_item = index_at_pos.isValid()
+            self._drag_start_path = self._path_from_index(index_at_pos)
         super().mousePressEvent(event)  # type: ignore[attr-defined]
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if event.buttons() & Qt.MouseButton.LeftButton and self._drag_start_pos is not None:
             distance = (event.position() - self._drag_start_pos).manhattanLength()
-            if (
-                distance >= QApplication.startDragDistance()
-                and self._drag_on_item
-                and self.selected_paths()
-            ):
+            if not self._drag_on_item:
+                super().mouseMoveEvent(event)  # type: ignore[attr-defined]
+                return
+            if distance < QApplication.startDragDistance():
+                event.accept()
+                return
+            if self._drag_on_item:
+                self._clear_drag_selection_artifacts()
                 self.startDrag(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
+                self._drag_start_pos = None
+                self._drag_start_path = None
                 return
         super().mouseMoveEvent(event)  # type: ignore[attr-defined]
 
@@ -230,10 +279,6 @@ class _BaseFileViewMixin:
         このビュー上でマウスボタンが離されたときに呼び出される。
         戻る/進むボタンを処理し、親のタブコンテナに伝える。
         """
-        # まず、親クラス（QTreeView/QListView）のデフォルト処理を呼び出す
-        # これにより、通常のクリック選択などが壊れないようにする
-        super().mouseReleaseEvent(event)  # type: ignore[attr-defined]
-
         button = event.button()
         if button == Qt.MouseButton.BackButton:
             logger.debug("Back mouse button pressed")
@@ -243,40 +288,109 @@ class _BaseFileViewMixin:
             logger.debug("Forward mouse button pressed")
             self._tab.go_forward()
             event.accept()
+        else:
+            super().mouseReleaseEvent(event)  # type: ignore[attr-defined]
+        self._drag_start_pos = None
+        self._drag_start_path = None
 
     def startDrag(self, supported_actions: Qt.DropAction) -> None:  # noqa: N802
-        paths = self.selected_paths()
+        paths = self._drag_paths()
         if not paths:
+            logger.debug("Ignoring drag start because no file paths are available")
             return
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
         drag = QDrag(cast(QWidget, self))
         drag.setMimeData(mime)
         default_action = Qt.DropAction.MoveAction
-        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction, default_action)
+        drag.exec(
+            Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction,
+            default_action,
+        )
+        self._reset_drag_state()
+
+    def _reset_drag_state(self) -> None:
+        self._drag_start_pos = None
+        self._drag_start_path = None
+        self._clear_drag_selection_artifacts()
+
+    def _clear_drag_selection_artifacts(self) -> None:
+        view = cast(QAbstractItemView, self)
+        view.setState(QAbstractItemView.State.NoState)
+        view.viewport().update()
+
+    def _drag_paths(self) -> list[Path]:
+        selected = self.selected_paths()
+        if not self._drag_start_path:
+            return selected
+        if not selected or self._drag_start_path not in selected:
+            return [self._drag_start_path]
+        return selected
+
+    def _path_from_index(self, index: QModelIndex) -> Path | None:
+        if not index.isValid():
+            return None
+        source = index.siblingAtColumn(0)
+        try:
+            path = self._tab._model.filePath(source)
+        except Exception:
+            logger.debug("Could not resolve drag start path", exc_info=True)
+            return None
+        if not path:
+            return None
+        return Path(path)
+
+    def event(self, event: QEvent) -> bool:
+        # QAbstractItemView can route internal drags through event() before
+        # dragEnterEvent()/dragMoveEvent(), so accept URL drops here as well.
+        if event.type() == QEvent.Type.DragEnter:
+            return self._handle_drag_enter_event(event)
+        if event.type() == QEvent.Type.DragMove:
+            return self._handle_drag_move_event(event)
+        if event.type() == QEvent.Type.Drop:
+            return self._handle_drop_event(event)
+        if event.type() == QEvent.Type.DragLeave:
+            self._reset_drag_state()
+        return super().event(event)  # type: ignore[misc]
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            event.ignore()
+        self._handle_drag_enter_event(event)
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
+        self._handle_drag_move_event(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        self._handle_drop_event(event)
+
+    def _handle_drag_enter_event(self, event) -> bool:
         if event.mimeData().hasUrls():
             action = drop_action_for_modifiers(event.modifiers())
             event.setDropAction(action)
-            event.acceptProposedAction()
-        else:
-            event.ignore()
+            event.accept()
+            return True
+        event.ignore()
+        return False
 
-    def dropEvent(self, event) -> None:  # noqa: N802
+    def _handle_drag_move_event(self, event) -> bool:
+        if event.mimeData().hasUrls():
+            action = drop_action_for_modifiers(event.modifiers())
+            view = cast(QAbstractItemView, self)
+            if view.state() != QAbstractItemView.State.NoState:
+                self._clear_drag_selection_artifacts()
+            event.setDropAction(action)
+            event.accept()
+            return True
+        event.ignore()
+        return False
+
+    def _handle_drop_event(self, event) -> bool:
         if not event.mimeData().hasUrls():
             event.ignore()
-            return
+            return False
         paths = local_paths_from_urls(event.mimeData().urls())
         if not paths:
             event.ignore()
-            return
+            return False
         pos = event.position().toPoint()
         index = cast(QAbstractItemView, self).indexAt(pos)
         target_dir = self._tab._current_path
@@ -293,7 +407,41 @@ class _BaseFileViewMixin:
         )
         self._tab._handle_external_drop(paths, target_dir, move)
         event.setDropAction(Qt.DropAction.MoveAction if move else Qt.DropAction.CopyAction)
-        event.acceptProposedAction()
+        event.accept()
+        return True
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        modifiers = event.modifiers()
+        navigation_modifiers = modifiers & ~Qt.KeyboardModifier.KeypadModifier
+        if navigation_modifiers in (
+            Qt.KeyboardModifier.NoModifier,
+            Qt.KeyboardModifier.ControlModifier,
+        ) and self._select_single_navigation_target(event.key()):
+            event.accept()
+            return
+        replacement_event = navigation_event_without_control(event)
+        if replacement_event is not None:
+            super().keyPressEvent(replacement_event)  # type: ignore[attr-defined]
+            event.setAccepted(replacement_event.isAccepted())
+            return
+        super().keyPressEvent(event)  # type: ignore[attr-defined]
+
+    def _select_single_navigation_target(self, key: int) -> bool:
+        if isinstance(self, QTreeView) and key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            return False
+        action = navigation_cursor_action(key)
+        if action is None:
+            return False
+        view = cast(QAbstractItemView, self)
+        selection_model = view.selectionModel()
+        if selection_model is None:
+            return False
+        target = view.moveCursor(action, Qt.KeyboardModifier.NoModifier)
+        if not target.isValid():
+            return False
+        selection_model.setCurrentIndex(target, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        view.scrollTo(target)
+        return True
 
 
 class _FileTreeView(_BaseFileViewMixin, QTreeView):
@@ -442,6 +590,7 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
             painter.fillRect(text_rect, view_option.palette.highlight())
             painter.setPen(view_option.palette.highlightedText().color())
         else:
+            painter.fillRect(text_rect, view_option.palette.base())
             painter.setPen(view_option.palette.text().color())
         painter.drawText(
             text_rect,
@@ -1548,8 +1697,28 @@ class FileBrowserTab(QWidget):
             scan_limit=self.MEDIA_SCAN_LIMIT,
         )
 
-    def _handle_selection_changed(self, *_args) -> None:
+    def _handle_selection_changed(
+        self, selected: QItemSelection | None = None, deselected: QItemSelection | None = None
+    ) -> None:
+        self._repaint_selection_delta(selected, deselected)
         self._update_action_states()
+
+    def _repaint_selection_delta(
+        self, selected: QItemSelection | None, deselected: QItemSelection | None
+    ) -> None:
+        view = self._active_view()
+        viewport = view.viewport()
+        if view is self._tile_view:
+            viewport.update()
+            return
+        for selection in (selected, deselected):
+            if selection is None:
+                continue
+            for index in selection.indexes():
+                source = index.siblingAtColumn(0)
+                rect = view.visualRect(source)
+                if rect.isValid():
+                    viewport.update(rect)
 
     def _emit_status_changed(self, selected_paths: list[Path] | None = None) -> None:
         self.statusChanged.emit(

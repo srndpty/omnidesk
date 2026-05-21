@@ -3,13 +3,65 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QModelIndex, QRect, QSize, Qt, QThreadPool
-from PyQt6.QtGui import QKeyEvent, QPainter, QPixmap, QShortcut
+from PyQt6.QtCore import (
+    QEvent,
+    QItemSelection,
+    QItemSelectionModel,
+    QMimeData,
+    QModelIndex,
+    QPoint,
+    QPointF,
+    QRect,
+    QSize,
+    Qt,
+    QThreadPool,
+    QUrl,
+)
+from PyQt6.QtGui import (
+    QDragEnterEvent,
+    QKeyEvent,
+    QPainter,
+    QPixmap,
+    QShortcut,
+    QStandardItem,
+    QStandardItemModel,
+)
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox, QStyle, QStyleOptionViewItem
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
 from omnidesk.ui.file_browser_status import BrowserStatus
-from omnidesk.ui.file_browser_tab import FileBrowserTab
+from omnidesk.ui.file_browser_tab import (
+    FileBrowserTab,
+    navigation_cursor_action,
+    navigation_event_without_control,
+)
+
+
+class _MouseMoveStub:
+    def __init__(self, position: QPointF) -> None:
+        self._position = position
+        self.accepted = False
+
+    def buttons(self) -> Qt.MouseButton:
+        return Qt.MouseButton.LeftButton
+
+    def position(self) -> QPointF:
+        return self._position
+
+    def accept(self) -> None:
+        self.accepted = True
+
+
+class _MouseReleaseStub:
+    def __init__(self, button: Qt.MouseButton) -> None:
+        self._button = button
+        self.accepted = False
+
+    def button(self) -> Qt.MouseButton:
+        return self._button
+
+    def accept(self) -> None:
+        self.accepted = True
 
 
 def test_file_browser_tab_initializes_and_navigates(qtbot, tmp_path: Path) -> None:
@@ -313,6 +365,42 @@ def test_file_browser_tab_tile_delegate_does_not_fill_selected_tile_background(q
 
     assert pixmap.toImage().pixelColor(0, 0) != option.palette.highlight().color()
     assert pixmap.toImage().pixelColor(19, 19) != option.palette.highlight().color()
+
+
+def test_file_browser_tab_tile_delegate_clears_stale_label_highlight(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    model = QStandardItemModel()
+    model.appendRow(QStandardItem("AdwCleaner[C00].txt"))
+    index = model.index(0, 0)
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 184, 222)
+    option.decorationSize = QSize(160, 160)
+    option.fontMetrics = tab._tile_view.fontMetrics()
+    option.palette = tab._tile_view.palette()
+    option.widget = tab._tile_view
+    _, text_rect = delegate._tile_rects(option)
+    pixmap = QPixmap(option.rect.size())
+    pixmap.fill(option.palette.base().color())
+
+    selected_option = QStyleOptionViewItem(option)
+    selected_option.state = QStyle.StateFlag.State_Selected
+    painter = QPainter(pixmap)
+    delegate.paint(painter, selected_option, index)
+    painter.end()
+
+    unselected_option = QStyleOptionViewItem(option)
+    unselected_option.state = QStyle.StateFlag.State_None
+    painter = QPainter(pixmap)
+    delegate.paint(painter, unselected_option, index)
+    painter.end()
+
+    image = pixmap.toImage()
+    highlight = option.palette.highlight().color()
+    for x in range(text_rect.left(), text_rect.right() + 1):
+        assert image.pixelColor(x, text_rect.top()) != highlight
+        assert image.pixelColor(x, text_rect.bottom()) != highlight
 
 
 def test_file_browser_tab_address_bar_opens_existing_file(
@@ -686,6 +774,264 @@ def test_file_browser_tab_ctrl_enter_opens_selected_folder(
         tab.keyPressEvent(event)
 
     assert blocker.args == [selected]
+
+
+def test_navigation_event_without_control_strips_ctrl_for_arrow_key() -> None:
+    event = QKeyEvent(
+        QKeyEvent.Type.KeyPress,
+        Qt.Key.Key_Down,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+    )
+
+    replacement = navigation_event_without_control(event)
+
+    assert replacement is not None
+    assert replacement.key() == Qt.Key.Key_Down
+    assert replacement.modifiers() == Qt.KeyboardModifier.ShiftModifier
+
+
+def test_navigation_event_without_control_ignores_non_navigation_key() -> None:
+    event = QKeyEvent(
+        QKeyEvent.Type.KeyPress,
+        Qt.Key.Key_A,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+
+    assert navigation_event_without_control(event) is None
+
+
+def test_navigation_cursor_action_maps_arrow_keys() -> None:
+    assert navigation_cursor_action(Qt.Key.Key_Down) == QAbstractItemView.CursorAction.MoveDown
+    assert navigation_cursor_action(Qt.Key.Key_A) is None
+
+
+def test_tree_view_does_not_intercept_left_right_navigation(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    assert not tab._tree_view._select_single_navigation_target(Qt.Key.Key_Left)
+    assert not tab._tree_view._select_single_navigation_target(Qt.Key.Key_Right)
+
+
+def test_tile_view_allows_left_right_single_navigation(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    model = QStandardItemModel()
+    for name in ("first", "second"):
+        model.appendRow(QStandardItem(name))
+    view = tab._tile_view
+    view.setModel(model)
+    selection_model = view.selectionModel()
+    assert selection_model is not None
+    selection_model.setCurrentIndex(
+        model.index(0, 0), QItemSelectionModel.SelectionFlag.ClearAndSelect
+    )
+
+    assert view._select_single_navigation_target(Qt.Key.Key_Right)
+    assert [index.row() for index in selection_model.selectedRows()] == [1]
+
+
+def test_file_view_mouse_release_delegates_regular_buttons(monkeypatch, qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    calls: list[object] = []
+
+    monkeypatch.setattr(QListView, "mouseReleaseEvent", lambda _self, event: calls.append(event))
+    event = _MouseReleaseStub(Qt.MouseButton.LeftButton)
+
+    view.mouseReleaseEvent(event)
+
+    assert calls == [event]
+    assert not event.accepted
+
+
+def test_file_view_arrow_navigation_clears_extended_selection(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    model = QStandardItemModel()
+    for name in ("first", "second", "third"):
+        model.appendRow(QStandardItem(name))
+    view = tab._tree_view
+    view.setModel(model)
+    first = model.index(0, 0)
+    third = model.index(2, 0)
+    selection_model = view.selectionModel()
+    assert selection_model is not None
+    selection_model.setCurrentIndex(first, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+    selection_model.select(third, QItemSelectionModel.SelectionFlag.Select)
+
+    view.keyPressEvent(
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_Down,
+            Qt.KeyboardModifier.NoModifier,
+        )
+    )
+
+    selected_rows = [index.row() for index in selection_model.selectedRows()]
+    assert selected_rows == [1]
+
+
+def test_file_view_event_accepts_url_drag_enter(qtbot, tmp_path: Path) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(source))])
+    actions = Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.TargetMoveAction
+    view = tab._tile_view
+
+    enter_event = QDragEnterEvent(
+        QPoint(1, 1),
+        actions,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert view.event(enter_event)
+    assert enter_event.isAccepted()
+    assert enter_event.dropAction() == Qt.DropAction.MoveAction
+
+
+def test_file_view_drag_paths_falls_back_to_drag_start_path(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    source = tmp_path / "source.txt"
+    selected = tmp_path / "other.txt"
+    view = tab._tile_view
+    view._drag_start_path = source
+
+    monkeypatch.setattr(view, "selected_paths", lambda: [])
+    assert view._drag_paths() == [source]
+
+    monkeypatch.setattr(view, "selected_paths", lambda: [selected])
+    assert view._drag_paths() == [source]
+
+    monkeypatch.setattr(view, "selected_paths", lambda: [source, selected])
+    assert view._drag_paths() == [source, selected]
+
+
+def test_file_view_reset_drag_state_clears_internal_drag_state(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    view._drag_start_path = tmp_path / "source.txt"
+    view.setState(QAbstractItemView.State.DragSelectingState)
+    update_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(view.viewport(), "update", lambda *args: update_calls.append(args))
+
+    view._reset_drag_state()
+
+    assert view._drag_start_path is None
+    assert view.state() == QAbstractItemView.State.NoState
+    assert update_calls == [()]
+
+
+def test_file_view_clear_drag_selection_artifacts_keeps_drag_path(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    source = tmp_path / "source.txt"
+    view._drag_start_path = source
+    view.setState(QAbstractItemView.State.DragSelectingState)
+    update_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(view.viewport(), "update", lambda *args: update_calls.append(args))
+
+    view._clear_drag_selection_artifacts()
+
+    assert view._drag_start_path == source
+    assert view.state() == QAbstractItemView.State.NoState
+    assert update_calls == [()]
+
+
+def test_file_view_mouse_move_on_item_before_drag_threshold_does_not_select(
+    monkeypatch, qtbot
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    view._drag_start_pos = QPointF(10, 10)
+    view._drag_on_item = True
+    view.setState(QAbstractItemView.State.NoState)
+    started: list[Qt.DropAction] = []
+    monkeypatch.setattr(view, "startDrag", lambda actions: started.append(actions))
+    event = _MouseMoveStub(QPointF(12, 12))
+
+    view.mouseMoveEvent(event)
+
+    assert event.accepted
+    assert started == []
+    assert view.state() == QAbstractItemView.State.NoState
+
+
+def test_file_view_drag_leave_resets_drag_state(qtbot, tmp_path: Path) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    view._drag_start_path = tmp_path / "source.txt"
+    view.setState(QAbstractItemView.State.DragSelectingState)
+
+    view.event(QEvent(QEvent.Type.DragLeave))
+
+    assert view._drag_start_path is None
+    assert view.state() == QAbstractItemView.State.NoState
+
+
+def test_file_browser_tab_selection_changed_repaints_selected_and_deselected(
+    monkeypatch, qtbot
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    model = QStandardItemModel()
+    for name in ("first.txt", "second.txt"):
+        model.appendRow(QStandardItem(name))
+    view = tab._tree_view
+    tab._media_icon_mode = False
+    view.setModel(model)
+    updated: list[QRect] = []
+    monkeypatch.setattr(view.viewport(), "update", lambda rect: updated.append(QRect(rect)))
+    monkeypatch.setattr(
+        view,
+        "visualRect",
+        lambda index: QRect(index.row() * 10, 0, 10, 10),
+    )
+    selected = QItemSelection(model.index(1, 0), model.index(1, 0))
+    deselected = QItemSelection(model.index(0, 0), model.index(0, 0))
+
+    tab._handle_selection_changed(selected, deselected)
+
+    assert len(updated) == 2
+    assert all(rect.isValid() for rect in updated)
+
+
+def test_file_browser_tab_tile_selection_changed_repaints_entire_viewport(
+    monkeypatch, qtbot
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    model = QStandardItemModel()
+    for name in ("first.txt", "second.txt"):
+        model.appendRow(QStandardItem(name))
+    view = tab._tile_view
+    tab._media_icon_mode = True
+    view.setModel(model)
+    update_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(view.viewport(), "update", lambda *args: update_calls.append(args))
+    selected = QItemSelection(model.index(1, 0), model.index(1, 0))
+    deselected = QItemSelection(model.index(0, 0), model.index(0, 0))
+
+    tab._handle_selection_changed(selected, deselected)
+
+    assert update_calls == [()]
 
 
 def test_file_browser_tab_copy_and_cut_selected_update_clipboard(
