@@ -31,6 +31,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction,
+    QColor,
     QDesktopServices,
     QDrag,
     QIcon,
@@ -112,6 +113,9 @@ logger = logging.getLogger(__name__)
 class _ClipboardPayload(TypedDict):
     paths: list[Path]
     mode: Literal["copy", "move"]
+
+
+_ClipboardVisualMode = Literal["copy", "move"]
 
 
 NAVIGATION_SELECTION_KEYS = {
@@ -368,6 +372,9 @@ class _BaseFileViewMixin:
     def _is_drop_target_index(self, index: QModelIndex) -> bool:
         return self._same_model_index(index.siblingAtColumn(0), self._drop_target_index)
 
+    def _clipboard_visual_mode(self, index: QModelIndex) -> _ClipboardVisualMode | None:
+        return self._tab._clipboard_visual_mode_for_index(index)
+
     @staticmethod
     def _same_model_index(left: QModelIndex, right: QModelIndex) -> bool:
         return left == right
@@ -596,15 +603,43 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
 class _DropTargetItemDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         view_option = QStyleOptionViewItem(option)
-        if self._is_drop_target(view_option, index):
+        is_drop_target = self._is_drop_target(view_option, index)
+        if is_drop_target:
             view_option.state |= QStyle.StateFlag.State_Selected
             view_option.state |= QStyle.StateFlag.State_Active
+        clipboard_mode = self._clipboard_visual_mode(view_option, index)
+        if clipboard_mode == "move" and not is_drop_target:
+            painter.save()
+            painter.setOpacity(0.45)
+            super().paint(painter, view_option, index)
+            painter.restore()
+            return
         super().paint(painter, view_option, index)
+        if clipboard_mode == "copy" and index.column() == 0:
+            self._draw_copy_marker(painter, view_option)
 
     @staticmethod
     def _is_drop_target(option: QStyleOptionViewItem, index: QModelIndex) -> bool:
         checker = getattr(option.widget, "_is_drop_target_index", None)
         return bool(checker and checker(index))
+
+    @staticmethod
+    def _clipboard_visual_mode(
+        option: QStyleOptionViewItem, index: QModelIndex
+    ) -> _ClipboardVisualMode | None:
+        checker = getattr(option.widget, "_clipboard_visual_mode", None)
+        mode = checker(index) if checker else None
+        return mode if mode in ("copy", "move") else None
+
+    @staticmethod
+    def _draw_copy_marker(painter: QPainter, option: QStyleOptionViewItem) -> None:
+        accent = option.palette.highlight().color()
+        border = QColor(accent)
+        border.setAlpha(130)
+        marker_rect = QRect(option.rect.left(), option.rect.top(), 3, option.rect.height())
+        painter.save()
+        painter.fillRect(marker_rect, border)
+        painter.restore()
 
 
 class _FileTileView(_BaseFileViewMixin, QListView):
@@ -643,11 +678,17 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
         icon_rect, text_rect = self._tile_rects(view_option)
         text = self._two_line_text(view_option.text, view_option.fontMetrics, text_rect.width())
         is_drop_target = self._is_drop_target(view_option, index)
+        clipboard_mode = self._clipboard_visual_mode(view_option, index)
 
         painter.save()
         self._draw_tile_background(painter, view_option, style)
         if is_drop_target:
             self._draw_drop_target_background(painter, view_option)
+        elif clipboard_mode == "copy":
+            self._draw_copy_background(painter, view_option)
+
+        if clipboard_mode == "move" and not is_drop_target:
+            painter.setOpacity(0.45)
 
         icon_mode = (
             QIcon.Mode.Selected
@@ -702,6 +743,23 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
         painter.fillRect(option.rect.adjusted(1, 1, -1, -1), fill_color)
         painter.setPen(border_color)
         painter.drawRect(option.rect.adjusted(1, 1, -2, -2))
+
+    def _draw_copy_background(self, painter: QPainter, option: QStyleOptionViewItem) -> None:
+        fill_color = option.palette.highlight().color()
+        fill_color.setAlpha(32)
+        border_color = option.palette.highlight().color()
+        border_color.setAlpha(145)
+        painter.fillRect(option.rect.adjusted(1, 1, -1, -1), fill_color)
+        painter.setPen(border_color)
+        painter.drawRect(option.rect.adjusted(1, 1, -2, -2))
+
+    @staticmethod
+    def _clipboard_visual_mode(
+        option: QStyleOptionViewItem, index: QModelIndex
+    ) -> _ClipboardVisualMode | None:
+        checker = getattr(option.widget, "_clipboard_visual_mode", None)
+        mode = checker(index) if checker else None
+        return mode if mode in ("copy", "move") else None
 
     def _tile_rects(self, option: QStyleOptionViewItem) -> tuple[QRect, QRect]:
         rect = option.rect
@@ -824,6 +882,7 @@ class FileBrowserTab(QWidget):
         self._manual_media_mode: bool | None = None
         self._manual_media_mode: bool | None = None
         self._clipboard: _ClipboardPayload | None = None
+        self._clipboard_path_set: set[Path] = set()
         self._pending_selection_path: Path | None = None
         self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._status_folder_count = 0
@@ -1021,6 +1080,51 @@ class FileBrowserTab(QWidget):
             paths.append(path)
         return paths
 
+    def _set_clipboard(self, payload: _ClipboardPayload | None) -> None:
+        previous_paths = self._clipboard_path_set
+        self._clipboard = payload
+        self._clipboard_path_set = self._clipboard_paths_from_payload(payload)
+        self._repaint_clipboard_paths(previous_paths | self._clipboard_path_set)
+        self._update_action_states()
+
+    def _clipboard_paths_from_payload(self, payload: _ClipboardPayload | None) -> set[Path]:
+        if not payload:
+            return set()
+        return {self._normalise_clipboard_path(path) for path in payload["paths"]}
+
+    def _clipboard_visual_mode_for_index(self, index: QModelIndex) -> _ClipboardVisualMode | None:
+        if not self._clipboard or not index.isValid():
+            return None
+        source = index.siblingAtColumn(0)
+        path_text = self._model.filePath(source)
+        if not path_text:
+            return None
+        if self._normalise_clipboard_path(Path(path_text)) not in self._clipboard_path_set:
+            return None
+        return self._clipboard["mode"]
+
+    def _repaint_clipboard_paths(self, paths: set[Path]) -> None:
+        for path in paths:
+            index = self._model.index(str(path))
+            if index.isValid():
+                self._repaint_index_in_views(index.siblingAtColumn(0))
+
+    def _repaint_index_in_views(self, index: QModelIndex) -> None:
+        for view in (self._tree_view, self._tile_view):
+            if view is self._tree_view:
+                rect = cast(_BaseFileViewMixin, view)._drop_target_rect(index)
+            else:
+                rect = view.visualRect(index)
+            if rect.isValid():
+                view.viewport().update(rect)
+
+    @staticmethod
+    def _normalise_clipboard_path(path: Path) -> Path:
+        try:
+            return Path(os.path.normcase(os.path.abspath(path)))
+        except OSError:
+            return path
+
     def _selected_paths(self) -> list[Path]:
         view = self._active_view()
         return cast(_BaseFileViewMixin, view).selected_paths()
@@ -1132,15 +1236,13 @@ class FileBrowserTab(QWidget):
         paths = self._selected_paths()
         if not paths:
             return
-        self._clipboard = {"paths": paths, "mode": "copy"}
-        self._update_action_states()
+        self._set_clipboard({"paths": paths, "mode": "copy"})
 
     def _cut_selected(self) -> None:
         paths = self._selected_paths()
         if not paths:
             return
-        self._clipboard = {"paths": paths, "mode": "move"}
-        self._update_action_states()
+        self._set_clipboard({"paths": paths, "mode": "move"})
 
     def _paste_into_current(self) -> None:
         if not self._clipboard:
@@ -1151,9 +1253,10 @@ class FileBrowserTab(QWidget):
         move = self._clipboard["mode"] == "move"
         self._perform_copy_or_move(paths, self._current_path, move=move)
         if move:
-            self._clipboard = None
+            self._set_clipboard(None)
+        else:
+            self._update_action_states()
         self.refresh()
-        self._update_action_states()
 
     def _delete_selected(self) -> None:
         paths = self._selected_paths()
