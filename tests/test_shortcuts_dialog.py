@@ -12,7 +12,7 @@ def test_shortcut_help_dialog_lists_shortcuts(qtbot) -> None:
 
     table = dialog.findChild(QTableWidget, "shortcutHelpTable")
 
-    assert table is not None
+    assert isinstance(table, QTableWidget)
     assert table.rowCount() == len(SHORTCUT_ENTRIES)
     assert table.columnCount() == 2
     assert table.item(0, 0).text() == "F1"
