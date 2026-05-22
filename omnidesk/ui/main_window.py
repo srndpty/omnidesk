@@ -14,6 +14,7 @@ from ..utils.windows_theme import apply_dark_title_bar
 from .column_browser import ColumnBrowser
 from .file_browser_status import BrowserStatus, browser_status_for, format_browser_details
 from .icons import application_icon
+from .shortcuts_dialog import ShortcutHelpDialog
 from .tab_container import TabContainer
 
 
@@ -32,6 +33,7 @@ class MainWindow(QMainWindow):
         self._status_summary = BrowserStatus()
         self._status_path_label = QLabel(self)
         self._status_detail_label = QLabel(self)
+        self._shortcuts_dialog: ShortcutHelpDialog | None = None
 
         self._tab_container = TabContainer(self, name_column_width=name_column_width)
         self._tab_container.currentPathChanged.connect(self._update_status_path)
@@ -116,6 +118,10 @@ class MainWindow(QMainWindow):
         self._previous_tab_action.setShortcut(QKeySequence("Ctrl+Shift+Tab"))
         self._previous_tab_action.triggered.connect(self._handle_previous_tab)
 
+        self._shortcuts_action = QAction("ショートカットキー一覧", self)
+        self._shortcuts_action.setShortcut(QKeySequence(Qt.Key.Key_F1))
+        self._shortcuts_action.triggered.connect(self._show_shortcuts_dialog)
+
         for action in (
             self._new_tab_action,
             self._close_tab_action,
@@ -125,6 +131,7 @@ class MainWindow(QMainWindow):
             self._toggle_view_action,
             self._next_tab_action,
             self._previous_tab_action,
+            self._shortcuts_action,
         ):
             self.addAction(action)
 
@@ -205,6 +212,17 @@ class MainWindow(QMainWindow):
     def _handle_previous_tab(self) -> None:
         if self._is_tab_mode():
             self._tab_container.select_previous_tab()
+
+    def _show_shortcuts_dialog(self) -> None:
+        if self._shortcuts_dialog is None:
+            self._shortcuts_dialog = ShortcutHelpDialog(self)
+            self._shortcuts_dialog.finished.connect(lambda _result: self._clear_shortcuts_dialog())
+        self._shortcuts_dialog.show()
+        self._shortcuts_dialog.raise_()
+        self._shortcuts_dialog.activateWindow()
+
+    def _clear_shortcuts_dialog(self) -> None:
+        self._shortcuts_dialog = None
 
     def _handle_name_column_width_changed(self, width: int) -> None:
         if self._settings.set_name_column_width(width):

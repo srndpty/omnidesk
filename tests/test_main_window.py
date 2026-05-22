@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QKeySequence
 from PyQt6.QtWidgets import QWidget
 
 import omnidesk.ui.main_window as main_window_module
@@ -219,6 +220,25 @@ def test_main_window_handlers_delegate_by_mode(monkeypatch, qtbot, tmp_path: Pat
     window._switch_to_tabs()
     assert window._is_tab_mode()
     assert window._toggle_view_action.text() == "Switch to Column View"
+
+
+def test_main_window_f1_shows_shortcuts_dialog(monkeypatch, qtbot, tmp_path: Path) -> None:
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window._shortcuts_action.shortcut() == QKeySequence(Qt.Key.Key_F1)
+
+    window._shortcuts_action.trigger()
+
+    assert window._shortcuts_dialog is not None
+    assert window._shortcuts_dialog.isVisible()
+    assert window._shortcuts_dialog.windowTitle() == "ショートカットキー一覧"
+
+    dialog = window._shortcuts_dialog
+    dialog.close()
+    assert window._shortcuts_dialog is None
 
 
 def test_main_window_persists_width_and_session(monkeypatch, qtbot, tmp_path: Path) -> None:
