@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtWidgets import QWidget
 
@@ -228,7 +228,7 @@ def test_main_window_f1_shows_shortcuts_dialog(monkeypatch, qtbot, tmp_path: Pat
     window = MainWindow()
     qtbot.addWidget(window)
 
-    assert window._shortcuts_action.shortcut() == QKeySequence(Qt.Key.Key_F1)
+    assert window._shortcuts_action.shortcut() == QKeySequence("F1")
 
     window._shortcuts_action.trigger()
 

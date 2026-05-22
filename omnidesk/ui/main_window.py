@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
         self._previous_tab_action.triggered.connect(self._handle_previous_tab)
 
         self._shortcuts_action = QAction("ショートカットキー一覧", self)
-        self._shortcuts_action.setShortcut(QKeySequence(Qt.Key.Key_F1))
+        self._shortcuts_action.setShortcut(QKeySequence("F1"))
         self._shortcuts_action.triggered.connect(self._show_shortcuts_dialog)
 
         for action in (
@@ -216,12 +216,12 @@ class MainWindow(QMainWindow):
     def _show_shortcuts_dialog(self) -> None:
         if self._shortcuts_dialog is None:
             self._shortcuts_dialog = ShortcutHelpDialog(self)
-            self._shortcuts_dialog.finished.connect(lambda _result: self._clear_shortcuts_dialog())
+            self._shortcuts_dialog.finished.connect(self._clear_shortcuts_dialog)
         self._shortcuts_dialog.show()
         self._shortcuts_dialog.raise_()
         self._shortcuts_dialog.activateWindow()
 
-    def _clear_shortcuts_dialog(self) -> None:
+    def _clear_shortcuts_dialog(self, _result: int | None = None) -> None:
         self._shortcuts_dialog = None
 
     def _handle_name_column_width_changed(self, width: int) -> None:
