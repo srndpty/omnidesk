@@ -52,6 +52,7 @@ class ShortcutHelpDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("ショートカットキー一覧")
         self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(620, 460)
 
         heading = QLabel("ショートカットキー一覧", self)
