@@ -695,13 +695,7 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
             if view_option.state & QStyle.StateFlag.State_Selected or is_drop_target
             else QIcon.Mode.Normal
         )
-        view_option.icon.paint(
-            painter,
-            icon_rect,
-            Qt.AlignmentFlag.AlignCenter,
-            icon_mode,
-            QIcon.State.Off,
-        )
+        self._draw_icon(painter, view_option.icon, icon_rect, icon_mode)
 
         if view_option.state & QStyle.StateFlag.State_Selected or is_drop_target:
             painter.fillRect(text_rect, view_option.palette.highlight())
@@ -752,6 +746,24 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
         painter.fillRect(option.rect.adjusted(1, 1, -1, -1), fill_color)
         painter.setPen(border_color)
         painter.drawRect(option.rect.adjusted(1, 1, -2, -2))
+
+    @staticmethod
+    def _draw_icon(
+        painter: QPainter,
+        icon: QIcon,
+        icon_rect: QRect,
+        icon_mode: QIcon.Mode,
+    ) -> None:
+        painter.save()
+        painter.setClipRect(icon_rect)
+        icon.paint(
+            painter,
+            icon_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            icon_mode,
+            QIcon.State.Off,
+        )
+        painter.restore()
 
     @staticmethod
     def _clipboard_visual_mode(

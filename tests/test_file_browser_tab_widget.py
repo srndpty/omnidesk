@@ -19,6 +19,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QDragEnterEvent,
+    QIcon,
     QKeyEvent,
     QPainter,
     QPixmap,
@@ -401,6 +402,35 @@ def test_file_browser_tab_tile_delegate_clears_stale_label_highlight(qtbot) -> N
     for x in range(text_rect.left(), text_rect.right() + 1):
         assert image.pixelColor(x, text_rect.top()) != highlight
         assert image.pixelColor(x, text_rect.bottom()) != highlight
+
+
+def test_file_browser_tab_tile_delegate_clips_icon_to_icon_rect(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    pixmap = QPixmap(80, 80)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    icon_rect = QRect(20, 20, 20, 20)
+
+    class OversizedIcon:
+        def paint(self, painter, rect, alignment, mode, state) -> None:
+            painter.fillRect(rect.adjusted(-10, -10, 10, 10), Qt.GlobalColor.red)
+
+    delegate._draw_icon(
+        painter,
+        cast(QIcon, OversizedIcon()),
+        icon_rect,
+        QIcon.Mode.Normal,
+    )
+    painter.end()
+
+    image = pixmap.toImage()
+    assert image.pixelColor(icon_rect.center()) == Qt.GlobalColor.red
+    assert image.pixelColor(icon_rect.left() - 1, icon_rect.center().y()).alpha() == 0
+    assert image.pixelColor(icon_rect.right() + 1, icon_rect.center().y()).alpha() == 0
+    assert image.pixelColor(icon_rect.center().x(), icon_rect.top() - 1).alpha() == 0
+    assert image.pixelColor(icon_rect.center().x(), icon_rect.bottom() + 1).alpha() == 0
 
 
 def test_file_browser_tab_tile_delegate_marks_copy_clipboard_target(monkeypatch, qtbot) -> None:

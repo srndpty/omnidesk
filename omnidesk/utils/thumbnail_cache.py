@@ -47,6 +47,18 @@ class ThumbnailCache(Generic[Key]):
             return item[0]  # icon
         return None
 
+    def get_sized(self, key: Key, min_edge: int | None = None) -> QIcon | None:
+        item = self._store.get(key)
+        if item is None:
+            return None
+        icon, pixmap = item
+        if pixmap.isNull():
+            return None
+        if min_edge is not None and max(pixmap.width(), pixmap.height()) < min_edge:
+            return None
+        self._store.move_to_end(key)
+        return icon
+
     def put_memory(self, key: Key, icon: QIcon, pixmap: QPixmap) -> None:
         """Store an icon in memory without touching disk."""
         self.put(key, icon, pixmap)
@@ -73,10 +85,10 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
     """
     2層キャッシュ: メモリLRU + ディスクLRU（PNG）
     - ディスクキーは [パス|mtime|size|edge] のハッシュで生成 → 変更に自動追従
-    - edge は保存時の pixmap 幅から推定（同一ファイルで別サイズも並存可）
+    - edge は要求されたサムネイルサイズ（同一ファイルで別サイズも並存可）
     """
 
-    VERSION = "v1"  # キャッシュ仕様を変えたら上げる
+    VERSION = "v2"  # キャッシュ仕様を変えたら上げる
 
     def __init__(
         self,
@@ -108,18 +120,18 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
             mtime = 0
             size = 0
             kind = "U"
-        # edge = hint_edge or 0
-        material = f"{self.VERSION}|{skey}|{mtime}|{size}|{kind}"
+        edge = max(0, hint_edge or 0)
+        material = f"{self.VERSION}|{skey}|{mtime}|{size}|{kind}|{edge}"
         name = _stable_hash(material) + ".png"
         return self._root / name
 
-    def disk_path(self, key: Key) -> Path:
+    def disk_path(self, key: Key, *, hint_edge: int | None = None) -> Path:
         """Return the PNG cache path for this key without loading it."""
-        return self._disk_key(key)
+        return self._disk_key(key, hint_edge=hint_edge)
 
-    def get_memory(self, key: Key) -> QIcon | None:
+    def get_memory(self, key: Key, *, min_edge: int | None = None) -> QIcon | None:
         """Return only the in-memory item; never read from disk on the UI thread."""
-        return ThumbnailCache.get(self, key)
+        return ThumbnailCache.get_sized(self, key, min_edge)
 
     def put_memory(self, key: Key, icon: QIcon, pixmap: QPixmap) -> None:
         """Store an icon in memory without writing the disk cache."""
@@ -129,13 +141,13 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         self._enforce_disk_budget()
 
     # ---------- メモリ+ディスク: get ----------
-    def get(self, key: Key) -> QIcon | None:
-        icon = super().get(key)
+    def get(self, key: Key, *, hint_edge: int | None = None) -> QIcon | None:
+        icon = ThumbnailCache.get_sized(self, key, hint_edge)
         if icon is not None:
             return icon
 
         # ディスクから復元
-        path = self._disk_key(key)
+        path = self._disk_key(key, hint_edge=hint_edge)
         if path.exists():
             # print(f"[ThumbnailCache] load from disk: {path}", flush=True)
             px = QPixmap()
@@ -154,12 +166,18 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         return None
 
     # ---------- メモリ+ディスク: put ----------
-    def put(self, key: Key, icon: QIcon, pixmap: QPixmap) -> None:
+    def put(
+        self,
+        key: Key,
+        icon: QIcon,
+        pixmap: QPixmap,
+        *,
+        hint_edge: int,
+    ) -> None:
         super().put(key, icon, pixmap)
 
         # ディスクに保存（原子的に）
-        edge = pixmap.width()  # 正方想定。必要なら max(w,h) に
-        dst = self._disk_key(key, hint_edge=edge)
+        dst = self._disk_key(key, hint_edge=hint_edge)
         try:
             saver = QSaveFile(str(dst))
             saver.open(QSaveFile.OpenModeFlag.WriteOnly)

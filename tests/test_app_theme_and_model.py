@@ -14,7 +14,9 @@ from omnidesk.ui.icons import application_icon
 from omnidesk.ui.media_file_system_model import (
     MediaFileSystemModel,
     file_thumbnail_cache,
+    folder_base_pixmap,
     folder_preview_cache,
+    folder_thumbnail_preview_edge,
     folder_thumbnail_rect,
 )
 
@@ -92,6 +94,7 @@ def test_media_file_system_model_token_and_cancel_state(monkeypatch) -> None:
     model._cache_jobs["key"] = cast(model_module.CacheLoadJob, object())
 
     assert model._is_current_request("key", token.generation)
+    assert model._request_edges["key"] == model._thumbnail_edge
 
     model.clear_visible_thumbnail_targets()
 
@@ -101,6 +104,7 @@ def test_media_file_system_model_token_and_cancel_state(monkeypatch) -> None:
     assert "key" not in model._pending
     assert "key" not in model._folder_scans
     assert "key" not in model._cache_jobs
+    assert "key" not in model._request_edges
 
 
 def test_media_file_system_model_cache_for_info_and_rejections(tmp_path: Path) -> None:
@@ -128,12 +132,12 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
     key = str(tmp_path)
     image_path = tmp_path / "image.jpg"
     image_path.write_text("fake", encoding="utf-8")
-    started: list[tuple[str, Path]] = []
+    started: list[tuple[str, Path, int]] = []
     monkeypatch.setattr(
         model._provider,
         "request_thumbnail",
         lambda path, edge, result_key=None, token=None: started.append(
-            (cast(str, result_key), path)
+            (cast(str, result_key), path, edge)
         )
         or True,
     )
@@ -142,10 +146,11 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
     assert started == []
 
     token = model._new_token(key)
+    model.set_thumbnail_edge(160)
     model._visible_keys.add(key)
     model._pending.add(key)
     model._handle_folder_scan_result(key, token.generation, image_path)
-    assert started == [(key, image_path)]
+    assert started == [(key, image_path, 96)]
 
     empty_key = str(tmp_path / "empty")
     token = model._new_token(empty_key)
@@ -154,6 +159,7 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
     model._handle_folder_scan_result(empty_key, token.generation, None)
     assert empty_key in model._failed
     assert empty_key not in model._pending
+    assert empty_key not in model._request_edges
 
 
 def test_media_file_system_model_cache_loaded_branches(monkeypatch, tmp_path: Path) -> None:
@@ -194,7 +200,7 @@ def test_media_file_system_model_thumbnail_ready_failure_and_file_success(
     model = MediaFileSystemModel()
     key = str(tmp_path / "image.png")
     emitted: list[str] = []
-    monkeypatch.setattr(model, "_save_cache_async", lambda cache, key, pixmap: None)
+    monkeypatch.setattr(model, "_save_cache_async", lambda cache, key, pixmap, **kwargs: None)
     monkeypatch.setattr(
         model, "_emit_thumbnail_changed", lambda changed_key: emitted.append(changed_key)
     )
@@ -216,6 +222,62 @@ def test_media_file_system_model_thumbnail_ready_failure_and_file_success(
 
     assert key not in model._failed
     assert emitted == [key]
+
+
+def test_media_file_system_model_thumbnail_ready_saves_with_request_edge(
+    monkeypatch, tmp_path: Path
+) -> None:
+    model = MediaFileSystemModel()
+    key = str(tmp_path / "image.png")
+    saved_edges: list[int | None] = []
+    requested_edges: list[int] = []
+    monkeypatch.setattr(
+        model,
+        "_save_cache_async",
+        lambda cache, key, pixmap, **kwargs: saved_edges.append(kwargs.get("hint_edge")),
+    )
+    monkeypatch.setattr(
+        model._provider,
+        "request_thumbnail",
+        lambda path, edge, result_key=None, token=None: requested_edges.append(edge) or True,
+    )
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda changed_key: None)
+
+    pixmap = QPixmap(96, 96)
+    pixmap.fill()
+    icon = QIcon(pixmap)
+    token = model._new_token(key)
+    model.set_thumbnail_edge(160)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+
+    model._handle_thumbnail_ready(key, icon, token.generation)
+
+    assert saved_edges == [96]
+    assert requested_edges == [160]
+    assert model._request_edges[key] == 160
+    assert key in model._pending
+
+
+def test_media_file_system_model_stale_folder_edge_respects_scroll_throttle(
+    monkeypatch, tmp_path: Path
+) -> None:
+    model = MediaFileSystemModel()
+    key = model._normalise_key(tmp_path)
+    requested: list[tuple[str, Path, bool]] = []
+    monkeypatch.setattr(
+        model,
+        "_request_visible_key",
+        lambda key, path, is_dir: requested.append((key, path, is_dir)) or True,
+    )
+
+    model._visible_keys.add(key)
+    model.set_thumbnail_edge(160)
+    model._allow_folder_preview_for_visible_targets = False
+
+    model._request_current_edge_if_needed(key, tmp_path, is_dir=True, completed_edge=96)
+
+    assert requested == []
 
 
 def test_media_file_system_model_drop_mime_data_rejects_invalid_inputs(tmp_path: Path) -> None:
@@ -267,6 +329,29 @@ def test_folder_thumbnail_rect_centers_and_offsets_preview() -> None:
     assert folder_thumbnail_rect(QSize(160, 160), QSize(80, 60), 160) == (40, 42)
 
 
+def test_folder_thumbnail_preview_edge_fits_overlay_offset() -> None:
+    edge = 160
+    preview_edge = folder_thumbnail_preview_edge(edge)
+    x, y = folder_thumbnail_rect(QSize(edge, edge), QSize(preview_edge, preview_edge), edge)
+
+    assert preview_edge == 144
+    assert x >= 0
+    assert y >= 0
+    assert x + preview_edge <= edge
+    assert y + preview_edge <= edge
+
+
+def test_folder_base_pixmap_normalizes_small_theme_icon_to_requested_edge() -> None:
+    source = QPixmap(32, 32)
+    source.fill()
+    icon = QIcon(source)
+
+    pixmap = folder_base_pixmap(icon, 160)
+
+    assert pixmap.size() == QSize(160, 160)
+    assert not pixmap.isNull()
+
+
 def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) -> None:
     model = MediaFileSystemModel()
     invalid_flags = model.flags(model.index(""))
@@ -285,10 +370,10 @@ class _FakeCache:
         self._memory_icon = memory_icon
         self.memory_puts: list[tuple[str, QIcon, QPixmap]] = []
 
-    def get_memory(self, _key: str) -> QIcon | None:
+    def get_memory(self, _key: str, *, min_edge: int | None = None) -> QIcon | None:
         return self._memory_icon
 
-    def disk_path(self, _key: str) -> Path:
+    def disk_path(self, _key: str, *, hint_edge: int | None = None) -> Path:
         return self._disk_path
 
     def put_memory(self, key: str, icon: QIcon, pixmap: QPixmap) -> None:
