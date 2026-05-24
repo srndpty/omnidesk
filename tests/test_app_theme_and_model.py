@@ -93,6 +93,7 @@ def test_media_file_system_model_token_and_cancel_state(monkeypatch) -> None:
     model._cache_jobs["key"] = cast(model_module.CacheLoadJob, object())
 
     assert model._is_current_request("key", token.generation)
+    assert model._request_edges["key"] == model._thumbnail_edge
 
     model.clear_visible_thumbnail_targets()
 
@@ -102,6 +103,7 @@ def test_media_file_system_model_token_and_cancel_state(monkeypatch) -> None:
     assert "key" not in model._pending
     assert "key" not in model._folder_scans
     assert "key" not in model._cache_jobs
+    assert "key" not in model._request_edges
 
 
 def test_media_file_system_model_cache_for_info_and_rejections(tmp_path: Path) -> None:
@@ -129,12 +131,12 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
     key = str(tmp_path)
     image_path = tmp_path / "image.jpg"
     image_path.write_text("fake", encoding="utf-8")
-    started: list[tuple[str, Path]] = []
+    started: list[tuple[str, Path, int]] = []
     monkeypatch.setattr(
         model._provider,
         "request_thumbnail",
         lambda path, edge, result_key=None, token=None: started.append(
-            (cast(str, result_key), path)
+            (cast(str, result_key), path, edge)
         )
         or True,
     )
@@ -143,10 +145,11 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
     assert started == []
 
     token = model._new_token(key)
+    model.set_thumbnail_edge(160)
     model._visible_keys.add(key)
     model._pending.add(key)
     model._handle_folder_scan_result(key, token.generation, image_path)
-    assert started == [(key, image_path)]
+    assert started == [(key, image_path, 96)]
 
     empty_key = str(tmp_path / "empty")
     token = model._new_token(empty_key)
@@ -155,6 +158,7 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
     model._handle_folder_scan_result(empty_key, token.generation, None)
     assert empty_key in model._failed
     assert empty_key not in model._pending
+    assert empty_key not in model._request_edges
 
 
 def test_media_file_system_model_cache_loaded_branches(monkeypatch, tmp_path: Path) -> None:
@@ -195,7 +199,7 @@ def test_media_file_system_model_thumbnail_ready_failure_and_file_success(
     model = MediaFileSystemModel()
     key = str(tmp_path / "image.png")
     emitted: list[str] = []
-    monkeypatch.setattr(model, "_save_cache_async", lambda cache, key, pixmap: None)
+    monkeypatch.setattr(model, "_save_cache_async", lambda cache, key, pixmap, **kwargs: None)
     monkeypatch.setattr(
         model, "_emit_thumbnail_changed", lambda changed_key: emitted.append(changed_key)
     )
@@ -217,6 +221,33 @@ def test_media_file_system_model_thumbnail_ready_failure_and_file_success(
 
     assert key not in model._failed
     assert emitted == [key]
+
+
+def test_media_file_system_model_thumbnail_ready_saves_with_request_edge(
+    monkeypatch, tmp_path: Path
+) -> None:
+    model = MediaFileSystemModel()
+    key = str(tmp_path / "image.png")
+    saved_edges: list[int | None] = []
+    monkeypatch.setattr(
+        model,
+        "_save_cache_async",
+        lambda cache, key, pixmap, **kwargs: saved_edges.append(kwargs.get("hint_edge")),
+    )
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda changed_key: None)
+
+    pixmap = QPixmap(96, 96)
+    pixmap.fill()
+    icon = QIcon(pixmap)
+    token = model._new_token(key)
+    model.set_thumbnail_edge(160)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+
+    model._handle_thumbnail_ready(key, icon, token.generation)
+
+    assert saved_edges == [96]
+    assert key not in model._request_edges
 
 
 def test_media_file_system_model_drop_mime_data_rejects_invalid_inputs(tmp_path: Path) -> None:

@@ -66,6 +66,7 @@ class MediaFileSystemModel(QFileSystemModel):
         self._visible_keys: set[str] = set()
         self._tokens: dict[str, CancellationToken] = {}
         self._generations: dict[str, int] = {}
+        self._request_edges: dict[str, int] = {}
         self.setReadOnly(False)
         # ★★★ フォルダアイコン取得用のプロバイダを追加 ★★★
         self._icon_provider = QFileIconProvider()
@@ -116,6 +117,7 @@ class MediaFileSystemModel(QFileSystemModel):
         self._generations[key] = generation
         token = CancellationToken(generation)
         self._tokens[key] = token
+        self._request_edges[key] = self._thumbnail_edge
         return token
 
     def _is_current_request(self, key: str, generation: int) -> bool:
@@ -129,6 +131,7 @@ class MediaFileSystemModel(QFileSystemModel):
         self._pending.discard(key)
         self._folder_scans.pop(key, None)
         self._cache_jobs.pop(key, None)
+        self._request_edges.pop(key, None)
         self._provider.cancel_thumbnail(key)
 
     def clear_visible_thumbnail_targets(self) -> None:
@@ -255,19 +258,22 @@ class MediaFileSystemModel(QFileSystemModel):
 
         if image_path:
             self._debug("folder-found", key, image_path)
+            request_edge = self._request_edges.get(key, self._thumbnail_edge)
             started = self._provider.request_thumbnail(
                 image_path,
-                self._thumbnail_edge,
+                request_edge,
                 result_key=key,
                 token=self._tokens.get(key),
             )
             if not started:
                 self._pending.discard(key)
+                self._request_edges.pop(key, None)
                 self._failed.add(key)
                 self._debug("folder-image-not-started", key, image_path)
             return
 
         self._pending.discard(key)
+        self._request_edges.pop(key, None)
         self._failed.add(key)
         self._debug("folder-none", key)
 
@@ -323,6 +329,7 @@ class MediaFileSystemModel(QFileSystemModel):
         self._cache_jobs.pop(key, None)
         self._pending.discard(key)
         self._tokens.pop(key, None)
+        self._request_edges.pop(key, None)
         qimage: QImage | None = image if isinstance(image, QImage) else None
         if qimage is None or qimage.isNull():
             self._debug("cache-miss", key)
@@ -348,6 +355,7 @@ class MediaFileSystemModel(QFileSystemModel):
 
         self._pending.discard(key)
         self._tokens.pop(key, None)
+        request_edge = self._request_edges.pop(key, self._thumbnail_edge)
         if icon is None or icon.isNull():
             # print(f"[MediaFileSystemModel] thumbnail failed for {key}", flush=True)
             self._failed.add(key)
@@ -368,24 +376,22 @@ class MediaFileSystemModel(QFileSystemModel):
             # 2. 取得したQModelIndexを使って、ファイル情報を取得する
             folder_info = self.fileInfo(folder_index)
             base_icon = self._icon_provider.icon(folder_info)
-            base_pixmap = folder_base_pixmap(base_icon, self._thumbnail_edge)
+            base_pixmap = folder_base_pixmap(base_icon, request_edge)
 
             # 2. サムネイル画像を取得
-            thumb_pixmap = icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
+            thumb_pixmap = icon.pixmap(QSize(request_edge, request_edge))
 
             # 3. Painterを使ってアイコンを合成
             painter = QPainter(base_pixmap)
             # 中央に描画
-            target_size = int(self._thumbnail_edge * 1.2)  # 少し大きめに
+            target_size = int(request_edge * 1.2)  # 少し大きめに
             scaled_thumb = thumb_pixmap.scaled(
                 target_size,
                 target_size,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            x, y = folder_thumbnail_rect(
-                base_pixmap.size(), scaled_thumb.size(), self._thumbnail_edge
-            )
+            x, y = folder_thumbnail_rect(base_pixmap.size(), scaled_thumb.size(), request_edge)
 
             painter.drawPixmap(x, y, scaled_thumb)
             painter.end()
@@ -393,24 +399,27 @@ class MediaFileSystemModel(QFileSystemModel):
             # 4. 合成したPixmapから新しいQIconを作成してキャッシュ
             final_icon = QIcon(base_pixmap)
             folder_preview_cache.put_memory(key, final_icon, base_pixmap)
-            self._save_cache_async(folder_preview_cache, key, base_pixmap)
+            self._save_cache_async(folder_preview_cache, key, base_pixmap, hint_edge=request_edge)
         else:
             # --- 通常のファイルの処理 (変更なし) ---
             # QIconから元になったPixmapを取得して渡す
-            pixmap = icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
+            pixmap = icon.pixmap(QSize(request_edge, request_edge))
             file_thumbnail_cache.put_memory(key, icon, pixmap)
-            self._save_cache_async(file_thumbnail_cache, key, pixmap)
+            self._save_cache_async(file_thumbnail_cache, key, pixmap, hint_edge=request_edge)
 
         self._debug("ready", key)
         self._emit_thumbnail_changed(key)
 
-    def _save_cache_async(self, cache, key: str, pixmap: QPixmap) -> None:
+    def _save_cache_async(
+        self, cache, key: str, pixmap: QPixmap, *, hint_edge: int | None = None
+    ) -> None:
         image = pixmap.toImage()
         if image.isNull():
             return
+        edge = hint_edge if hint_edge is not None else self._thumbnail_edge
         self._scan_pool.start(
             CacheSaveJob(
-                cache.disk_path(key, hint_edge=self._thumbnail_edge),
+                cache.disk_path(key, hint_edge=edge),
                 image,
                 cache.enforce_disk_budget,
             )
