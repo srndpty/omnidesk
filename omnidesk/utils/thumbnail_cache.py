@@ -177,7 +177,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         super().put(key, icon, pixmap)
 
         # ディスクに保存（原子的に）
-        edge = hint_edge if hint_edge is not None else max(pixmap.width(), pixmap.height())
+        edge = hint_edge or 0
         dst = self._disk_key(key, hint_edge=edge)
         try:
             saver = QSaveFile(str(dst))

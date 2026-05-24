@@ -55,13 +55,13 @@ def test_persistent_cache_stores_and_loads_from_disk(tmp_path: Path) -> None:
     icon = QIcon(pixmap)
 
     cache.put(str(key_path), icon, pixmap)
-    disk_path = cache.disk_path(str(key_path), hint_edge=16)
+    disk_path = cache.disk_path(str(key_path))
 
     assert disk_path.exists()
     assert cache.get_memory(str(key_path)) is icon
 
     reloaded = PersistentThumbnailCache[str](capacity=1, namespace="files", root=tmp_path)
-    loaded_icon = reloaded.get(str(key_path), hint_edge=16)
+    loaded_icon = reloaded.get(str(key_path))
 
     assert loaded_icon is not None
     assert not loaded_icon.isNull()
