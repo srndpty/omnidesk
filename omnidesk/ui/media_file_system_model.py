@@ -329,7 +329,7 @@ class MediaFileSystemModel(QFileSystemModel):
         self._cache_jobs.pop(key, None)
         self._pending.discard(key)
         self._tokens.pop(key, None)
-        self._request_edges.pop(key, None)
+        request_edge = self._request_edges.pop(key, self._thumbnail_edge)
         qimage: QImage | None = image if isinstance(image, QImage) else None
         if qimage is None or qimage.isNull():
             self._debug("cache-miss", key)
@@ -343,6 +343,7 @@ class MediaFileSystemModel(QFileSystemModel):
         icon = QIcon(pixmap)
         self._cache_for_info(is_dir).put_memory(key, icon, pixmap)
         self._debug("cache-ready", key)
+        self._request_current_edge_if_needed(key, Path(key), is_dir, request_edge)
         self._emit_thumbnail_changed(key)
 
     def _handle_thumbnail_ready(self, path: str, icon: QIcon | None, generation: int) -> None:
@@ -407,8 +408,19 @@ class MediaFileSystemModel(QFileSystemModel):
             file_thumbnail_cache.put_memory(key, icon, pixmap)
             self._save_cache_async(file_thumbnail_cache, key, pixmap, hint_edge=request_edge)
 
+        self._request_current_edge_if_needed(key, target_path, target_path.is_dir(), request_edge)
         self._debug("ready", key)
         self._emit_thumbnail_changed(key)
+
+    def _request_current_edge_if_needed(
+        self, key: str, path: Path, is_dir: bool, completed_edge: int
+    ) -> None:
+        if completed_edge >= self._thumbnail_edge:
+            return
+        if key not in self._visible_keys:
+            return
+        self._debug("edge-stale", key, f"{completed_edge}->{self._thumbnail_edge}")
+        self._request_visible_key(key, path, is_dir)
 
     def _save_cache_async(
         self, cache, key: str, pixmap: QPixmap, *, hint_edge: int | None = None

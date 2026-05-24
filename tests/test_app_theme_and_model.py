@@ -229,10 +229,16 @@ def test_media_file_system_model_thumbnail_ready_saves_with_request_edge(
     model = MediaFileSystemModel()
     key = str(tmp_path / "image.png")
     saved_edges: list[int | None] = []
+    requested_edges: list[int] = []
     monkeypatch.setattr(
         model,
         "_save_cache_async",
         lambda cache, key, pixmap, **kwargs: saved_edges.append(kwargs.get("hint_edge")),
+    )
+    monkeypatch.setattr(
+        model._provider,
+        "request_thumbnail",
+        lambda path, edge, result_key=None, token=None: requested_edges.append(edge) or True,
     )
     monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda changed_key: None)
 
@@ -247,7 +253,9 @@ def test_media_file_system_model_thumbnail_ready_saves_with_request_edge(
     model._handle_thumbnail_ready(key, icon, token.generation)
 
     assert saved_edges == [96]
-    assert key not in model._request_edges
+    assert requested_edges == [160]
+    assert model._request_edges[key] == 160
+    assert key in model._pending
 
 
 def test_media_file_system_model_drop_mime_data_rejects_invalid_inputs(tmp_path: Path) -> None:
