@@ -258,7 +258,8 @@ class MainWindow(QMainWindow):
     def _update_status_path(self, path: Path) -> None:
         self._status_path = path
         if self._is_tab_mode():
-            self._status_summary = BrowserStatus()
+            if path == self._current_active_path():
+                self._status_summary = BrowserStatus()
         else:
             self._status_summary = browser_status_for(path)
         self._show_status()

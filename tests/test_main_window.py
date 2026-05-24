@@ -287,6 +287,26 @@ def test_main_window_status_bar_shows_counts_and_selection(
     assert window._status_detail_label.text().endswith("2個の項目（フォルダ1個/ファイル1個）")
 
 
+def test_main_window_tab_status_path_change_keeps_current_summary(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    saved: list[dict] = []
+    selected_folder = tmp_path / "folder"
+    selected_folder.mkdir()
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    status = BrowserStatus(total_count=2, folder_count=1, file_count=1)
+    window._tab_container.statusChanged.emit(tmp_path, status)
+
+    window._tab_container.currentPathChanged.emit(selected_folder)
+
+    assert window._status_path_label.toolTip() == str(selected_folder)
+    assert window._status_detail_label.text() == "2個の項目（フォルダ1個/ファイル1個）"
+
+
 def test_main_window_status_path_counts_items_in_column_mode(
     monkeypatch,
     qtbot,
