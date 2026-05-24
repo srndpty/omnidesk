@@ -14,6 +14,7 @@ from omnidesk.ui.icons import application_icon
 from omnidesk.ui.media_file_system_model import (
     MediaFileSystemModel,
     file_thumbnail_cache,
+    folder_base_pixmap,
     folder_preview_cache,
     folder_thumbnail_rect,
 )
@@ -265,6 +266,17 @@ def test_media_file_system_model_can_drop_urls_on_directory(monkeypatch, tmp_pat
 
 def test_folder_thumbnail_rect_centers_and_offsets_preview() -> None:
     assert folder_thumbnail_rect(QSize(160, 160), QSize(80, 60), 160) == (40, 42)
+
+
+def test_folder_base_pixmap_normalizes_small_theme_icon_to_requested_edge() -> None:
+    source = QPixmap(32, 32)
+    source.fill()
+    icon = QIcon(source)
+
+    pixmap = folder_base_pixmap(icon, 160)
+
+    assert pixmap.size() == QSize(160, 160)
+    assert not pixmap.isNull()
 
 
 def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) -> None:

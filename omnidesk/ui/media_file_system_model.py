@@ -25,6 +25,32 @@ def folder_thumbnail_rect(base_size: QSize, thumb_size: QSize, edge: int) -> tup
     return x, y
 
 
+def folder_base_pixmap(base_icon: QIcon, edge: int) -> QPixmap:
+    """Return a folder base pixmap normalized to the requested thumbnail edge."""
+    target = QSize(edge, edge)
+    base = base_icon.pixmap(target)
+    if base.size() == target:
+        return base
+
+    canvas = QPixmap(target)
+    canvas.fill(Qt.GlobalColor.transparent)
+    if base.isNull():
+        return canvas
+
+    scaled = base.scaled(
+        edge,
+        edge,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    x = (edge - scaled.width()) // 2
+    y = (edge - scaled.height()) // 2
+    painter = QPainter(canvas)
+    painter.drawPixmap(x, y, scaled)
+    painter.end()
+    return canvas
+
+
 class MediaFileSystemModel(QFileSystemModel):
     """Extends QFileSystemModel to provide cached media thumbnails."""
 
@@ -342,7 +368,7 @@ class MediaFileSystemModel(QFileSystemModel):
             # 2. 取得したQModelIndexを使って、ファイル情報を取得する
             folder_info = self.fileInfo(folder_index)
             base_icon = self._icon_provider.icon(folder_info)
-            base_pixmap = base_icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
+            base_pixmap = folder_base_pixmap(base_icon, self._thumbnail_edge)
 
             # 2. サムネイル画像を取得
             thumb_pixmap = icon.pixmap(QSize(self._thumbnail_edge, self._thumbnail_edge))
