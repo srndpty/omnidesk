@@ -25,6 +25,11 @@ def folder_thumbnail_rect(base_size: QSize, thumb_size: QSize, edge: int) -> tup
     return x, y
 
 
+def folder_thumbnail_preview_edge(edge: int) -> int:
+    """Return the largest preview edge that fits with the folder overlay offset."""
+    return max(1, edge - int(edge * 0.1))
+
+
 def folder_base_pixmap(base_icon: QIcon, edge: int) -> QPixmap:
     """Return a folder base pixmap normalized to the requested thumbnail edge."""
     target = QSize(edge, edge)
@@ -387,7 +392,7 @@ class MediaFileSystemModel(QFileSystemModel):
             # 3. Painterを使ってアイコンを合成
             painter = QPainter(base_pixmap)
             # 中央に描画
-            target_size = int(request_edge * 1.2)  # 少し大きめに
+            target_size = folder_thumbnail_preview_edge(request_edge)
             scaled_thumb = thumb_pixmap.scaled(
                 target_size,
                 target_size,

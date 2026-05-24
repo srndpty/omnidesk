@@ -16,6 +16,7 @@ from omnidesk.ui.media_file_system_model import (
     file_thumbnail_cache,
     folder_base_pixmap,
     folder_preview_cache,
+    folder_thumbnail_preview_edge,
     folder_thumbnail_rect,
 )
 
@@ -326,6 +327,18 @@ def test_media_file_system_model_can_drop_urls_on_directory(monkeypatch, tmp_pat
 
 def test_folder_thumbnail_rect_centers_and_offsets_preview() -> None:
     assert folder_thumbnail_rect(QSize(160, 160), QSize(80, 60), 160) == (40, 42)
+
+
+def test_folder_thumbnail_preview_edge_fits_overlay_offset() -> None:
+    edge = 160
+    preview_edge = folder_thumbnail_preview_edge(edge)
+    x, y = folder_thumbnail_rect(QSize(edge, edge), QSize(preview_edge, preview_edge), edge)
+
+    assert preview_edge == 144
+    assert x >= 0
+    assert y >= 0
+    assert x + preview_edge <= edge
+    assert y + preview_edge <= edge
 
 
 def test_folder_base_pixmap_normalizes_small_theme_icon_to_requested_edge() -> None:

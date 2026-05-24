@@ -88,7 +88,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
     - edge は要求されたサムネイルサイズ（同一ファイルで別サイズも並存可）
     """
 
-    VERSION = "v1"  # キャッシュ仕様を変えたら上げる
+    VERSION = "v2"  # キャッシュ仕様を変えたら上げる
 
     def __init__(
         self,
