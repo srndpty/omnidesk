@@ -67,6 +67,7 @@ class MediaFileSystemModel(QFileSystemModel):
         self._tokens: dict[str, CancellationToken] = {}
         self._generations: dict[str, int] = {}
         self._request_edges: dict[str, int] = {}
+        self._allow_folder_preview_for_visible_targets = True
         self.setReadOnly(False)
         # ★★★ フォルダアイコン取得用のプロバイダを追加 ★★★
         self._icon_provider = QFileIconProvider()
@@ -150,6 +151,7 @@ class MediaFileSystemModel(QFileSystemModel):
         allow_folder_preview: bool = True,
     ) -> int:
         """Request thumbnails only for currently visible model indexes."""
+        self._allow_folder_preview_for_visible_targets = allow_folder_preview
         ordered: list[tuple[str, Path, bool]] = []
         seen: set[str] = set()
         for index in indexes:
@@ -419,6 +421,14 @@ class MediaFileSystemModel(QFileSystemModel):
             return
         if key not in self._visible_keys:
             return
+        if is_dir and not self._allow_folder_preview_for_visible_targets:
+            cache = self._cache_for_info(is_dir)
+            if (
+                cache.get_memory(key, min_edge=self._thumbnail_edge) is None
+                and not cache.disk_path(key, hint_edge=self._thumbnail_edge).exists()
+            ):
+                self._debug("edge-stale-throttled", key, completed_edge)
+                return
         self._debug("edge-stale", key, f"{completed_edge}->{self._thumbnail_edge}")
         self._request_visible_key(key, path, is_dir)
 

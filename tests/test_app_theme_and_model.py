@@ -258,6 +258,27 @@ def test_media_file_system_model_thumbnail_ready_saves_with_request_edge(
     assert key in model._pending
 
 
+def test_media_file_system_model_stale_folder_edge_respects_scroll_throttle(
+    monkeypatch, tmp_path: Path
+) -> None:
+    model = MediaFileSystemModel()
+    key = model._normalise_key(tmp_path)
+    requested: list[tuple[str, Path, bool]] = []
+    monkeypatch.setattr(
+        model,
+        "_request_visible_key",
+        lambda key, path, is_dir: requested.append((key, path, is_dir)) or True,
+    )
+
+    model._visible_keys.add(key)
+    model.set_thumbnail_edge(160)
+    model._allow_folder_preview_for_visible_targets = False
+
+    model._request_current_edge_if_needed(key, tmp_path, is_dir=True, completed_edge=96)
+
+    assert requested == []
+
+
 def test_media_file_system_model_drop_mime_data_rejects_invalid_inputs(tmp_path: Path) -> None:
     model = MediaFileSystemModel()
     data = QMimeData()
