@@ -172,13 +172,12 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         icon: QIcon,
         pixmap: QPixmap,
         *,
-        hint_edge: int | None = None,
+        hint_edge: int,
     ) -> None:
         super().put(key, icon, pixmap)
 
         # ディスクに保存（原子的に）
-        edge = hint_edge or 0
-        dst = self._disk_key(key, hint_edge=edge)
+        dst = self._disk_key(key, hint_edge=hint_edge)
         try:
             saver = QSaveFile(str(dst))
             saver.open(QSaveFile.OpenModeFlag.WriteOnly)
