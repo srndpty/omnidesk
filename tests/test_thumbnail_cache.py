@@ -3,9 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
 from PyQt6.QtGui import QIcon, QPixmap
 
 from omnidesk.utils.thumbnail_cache import PersistentThumbnailCache, ThumbnailCache, _stable_hash
+
+pytestmark = pytest.mark.usefixtures("qapp")
 
 
 def _pixmap(size: int = 16) -> QPixmap:
@@ -52,16 +55,41 @@ def test_persistent_cache_stores_and_loads_from_disk(tmp_path: Path) -> None:
     icon = QIcon(pixmap)
 
     cache.put(str(key_path), icon, pixmap)
-    disk_path = cache.disk_path(str(key_path))
+    disk_path = cache.disk_path(str(key_path), hint_edge=16)
 
     assert disk_path.exists()
     assert cache.get_memory(str(key_path)) is icon
 
     reloaded = PersistentThumbnailCache[str](capacity=1, namespace="files", root=tmp_path)
-    loaded_icon = reloaded.get(str(key_path))
+    loaded_icon = reloaded.get(str(key_path), hint_edge=16)
 
     assert loaded_icon is not None
     assert not loaded_icon.isNull()
+
+
+def test_persistent_cache_disk_path_includes_edge(tmp_path: Path) -> None:
+    cache = PersistentThumbnailCache[str](capacity=1, namespace="files", root=tmp_path)
+    key_path = tmp_path / "source.png"
+    key_path.write_text("source", encoding="utf-8")
+
+    small_path = cache.disk_path(str(key_path), hint_edge=96)
+    large_path = cache.disk_path(str(key_path), hint_edge=160)
+
+    assert small_path != large_path
+
+
+def test_persistent_cache_memory_miss_when_item_is_smaller_than_requested(
+    tmp_path: Path,
+) -> None:
+    cache = PersistentThumbnailCache[str](capacity=1, namespace="files", root=tmp_path)
+    key = "image-key"
+    pixmap = _pixmap(96)
+    icon = QIcon(pixmap)
+
+    cache.put_memory(key, icon, pixmap)
+
+    assert cache.get_memory(key, min_edge=96) is icon
+    assert cache.get_memory(key, min_edge=160) is None
 
 
 def test_persistent_cache_enforces_disk_item_budget(tmp_path: Path) -> None:

@@ -73,11 +73,11 @@ class MediaFileSystemModel(QFileSystemModel):
             key = self._normalise_key(path_str)
 
             if file_info.isFile():
-                cached = file_thumbnail_cache.get_memory(key)
+                cached = file_thumbnail_cache.get_memory(key, min_edge=self._thumbnail_edge)
                 if cached is not None:
                     return cached
             elif file_info.isDir():
-                cached = folder_preview_cache.get_memory(key)
+                cached = folder_preview_cache.get_memory(key, min_edge=self._thumbnail_edge)
                 if cached is not None:
                     return cached
 
@@ -152,7 +152,10 @@ class MediaFileSystemModel(QFileSystemModel):
             if is_dir and not allow_folder_preview:
                 key = self._normalise_key(path)
                 cache = self._cache_for_info(is_dir)
-                if cache.get_memory(key) is None and not cache.disk_path(key).exists():
+                if (
+                    cache.get_memory(key, min_edge=self._thumbnail_edge) is None
+                    and not cache.disk_path(key, hint_edge=self._thumbnail_edge).exists()
+                ):
                     continue
             if self._request_visible_key(key, path, is_dir):
                 requested += 1
@@ -163,14 +166,14 @@ class MediaFileSystemModel(QFileSystemModel):
             self._debug("skip", key, "pending" if key in self._pending else "failed")
             return False
         cache = self._cache_for_info(is_dir)
-        if cache.get_memory(key) is not None:
+        if cache.get_memory(key, min_edge=self._thumbnail_edge) is not None:
             self._debug("memory-hit", key)
             index = self.index(key)
             if index.isValid():
                 self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
             return False
 
-        disk_path = cache.disk_path(key)
+        disk_path = cache.disk_path(key, hint_edge=self._thumbnail_edge)
         if disk_path.exists():
             self._debug("disk-load", key, disk_path)
             token = self._new_token(key)
@@ -260,7 +263,7 @@ class MediaFileSystemModel(QFileSystemModel):
     def _ensure_thumbnail(self, path: Path, suffix: str, key: str | None = None) -> None:
         norm_key = key or self._normalise_key(path)
 
-        if file_thumbnail_cache.get_memory(norm_key) is not None:
+        if file_thumbnail_cache.get_memory(norm_key, min_edge=self._thumbnail_edge) is not None:
             idx = self.index(norm_key)
             if idx.isValid():
                 self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
@@ -379,7 +382,13 @@ class MediaFileSystemModel(QFileSystemModel):
         image = pixmap.toImage()
         if image.isNull():
             return
-        self._scan_pool.start(CacheSaveJob(cache.disk_path(key), image, cache.enforce_disk_budget))
+        self._scan_pool.start(
+            CacheSaveJob(
+                cache.disk_path(key, hint_edge=self._thumbnail_edge),
+                image,
+                cache.enforce_disk_budget,
+            )
+        )
 
     def _emit_thumbnail_changed(self, key: str) -> None:
         index = self.index(key)

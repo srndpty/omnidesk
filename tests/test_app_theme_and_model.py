@@ -285,10 +285,10 @@ class _FakeCache:
         self._memory_icon = memory_icon
         self.memory_puts: list[tuple[str, QIcon, QPixmap]] = []
 
-    def get_memory(self, _key: str) -> QIcon | None:
+    def get_memory(self, _key: str, *, min_edge: int | None = None) -> QIcon | None:
         return self._memory_icon
 
-    def disk_path(self, _key: str) -> Path:
+    def disk_path(self, _key: str, *, hint_edge: int | None = None) -> Path:
         return self._disk_path
 
     def put_memory(self, key: str, icon: QIcon, pixmap: QPixmap) -> None:
