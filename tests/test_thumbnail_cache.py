@@ -92,6 +92,40 @@ def test_persistent_cache_memory_miss_when_item_is_smaller_than_requested(
     assert cache.get_memory(key, min_edge=160) is None
 
 
+def test_persistent_cache_get_respects_hint_edge_for_memory(tmp_path: Path) -> None:
+    cache = PersistentThumbnailCache[str](capacity=1, namespace="files", root=tmp_path)
+    key = "image-key"
+    pixmap = _pixmap(96)
+    icon = QIcon(pixmap)
+
+    cache.put_memory(key, icon, pixmap)
+
+    assert cache.get(key, hint_edge=96) is icon
+    assert cache.get(key, hint_edge=160) is None
+
+
+def test_persistent_cache_put_uses_explicit_hint_edge_for_disk_key(tmp_path: Path) -> None:
+    cache = PersistentThumbnailCache[str](capacity=1, namespace="files", root=tmp_path)
+    key_path = tmp_path / "source.png"
+    key_path.write_text("source", encoding="utf-8")
+    pixmap = _pixmap(96)
+    icon = QIcon(pixmap)
+
+    cache.put(str(key_path), icon, pixmap, hint_edge=160)
+
+    assert cache.disk_path(str(key_path), hint_edge=160).exists()
+    assert not cache.disk_path(str(key_path), hint_edge=96).exists()
+
+
+def test_thumbnail_cache_get_sized_ignores_null_pixmap() -> None:
+    cache = ThumbnailCache[str]()
+    icon = QIcon()
+
+    cache.put("null", icon, QPixmap())
+
+    assert cache.get_sized("null") is None
+
+
 def test_persistent_cache_enforces_disk_item_budget(tmp_path: Path) -> None:
     cache = PersistentThumbnailCache[str](
         capacity=1,

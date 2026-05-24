@@ -52,6 +52,8 @@ class ThumbnailCache(Generic[Key]):
         if item is None:
             return None
         icon, pixmap = item
+        if pixmap.isNull():
+            return None
         if min_edge is not None and max(pixmap.width(), pixmap.height()) < min_edge:
             return None
         self._store.move_to_end(key)
@@ -83,7 +85,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
     """
     2層キャッシュ: メモリLRU + ディスクLRU（PNG）
     - ディスクキーは [パス|mtime|size|edge] のハッシュで生成 → 変更に自動追従
-    - edge は保存時の pixmap 幅から推定（同一ファイルで別サイズも並存可）
+    - edge は要求されたサムネイルサイズ（同一ファイルで別サイズも並存可）
     """
 
     VERSION = "v1"  # キャッシュ仕様を変えたら上げる
@@ -140,7 +142,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
 
     # ---------- メモリ+ディスク: get ----------
     def get(self, key: Key, *, hint_edge: int | None = None) -> QIcon | None:
-        icon = super().get(key)
+        icon = ThumbnailCache.get_sized(self, key, hint_edge)
         if icon is not None:
             return icon
 
@@ -164,11 +166,18 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         return None
 
     # ---------- メモリ+ディスク: put ----------
-    def put(self, key: Key, icon: QIcon, pixmap: QPixmap) -> None:
+    def put(
+        self,
+        key: Key,
+        icon: QIcon,
+        pixmap: QPixmap,
+        *,
+        hint_edge: int | None = None,
+    ) -> None:
         super().put(key, icon, pixmap)
 
         # ディスクに保存（原子的に）
-        edge = max(pixmap.width(), pixmap.height())
+        edge = hint_edge if hint_edge is not None else max(pixmap.width(), pixmap.height())
         dst = self._disk_key(key, hint_edge=edge)
         try:
             saver = QSaveFile(str(dst))
