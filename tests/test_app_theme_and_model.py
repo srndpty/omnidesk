@@ -40,6 +40,22 @@ def test_dark_theme_scrollbar_handles_have_minimum_extent() -> None:
     assert "min-width: 36px;" in DARK_STYLESHEET
 
 
+def test_dark_theme_scrollbar_reserves_arrow_button_space() -> None:
+    assert "margin: 14px 0px 14px 0px;" in DARK_STYLESHEET
+    assert "margin: 0px 14px 0px 14px;" in DARK_STYLESHEET
+    assert "QScrollBar::sub-line:vertical" in DARK_STYLESHEET
+    assert "QScrollBar::add-line:vertical" in DARK_STYLESHEET
+    assert "QScrollBar::sub-line:horizontal" in DARK_STYLESHEET
+    assert "QScrollBar::add-line:horizontal" in DARK_STYLESHEET
+
+
+def test_dark_theme_scrollbar_uses_bundled_arrow_icons() -> None:
+    assert "scrollbar-arrow-up.svg" in DARK_STYLESHEET
+    assert "scrollbar-arrow-down.svg" in DARK_STYLESHEET
+    assert "scrollbar-arrow-left.svg" in DARK_STYLESHEET
+    assert "scrollbar-arrow-right.svg" in DARK_STYLESHEET
+
+
 def test_create_app_reuses_existing_application(monkeypatch, qapp: QApplication) -> None:
     monkeypatch.setattr(app_module, "application_icon", lambda: QIcon())
 
