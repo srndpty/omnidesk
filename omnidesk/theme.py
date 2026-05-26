@@ -4,7 +4,21 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QApplication
 
-DARK_STYLESHEET = """
+from .utils.resources import resource_path
+
+
+def _stylesheet_resource_url(*parts: str) -> str:
+    return resource_path(*parts).as_posix().replace('"', '\\"')
+
+
+_SCROLLBAR_ARROW_UP = _stylesheet_resource_url("icons", "scrollbar-arrow-up.svg")
+_SCROLLBAR_ARROW_DOWN = _stylesheet_resource_url("icons", "scrollbar-arrow-down.svg")
+_SCROLLBAR_ARROW_LEFT = _stylesheet_resource_url("icons", "scrollbar-arrow-left.svg")
+_SCROLLBAR_ARROW_RIGHT = _stylesheet_resource_url("icons", "scrollbar-arrow-right.svg")
+
+
+DARK_STYLESHEET = (
+    """
 QWidget {
     background-color: #1e1f22;
     color: #e8e8e8;
@@ -96,36 +110,108 @@ QTabBar::tab:selected {
 
 QScrollBar:vertical {
     background: #1e1f22;
-    width: 12px;
-    margin: 0px;
+    width: 14px;
+    margin: 14px 0px 14px 0px;
 }
 
 QScrollBar:horizontal {
     background: #1e1f22;
-    height: 12px;
-    margin: 0px;
+    height: 14px;
+    margin: 0px 14px 0px 14px;
 }
 
 QScrollBar::handle:vertical {
-    background: #3d3f45;
-    border-radius: 6px;
+    background: #5f6368;
+    border: 3px solid #1e1f22;
+    border-radius: 7px;
     min-height: 36px;
 }
 
 QScrollBar::handle:horizontal {
-    background: #3d3f45;
-    border-radius: 6px;
+    background: #5f6368;
+    border: 3px solid #1e1f22;
+    border-radius: 7px;
     min-width: 36px;
 }
 
 QScrollBar::handle:hover {
-    background: #4d6bb3;
+    background: #8a9099;
+}
+
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    background: transparent;
+}
+
+QScrollBar::sub-line:vertical {
+    background: #1e1f22;
+    border: 0px;
+    height: 14px;
+    subcontrol-origin: margin;
+    subcontrol-position: top;
+}
+
+QScrollBar::add-line:vertical {
+    background: #1e1f22;
+    border: 0px;
+    height: 14px;
+    subcontrol-origin: margin;
+    subcontrol-position: bottom;
+}
+
+QScrollBar::sub-line:horizontal {
+    background: #1e1f22;
+    border: 0px;
+    width: 14px;
+    subcontrol-origin: margin;
+    subcontrol-position: left;
+}
+
+QScrollBar::add-line:horizontal {
+    background: #1e1f22;
+    border: 0px;
+    width: 14px;
+    subcontrol-origin: margin;
+    subcontrol-position: right;
+}
+
+QScrollBar::sub-line:hover,
+QScrollBar::add-line:hover {
+    background: #2b2d30;
+}
+
+QScrollBar::up-arrow:vertical {
+    image: url("__SCROLLBAR_ARROW_UP__");
+    width: 10px;
+    height: 10px;
+}
+
+QScrollBar::down-arrow:vertical {
+    image: url("__SCROLLBAR_ARROW_DOWN__");
+    width: 10px;
+    height: 10px;
+}
+
+QScrollBar::left-arrow:horizontal {
+    image: url("__SCROLLBAR_ARROW_LEFT__");
+    width: 10px;
+    height: 10px;
+}
+
+QScrollBar::right-arrow:horizontal {
+    image: url("__SCROLLBAR_ARROW_RIGHT__");
+    width: 10px;
+    height: 10px;
 }
 
 QSplitter::handle {
     background: #1e1f22;
 }
-"""
+""".replace("__SCROLLBAR_ARROW_UP__", _SCROLLBAR_ARROW_UP)
+    .replace("__SCROLLBAR_ARROW_DOWN__", _SCROLLBAR_ARROW_DOWN)
+    .replace("__SCROLLBAR_ARROW_LEFT__", _SCROLLBAR_ARROW_LEFT)
+    .replace("__SCROLLBAR_ARROW_RIGHT__", _SCROLLBAR_ARROW_RIGHT)
+)
 
 
 def apply_dark_theme(app: QApplication) -> None:
