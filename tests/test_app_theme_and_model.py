@@ -18,6 +18,7 @@ from omnidesk.ui.media_file_system_model import (
     folder_preview_cache,
     folder_thumbnail_preview_edge,
     folder_thumbnail_rect,
+    pixmap_edge,
 )
 
 
@@ -200,7 +201,7 @@ def test_media_file_system_model_cache_loaded_branches(monkeypatch, tmp_path: Pa
     assert started == [key]
     assert key not in model._pending
 
-    image = QImage(10, 10, QImage.Format.Format_RGB32)
+    image = QImage(96, 96, QImage.Format.Format_RGB32)
     image.fill(0xFF00FF)
     token = model._new_token(key)
     model._visible_keys.add(key)
@@ -368,6 +369,15 @@ def test_folder_base_pixmap_normalizes_small_theme_icon_to_requested_edge() -> N
     assert not pixmap.isNull()
 
 
+def test_pixmap_edge_returns_longest_side() -> None:
+    assert pixmap_edge(QPixmap()) == 0
+
+    pixmap = QPixmap(48, 96)
+    pixmap.fill()
+
+    assert pixmap_edge(pixmap) == 96
+
+
 def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) -> None:
     model = MediaFileSystemModel()
     invalid_flags = model.flags(model.index(""))
@@ -394,6 +404,9 @@ class _FakeCache:
 
     def put_memory(self, key: str, icon: QIcon, pixmap: QPixmap) -> None:
         self.memory_puts.append((key, icon, pixmap))
+
+    def enforce_disk_budget(self) -> None:
+        pass
 
 
 def test_media_file_system_model_request_visible_loads_disk_cache(
@@ -513,6 +526,64 @@ def test_media_file_system_model_cache_loaded_dir_miss_restarts_folder_scan(
 
     assert restarted == [tmp_path]
     assert key not in model._pending
+
+
+def test_media_file_system_model_rejects_undersized_disk_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(160)
+    key = str(tmp_path / "image.png")
+    cache_path = tmp_path / "cache.png"
+    cache_path.write_bytes(b"stale")
+    fake_cache = _FakeCache(cache_path)
+    restarted: list[Path] = []
+    emitted: list[str] = []
+    monkeypatch.setattr(model, "_cache_for_info", lambda is_dir: fake_cache)
+    monkeypatch.setattr(
+        model, "_ensure_thumbnail", lambda path, suffix, key=None: restarted.append(path)
+    )
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", emitted.append)
+
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    image = QImage(96, 96, QImage.Format.Format_RGB32)
+    image.fill(0xFFFFFF)
+
+    model._handle_cache_loaded(key, token.generation, image, is_dir=False)
+
+    assert restarted == [Path(key)]
+    assert emitted == []
+    assert fake_cache.memory_puts == []
+    assert not cache_path.exists()
+
+
+def test_media_file_system_model_save_cache_async_uses_actual_edge_for_small_pixmap(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    hints: list[int | None] = []
+
+    class FakeCache:
+        def disk_path(self, _key: str, *, hint_edge: int | None = None) -> Path:
+            hints.append(hint_edge)
+            return tmp_path / "cache.png"
+
+        def enforce_disk_budget(self) -> None:
+            pass
+
+    pixmap = QPixmap(96, 96)
+    pixmap.fill()
+    started: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", started.append)
+
+    model._save_cache_async(FakeCache(), "key", pixmap, hint_edge=160)
+
+    assert hints == [96]
+    assert len(started) == 1
 
 
 def test_media_file_system_model_save_cache_async_ignores_null_pixmap(monkeypatch) -> None:

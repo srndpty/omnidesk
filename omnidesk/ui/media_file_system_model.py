@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from contextlib import suppress
 from pathlib import Path
 
 from PyQt6.QtCore import QMimeData, QModelIndex, QSize, Qt, QThreadPool
@@ -54,6 +55,13 @@ def folder_base_pixmap(base_icon: QIcon, edge: int) -> QPixmap:
     painter.drawPixmap(x, y, scaled)
     painter.end()
     return canvas
+
+
+def pixmap_edge(pixmap: QPixmap) -> int:
+    """Return the longest side of a pixmap, or 0 for null pixmaps."""
+    if pixmap.isNull():
+        return 0
+    return max(pixmap.width(), pixmap.height())
 
 
 class MediaFileSystemModel(QFileSystemModel):
@@ -347,10 +355,21 @@ class MediaFileSystemModel(QFileSystemModel):
                 self._ensure_thumbnail(path, path.suffix.lower(), key)
             return
         pixmap = QPixmap.fromImage(qimage)
+        loaded_edge = pixmap_edge(pixmap)
+        if loaded_edge < request_edge:
+            self._debug("cache-undersized", key, f"{loaded_edge}<{request_edge}")
+            with suppress(OSError):
+                self._cache_for_info(is_dir).disk_path(key, hint_edge=request_edge).unlink()
+            path = Path(key)
+            if is_dir:
+                self._ensure_folder_thumbnail(path)
+            else:
+                self._ensure_thumbnail(path, path.suffix.lower(), key)
+            return
         icon = QIcon(pixmap)
         self._cache_for_info(is_dir).put_memory(key, icon, pixmap)
         self._debug("cache-ready", key)
-        self._request_current_edge_if_needed(key, Path(key), is_dir, request_edge)
+        self._request_current_edge_if_needed(key, Path(key), is_dir, loaded_edge)
         self._emit_thumbnail_changed(key)
 
     def _handle_thumbnail_ready(self, path: str, icon: QIcon | None, generation: int) -> None:
@@ -444,6 +463,10 @@ class MediaFileSystemModel(QFileSystemModel):
         if image.isNull():
             return
         edge = hint_edge if hint_edge is not None else self._thumbnail_edge
+        actual_edge = pixmap_edge(pixmap)
+        if actual_edge < edge:
+            self._debug("cache-save-undersized", key, f"{actual_edge}<{edge}")
+            edge = actual_edge
         self._scan_pool.start(
             CacheSaveJob(
                 cache.disk_path(key, hint_edge=edge),
