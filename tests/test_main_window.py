@@ -280,7 +280,8 @@ def test_main_window_close_cancels_background_work_before_bounded_wait(
 
     window.close()
 
-    assert "cancel" in window._tab_container.calls
+    tab_container = cast(FakeTabContainer, window._tab_container)
+    assert "cancel" in tab_container.calls
     assert waits == [3000]
     assert saved
 
