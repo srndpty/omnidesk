@@ -886,6 +886,50 @@ def test_file_browser_tab_external_drop_performs_operation_and_refreshes(
     assert refreshed == [True]
 
 
+def test_file_browser_tab_external_drop_into_subfolder_invalidates_target_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.txt"
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: [])
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(tab, "refresh", lambda: None)
+
+    tab._handle_external_drop([source], dest, move=False)
+
+    assert invalidated == [dest]
+
+
+def test_file_browser_tab_external_move_invalidates_source_and_target_previews(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source_parent = tmp_path / "source-parent"
+    dest = tmp_path / "dest"
+    source_parent.mkdir()
+    dest.mkdir()
+    source = source_parent / "source.txt"
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: [])
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(tab, "refresh", lambda: None)
+
+    tab._handle_external_drop([source], dest, move=True)
+
+    assert invalidated == [dest, source_parent]
+
+
 def test_file_browser_tab_rename_selected_success(monkeypatch, qtbot, tmp_path: Path) -> None:
     original = tmp_path / "old.txt"
     original.write_text("old", encoding="utf-8")
