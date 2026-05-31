@@ -384,6 +384,24 @@ def test_file_browser_tab_leaving_changed_directory_for_sibling_invalidates_prev
     assert invalidated == [first]
 
 
+def test_file_browser_tab_navigate_to_same_path_keeps_local_change_flag(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    tab._mark_current_directory_changed()
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+
+    tab.navigate_to(tmp_path)
+
+    assert tab._current_directory_has_local_changes
+    assert invalidated == []
+
+
 def test_file_browser_tab_failed_history_navigation_keeps_stacks(
     monkeypatch,
     qtbot,

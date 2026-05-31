@@ -556,6 +556,8 @@ class MediaFileSystemModel(QFileSystemModel):
         with self._cache_save_lock:
             if self._cache_save_generations.get(save_key) != generation:
                 return False
+            # Keep replace under the generation lock so invalidation cannot
+            # interleave between the final generation check and disk commit.
             temp_path.replace(cache_path)
             return True
 

@@ -13,7 +13,6 @@ from omnidesk.ui.file_browser_media_mode import (
 from omnidesk.ui.file_browser_navigation import (
     directory_fingerprint,
     directory_fingerprint_changed,
-    is_parent_navigation,
     navigation_history_step,
     navigation_target,
     path_to_focus_after_go_up,
@@ -53,7 +52,7 @@ def test_navigation_path_comparison_uses_resolved_paths(tmp_path: Path) -> None:
     current.mkdir()
 
     assert same_navigation_path(current, current / ".." / "current")
-    assert is_parent_navigation(current, current / "..")
+    assert same_navigation_path(tmp_path, current / "..")
 
 
 def test_directory_fingerprint_detects_directory_metadata_change(tmp_path: Path) -> None:

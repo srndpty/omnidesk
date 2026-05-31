@@ -39,16 +39,11 @@ def same_navigation_path(left: Path, right: Path) -> bool:
             str(right.resolve(strict=False))
         )
     except OSError:
-        return os.path.normcase(str(left)) == os.path.normcase(str(right))
-
-
-def is_parent_navigation(current: Path, destination: Path) -> bool:
-    """Return whether destination is the parent directory of current."""
-    return same_navigation_path(destination, current.parent)
+        return os.path.normcase(str(left.absolute())) == os.path.normcase(str(right.absolute()))
 
 
 def directory_fingerprint(path: Path) -> DirectoryFingerprint | None:
-    """Return a lightweight directory change fingerprint."""
+    """Return a lightweight best-effort directory change fingerprint."""
     try:
         stat_result = path.stat()
     except OSError:
