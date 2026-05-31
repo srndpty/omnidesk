@@ -196,7 +196,7 @@ def validate_copy_or_move(src: Path, dest_dir: Path, *, move: bool) -> str | Non
         logger.debug("Could not resolve copy/move safety paths", exc_info=True)
         return f"{src}: {exc}"
 
-    if _same_path(src_resolved, target_resolved):
+    if move and _same_path(src_resolved, target_resolved):
         return f"Source and destination are the same: {src}"
 
     if src.is_dir() and _is_relative_to_path(dest_resolved, src_resolved):

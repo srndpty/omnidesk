@@ -152,6 +152,18 @@ def test_copy_or_move_result_reports_changed_dirs_for_partial_success(tmp_path: 
     assert (dest / copied.name).read_text(encoding="utf-8") == "copied"
 
 
+def test_copy_file_into_same_directory_uses_conflict_safe_copy_name(tmp_path: Path) -> None:
+    source = tmp_path / "copied.txt"
+    source.write_text("copied", encoding="utf-8")
+
+    result = perform_copy_or_move_with_result([source], tmp_path, move=False)
+
+    assert result.errors == []
+    assert result.changed_dirs == [tmp_path]
+    assert source.read_text(encoding="utf-8") == "copied"
+    assert (tmp_path / "copied - Copy 1.txt").read_text(encoding="utf-8") == "copied"
+
+
 def test_copy_directory_into_own_descendant_is_refused(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -201,13 +213,13 @@ def test_execute_file_operation_rejects_unknown_mode(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="case-insensitive path behavior is Windows-specific")
-def test_validate_copy_or_move_detects_same_target_with_case_difference(
+def test_validate_copy_or_move_detects_same_move_target_with_case_difference(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "Source.txt"
     source.write_text("source", encoding="utf-8")
 
-    error = validate_copy_or_move(source.with_name("SOURCE.txt"), tmp_path, move=False)
+    error = validate_copy_or_move(source.with_name("SOURCE.txt"), tmp_path, move=True)
 
     assert error is not None
     assert "Source and destination are the same" in error
