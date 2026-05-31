@@ -141,6 +141,25 @@ def test_persistent_cache_discards_single_disk_entry(tmp_path: Path) -> None:
     assert not cache.disk_path(str(key_path), hint_edge=160).exists()
 
 
+def test_persistent_cache_discards_all_known_and_hint_edge_entries(tmp_path: Path) -> None:
+    cache = PersistentThumbnailCache[str](capacity=1, namespace="folders", root=tmp_path)
+    key_path = tmp_path / "folder"
+    key_path.mkdir()
+    pixmap = _pixmap(96)
+    icon = QIcon(pixmap)
+
+    cache.put(str(key_path), icon, pixmap, hint_edge=96)
+    cache.put(str(key_path), icon, pixmap, hint_edge=160)
+    extra_path = cache.disk_path(str(key_path), hint_edge=192)
+    extra_path.write_bytes(b"extra")
+
+    cache.discard_disk_all_sizes(str(key_path), hint_edges={96, 160})
+
+    assert not cache.disk_path(str(key_path), hint_edge=96).exists()
+    assert not cache.disk_path(str(key_path), hint_edge=160).exists()
+    assert not extra_path.exists()
+
+
 def test_thumbnail_cache_get_sized_ignores_null_pixmap() -> None:
     cache = ThumbnailCache[str]()
     icon = QIcon()

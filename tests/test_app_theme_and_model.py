@@ -427,6 +427,7 @@ class _FakeCache:
         self.memory_puts: list[tuple[str, QIcon, QPixmap]] = []
         self.memory_discards: list[str] = []
         self.disk_discards: list[tuple[str, int | None]] = []
+        self.all_disk_discards: list[tuple[str, set[int]]] = []
 
     def get_memory(self, _key: str, *, min_edge: int | None = None) -> QIcon | None:
         return self._memory_icon
@@ -442,6 +443,10 @@ class _FakeCache:
 
     def discard_disk(self, key: str, *, hint_edge: int | None = None) -> None:
         self.disk_discards.append((key, hint_edge))
+
+    def discard_disk_all_sizes(self, key: str, *, hint_edges=()) -> None:
+        self.all_disk_discards.append((key, set(hint_edges)))
+        self._disk_path.unlink(missing_ok=True)
 
     def enforce_disk_budget(self) -> None:
         pass
@@ -529,7 +534,7 @@ def test_media_file_system_model_invalidate_folder_thumbnail_preview_clears_stat
     assert key not in model._failed
     assert key not in model._folder_scans
     assert fake_cache.memory_discards == [key]
-    assert fake_cache.disk_discards == [(key, 160)]
+    assert fake_cache.all_disk_discards == [(key, {96, 160})]
     assert emitted == [key]
 
 

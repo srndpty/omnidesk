@@ -107,6 +107,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         self._root.mkdir(parents=True, exist_ok=True)
         self._disk_max_items = max(1, disk_max_items)
         self._disk_max_bytes = max(1, disk_max_bytes)
+        self._disk_edges: dict[Key, set[int]] = {}
 
     # ---------- ディスクキー生成 ----------
     def _disk_key(self, key: Key, *, hint_edge: int | None = None) -> Path:
@@ -128,8 +129,16 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         name = _stable_hash(material) + ".png"
         return self._root / name
 
+    @staticmethod
+    def _disk_edge(hint_edge: int | None = None) -> int:
+        return max(0, hint_edge or 0)
+
+    def _remember_disk_edge(self, key: Key, *, hint_edge: int | None = None) -> None:
+        self._disk_edges.setdefault(key, set()).add(self._disk_edge(hint_edge))
+
     def disk_path(self, key: Key, *, hint_edge: int | None = None) -> Path:
         """Return the PNG cache path for this key without loading it."""
+        self._remember_disk_edge(key, hint_edge=hint_edge)
         return self._disk_key(key, hint_edge=hint_edge)
 
     def get_memory(self, key: Key, *, min_edge: int | None = None) -> QIcon | None:
@@ -141,8 +150,27 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         ThumbnailCache.put(self, key, icon, pixmap)
 
     def discard_disk(self, key: Key, *, hint_edge: int | None = None) -> None:
+        edge = self._disk_edge(hint_edge)
         with suppress(OSError):
             self._disk_key(key, hint_edge=hint_edge).unlink(missing_ok=True)
+        edges = self._disk_edges.get(key)
+        if edges is not None:
+            edges.discard(edge)
+            if not edges:
+                self._disk_edges.pop(key, None)
+
+    def discard_disk_all_sizes(
+        self,
+        key: Key,
+        *,
+        hint_edges: set[int] | frozenset[int] | tuple[int, ...] = (),
+    ) -> None:
+        edges = set(self._disk_edges.get(key, set()))
+        edges.update(max(0, edge) for edge in hint_edges)
+        for edge in edges:
+            with suppress(OSError):
+                self._disk_key(key, hint_edge=edge).unlink(missing_ok=True)
+        self._disk_edges.pop(key, None)
 
     def enforce_disk_budget(self) -> None:
         self._enforce_disk_budget()
@@ -155,6 +183,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
 
         # ディスクから復元
         path = self._disk_key(key, hint_edge=hint_edge)
+        self._remember_disk_edge(key, hint_edge=hint_edge)
         if path.exists():
             # print(f"[ThumbnailCache] load from disk: {path}", flush=True)
             px = QPixmap()
@@ -185,6 +214,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
 
         # ディスクに保存（原子的に）
         dst = self._disk_key(key, hint_edge=hint_edge)
+        self._remember_disk_edge(key, hint_edge=hint_edge)
         try:
             saver = QSaveFile(str(dst))
             saver.open(QSaveFile.OpenModeFlag.WriteOnly)

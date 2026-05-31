@@ -18,6 +18,7 @@ from .media_icon_provider import MediaThumbnailProvider
 from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
 
 logger = logging.getLogger(__name__)
+FOLDER_PREVIEW_DISK_EDGES = frozenset({96, 160})
 
 
 def folder_thumbnail_rect(base_size: QSize, thumb_size: QSize, edge: int) -> tuple[int, int]:
@@ -292,7 +293,10 @@ class MediaFileSystemModel(QFileSystemModel):
         self._failed.discard(key)
         self._invalidate_cache_saves(folder_preview_cache, key)
         folder_preview_cache.discard_memory(key)
-        folder_preview_cache.discard_disk(key, hint_edge=self._thumbnail_edge)
+        folder_preview_cache.discard_disk_all_sizes(
+            key,
+            hint_edges=FOLDER_PREVIEW_DISK_EDGES | {self._thumbnail_edge},
+        )
         self._emit_thumbnail_changed(key)
 
     def _handle_folder_scan_result(
