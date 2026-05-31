@@ -369,6 +369,25 @@ def test_file_browser_tab_tile_delegate_keeps_generated_thumbnail_height(qtbot) 
     assert text_rect.y() > icon_rect.bottom()
 
 
+def test_file_browser_tab_tile_delegate_keeps_generated_thumbnail_height_when_selected(
+    qtbot,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    thumbnail = QPixmap(160, 160)
+    thumbnail.fill()
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 166, 110)
+    option.decorationSize = QSize(160, 160)
+    option.icon = QIcon(thumbnail)
+    option.fontMetrics = tab._tile_view.fontMetrics()
+
+    icon_size = delegate._stable_thumbnail_icon_size(option, QIcon.Mode.Selected)
+
+    assert icon_size == QSize(160, 160)
+
+
 def test_file_browser_tab_tile_delegate_keeps_default_folder_icon_clipped(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)

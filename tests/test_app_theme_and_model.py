@@ -13,6 +13,7 @@ from omnidesk.theme import DARK_STYLESHEET, apply_dark_theme
 from omnidesk.ui.icons import application_icon
 from omnidesk.ui.media_file_system_model import (
     MediaFileSystemModel,
+    cache_pixmap_for_edge,
     file_thumbnail_cache,
     folder_base_pixmap,
     folder_preview_cache,
@@ -378,6 +379,18 @@ def test_pixmap_edge_returns_longest_side() -> None:
     assert pixmap_edge(pixmap) == 96
 
 
+def test_cache_pixmap_for_edge_centers_small_pixmap() -> None:
+    pixmap = QPixmap(48, 96)
+    pixmap.fill(Qt.GlobalColor.red)
+
+    normalized = cache_pixmap_for_edge(pixmap, 160)
+
+    assert normalized.size() == QSize(160, 160)
+    image = normalized.toImage()
+    assert image.pixelColor(80, 80) == Qt.GlobalColor.red
+    assert image.pixelColor(0, 0).alpha() == 0
+
+
 def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) -> None:
     model = MediaFileSystemModel()
     invalid_flags = model.flags(model.index(""))
@@ -560,7 +573,7 @@ def test_media_file_system_model_rejects_undersized_disk_cache(
     assert not cache_path.exists()
 
 
-def test_media_file_system_model_save_cache_async_uses_actual_edge_for_small_pixmap(
+def test_media_file_system_model_save_cache_async_uses_requested_edge_for_small_pixmap(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -582,7 +595,7 @@ def test_media_file_system_model_save_cache_async_uses_actual_edge_for_small_pix
 
     model._save_cache_async(FakeCache(), "key", pixmap, hint_edge=160)
 
-    assert hints == [96]
+    assert hints == [160]
     assert len(started) == 1
 
 

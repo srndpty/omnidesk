@@ -717,14 +717,19 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
     def _stable_thumbnail_icon_size(
         option: QStyleOptionViewItem, icon_mode: QIcon.Mode
     ) -> QSize | None:
-        # QListView can shrink option.rect after jumping to the bottom while
-        # keeping decorationSize at 160. Preserve generated thumbnail icons, but
-        # leave platform folder icons clipped to the provided item rect.
+        # QListView can transiently shrink option.rect after jumping to the
+        # bottom while keeping decorationSize at 160. For generated thumbnails
+        # we intentionally keep the decoration height so they are not repainted
+        # smaller. Platform folder icons stay clipped to the item rect because
+        # they may not have a generated 160px pixmap.
         decoration = option.decorationSize
         if decoration.isEmpty() or option.rect.height() >= decoration.height():
             return None
         available = option.icon.availableSizes(icon_mode, QIcon.State.Off)
         if decoration in available:
+            return decoration
+        normal_available = option.icon.availableSizes(QIcon.Mode.Normal, QIcon.State.Off)
+        if decoration in normal_available:
             return decoration
         return None
 

@@ -64,6 +64,21 @@ def pixmap_edge(pixmap: QPixmap) -> int:
     return max(pixmap.width(), pixmap.height())
 
 
+def cache_pixmap_for_edge(pixmap: QPixmap, edge: int) -> QPixmap:
+    """Return a cache pixmap whose outer edge matches the requested cache edge."""
+    if pixmap.isNull() or edge <= 0 or pixmap_edge(pixmap) >= edge:
+        return pixmap
+
+    canvas = QPixmap(edge, edge)
+    canvas.fill(Qt.GlobalColor.transparent)
+    x = (edge - pixmap.width()) // 2
+    y = (edge - pixmap.height()) // 2
+    painter = QPainter(canvas)
+    painter.drawPixmap(x, y, pixmap)
+    painter.end()
+    return canvas
+
+
 class MediaFileSystemModel(QFileSystemModel):
     """Extends QFileSystemModel to provide cached media thumbnails."""
 
@@ -431,6 +446,8 @@ class MediaFileSystemModel(QFileSystemModel):
             # --- 通常のファイルの処理 (変更なし) ---
             # QIconから元になったPixmapを取得して渡す
             pixmap = icon.pixmap(QSize(request_edge, request_edge))
+            pixmap = cache_pixmap_for_edge(pixmap, request_edge)
+            icon = QIcon(pixmap)
             file_thumbnail_cache.put_memory(key, icon, pixmap)
             self._save_cache_async(file_thumbnail_cache, key, pixmap, hint_edge=request_edge)
 
@@ -463,14 +480,11 @@ class MediaFileSystemModel(QFileSystemModel):
         if image.isNull():
             return
         edge = hint_edge if hint_edge is not None else self._thumbnail_edge
-        actual_edge = pixmap_edge(pixmap)
-        if actual_edge < edge:
-            self._debug("cache-save-undersized", key, f"{actual_edge}<{edge}")
-            edge = actual_edge
+        pixmap = cache_pixmap_for_edge(pixmap, edge)
         self._scan_pool.start(
             CacheSaveJob(
                 cache.disk_path(key, hint_edge=edge),
-                image,
+                pixmap.toImage(),
                 cache.enforce_disk_budget,
             )
         )
