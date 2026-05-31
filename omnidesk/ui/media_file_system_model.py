@@ -282,6 +282,15 @@ class MediaFileSystemModel(QFileSystemModel):
         self._folder_scans[key] = job
         self._scan_pool.start(job)
 
+    def invalidate_folder_thumbnail_preview(self, path: Path) -> None:
+        """Drop cached folder preview so the next visible request re-scans it."""
+        key = self._normalise_key(path)
+        self._cancel_thumbnail_key(key)
+        self._failed.discard(key)
+        folder_preview_cache.discard_memory(key)
+        folder_preview_cache.discard_disk(key, hint_edge=self._thumbnail_edge)
+        self._emit_thumbnail_changed(key)
+
     def _handle_folder_scan_result(
         self, key: str, generation: int, image_path: Path | None
     ) -> None:

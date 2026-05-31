@@ -69,6 +69,9 @@ class ThumbnailCache(Generic[Key]):
         while len(self._store) > self._capacity:
             self._store.popitem(last=False)
 
+    def discard_memory(self, key: Key) -> None:
+        self._store.pop(key, None)
+
     def get_or_create(self, key: Key, factory: Callable[[], QIcon | None]) -> QIcon | None:
         icon = self.get(key)
         if icon is not None:
@@ -136,6 +139,10 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
     def put_memory(self, key: Key, icon: QIcon, pixmap: QPixmap) -> None:
         """Store an icon in memory without writing the disk cache."""
         ThumbnailCache.put(self, key, icon, pixmap)
+
+    def discard_disk(self, key: Key, *, hint_edge: int | None = None) -> None:
+        with suppress(OSError):
+            self._disk_key(key, hint_edge=hint_edge).unlink(missing_ok=True)
 
     def enforce_disk_budget(self) -> None:
         self._enforce_disk_budget()

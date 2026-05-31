@@ -1396,6 +1396,8 @@ class FileBrowserTab(QWidget):
 
         current = self._current_path
         target = navigation_target(path)
+        if self._has_loaded_root and target == current.parent:
+            self._model.invalidate_folder_thumbnail_preview(current)
         if self._has_loaded_root and should_record_history(
             current, target, from_history=from_history
         ):

@@ -131,6 +131,29 @@ def test_file_browser_tab_go_up_selects_previous_folder(monkeypatch, qtbot, tmp_
     assert selected == [(child, QAbstractItemView.ScrollHint.PositionAtCenter)]
 
 
+def test_file_browser_tab_go_up_invalidates_folder_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(child)
+    monkeypatch.setattr(
+        tab._model,
+        "invalidate_folder_thumbnail_preview",
+        invalidated.append,
+    )
+
+    tab.go_up()
+
+    assert invalidated == [child]
+
+
 def test_file_browser_tab_navigation_buttons_use_modern_arrow_text(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
@@ -218,6 +241,30 @@ def test_file_browser_tab_go_back_selects_folder_left_behind(
     assert tab.current_path() == parent
     qtbot.waitUntil(lambda: bool(selected), timeout=1000)
     assert selected == [(child, QAbstractItemView.ScrollHint.PositionAtCenter)]
+
+
+def test_file_browser_tab_go_back_to_parent_invalidates_folder_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(parent)
+    tab.navigate_to(child)
+    monkeypatch.setattr(
+        tab._model,
+        "invalidate_folder_thumbnail_preview",
+        invalidated.append,
+    )
+
+    tab.go_back()
+
+    assert invalidated == [child]
 
 
 def test_file_browser_tab_failed_history_navigation_keeps_stacks(
