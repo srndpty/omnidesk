@@ -67,6 +67,42 @@ class _MouseReleaseStub:
         self.accepted = True
 
 
+class _DropStub:
+    def __init__(
+        self,
+        mime_data: QMimeData,
+        *,
+        drop_action: Qt.DropAction = Qt.DropAction.MoveAction,
+        modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
+    ) -> None:
+        self._mime_data = mime_data
+        self._drop_action = drop_action
+        self._modifiers = modifiers
+        self.accepted = False
+        self.ignored = False
+
+    def mimeData(self) -> QMimeData:  # noqa: N802
+        return self._mime_data
+
+    def position(self) -> QPointF:
+        return QPointF(1, 1)
+
+    def dropAction(self) -> Qt.DropAction:  # noqa: N802
+        return self._drop_action
+
+    def modifiers(self) -> Qt.KeyboardModifier:
+        return self._modifiers
+
+    def setDropAction(self, action: Qt.DropAction) -> None:  # noqa: N802
+        self._drop_action = action
+
+    def accept(self) -> None:
+        self.accepted = True
+
+    def ignore(self) -> None:
+        self.ignored = True
+
+
 def test_file_browser_tab_initializes_and_navigates(qtbot, tmp_path: Path) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
@@ -1386,6 +1422,41 @@ def test_file_view_event_accepts_url_drag_enter(qtbot, tmp_path: Path) -> None:
     assert view.event(enter_event)
     assert enter_event.isAccepted()
     assert enter_event.dropAction() == Qt.DropAction.MoveAction
+
+
+def test_file_view_drop_uses_controller_path_when_model_drop_is_rejected(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(source))])
+    event = _DropStub(mime)
+    calls: list[tuple[list[Path], Path, bool]] = []
+    monkeypatch.setattr(tab._tile_view, "indexAt", lambda _point: QModelIndex())
+    monkeypatch.setattr(
+        tab,
+        "_handle_external_drop",
+        lambda paths, target_dir, move: calls.append((paths, target_dir, move)) or True,
+    )
+
+    assert not tab._model.canDropMimeData(
+        mime,
+        Qt.DropAction.MoveAction,
+        0,
+        0,
+        QModelIndex(),
+    )
+    assert tab._tile_view._handle_drop_event(event)
+
+    assert calls == [([source], tmp_path, True)]
+    assert event.accepted
+    assert event.dropAction() == Qt.DropAction.MoveAction
 
 
 def test_file_view_drag_paths_falls_back_to_drag_start_path(

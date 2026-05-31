@@ -206,19 +206,30 @@ def validate_copy_or_move(src: Path, dest_dir: Path, *, move: bool) -> str | Non
 
 
 def _same_path(left: Path, right: Path) -> bool:
-    return os.path.normcase(str(left)) == os.path.normcase(str(right))
+    return _normalise_path_text(left) == _normalise_path_text(right)
 
 
 def _is_relative_to_path(path: Path, parent: Path) -> bool:
-    path_text = os.path.normcase(str(path))
-    parent_text = os.path.normcase(str(parent))
-    if path_text == parent_text:
-        return True
     try:
         path.relative_to(parent)
         return True
     except ValueError:
-        return path_text.startswith(parent_text.rstrip("\\/") + os.sep)
+        path_text = _normalise_path_text(path)
+        parent_text = _normalise_path_text(parent)
+        return path_text == parent_text or path_text.startswith(
+            parent_text + _path_text_separator()
+        )
+
+
+def _normalise_path_text(path: Path) -> str:
+    separator = _path_text_separator()
+    return (
+        os.path.normcase(str(path)).replace("/", separator).replace("\\", separator).rstrip("\\/")
+    )
+
+
+def _path_text_separator() -> str:
+    return "\\" if os.name == "nt" else os.sep
 
 
 def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:

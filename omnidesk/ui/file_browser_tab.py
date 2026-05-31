@@ -1561,7 +1561,7 @@ class FileBrowserTab(QWidget):
         self._file_operation_jobs.clear()
 
     def cancel_background_work(self) -> None:
-        """Backward-compatible shutdown cancellation entrypoint."""
+        """Deprecated: shutdown-only cancellation. Do not use for tab deactivation."""
         self.cancel_all_work_for_shutdown()
 
     def _on_layout_changed(self) -> None:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from pytest_mock import MockerFixture
 
 from omnidesk.ui.file_operations import (
@@ -198,6 +200,7 @@ def test_execute_file_operation_rejects_unknown_mode(tmp_path: Path) -> None:
     assert result.errors == ["Unsupported file operation mode: archive"]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="case-insensitive path behavior is Windows-specific")
 def test_validate_copy_or_move_detects_same_target_with_case_difference(
     tmp_path: Path,
 ) -> None:
