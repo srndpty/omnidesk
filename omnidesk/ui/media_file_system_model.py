@@ -157,6 +157,9 @@ class MediaFileSystemModel(QFileSystemModel):
         self._request_edges[key] = self._thumbnail_edge
         return token
 
+    def _bump_thumbnail_generation(self, key: str) -> None:
+        self._generations[key] = self._generations.get(key, 0) + 1
+
     def _is_current_request(self, key: str, generation: int) -> bool:
         return key in self._visible_keys and self._generations.get(key) == generation
 
@@ -290,6 +293,7 @@ class MediaFileSystemModel(QFileSystemModel):
         """Drop cached folder preview so the next visible request re-scans it."""
         key = self._normalise_key(path)
         self._cancel_thumbnail_key(key)
+        self._bump_thumbnail_generation(key)
         self._failed.discard(key)
         self._invalidate_cache_saves(folder_preview_cache, key)
         folder_preview_cache.discard_memory(key)

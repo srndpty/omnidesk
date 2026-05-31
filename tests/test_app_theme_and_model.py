@@ -522,6 +522,7 @@ def test_media_file_system_model_invalidate_folder_thumbnail_preview_clears_stat
     monkeypatch.setattr(model, "_emit_thumbnail_changed", emitted.append)
 
     token = model._new_token(key)
+    generation = token.generation
     model._pending.add(key)
     model._failed.add(key)
     model._folder_scans[key] = cast(model_module.FolderScanJob, object())
@@ -529,12 +530,32 @@ def test_media_file_system_model_invalidate_folder_thumbnail_preview_clears_stat
     model.invalidate_folder_thumbnail_preview(tmp_path)
 
     assert token.cancelled
+    assert model._generations[key] == generation + 1
     assert cancelled == [key]
     assert key not in model._pending
     assert key not in model._failed
     assert key not in model._folder_scans
     assert fake_cache.memory_discards == [key]
     assert fake_cache.all_disk_discards == [(key, {96, 160})]
+    assert emitted == [key]
+
+
+def test_media_file_system_model_invalidate_folder_preview_rejects_late_thumbnail_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    key = model._normalise_key(tmp_path)
+    emitted: list[str] = []
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", emitted.append)
+
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+
+    model.invalidate_folder_thumbnail_preview(tmp_path)
+    model._handle_thumbnail_ready(key, None, token.generation)
+
     assert emitted == [key]
 
 
