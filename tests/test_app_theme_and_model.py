@@ -546,18 +546,41 @@ def test_media_file_system_model_invalidate_folder_preview_rejects_pending_save(
     model.set_thumbnail_edge(160)
     key = model._normalise_key(tmp_path)
     fake_cache = _FakeCache(tmp_path / "cache.png")
-    started: list[object] = []
     monkeypatch.setattr(model_module, "folder_preview_cache", fake_cache)
-    monkeypatch.setattr(model._scan_pool, "start", started.append)
     monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda _key: None)
+    save_key = model._cache_save_key(fake_cache, key, 160)
+    generation = model._next_cache_save_generation(save_key)
+    temp_path = tmp_path / "stale.tmp"
+    temp_path.write_text("stale", encoding="utf-8")
 
-    pixmap = QPixmap(160, 160)
-    pixmap.fill()
-    model._save_cache_async(fake_cache, key, pixmap, hint_edge=160)
     model.invalidate_folder_thumbnail_preview(tmp_path)
-    cast(model_module.CacheSaveJob, started[0]).run()
 
+    assert not model._commit_cache_save(save_key, generation, temp_path, fake_cache._disk_path)
     assert not fake_cache._disk_path.exists()
+
+
+def test_media_file_system_model_cache_save_generation_is_not_reused(tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    fake_cache = _FakeCache(tmp_path / "cache.png")
+    save_key = model._cache_save_key(fake_cache, "folder-key", 160)
+    cache_path = tmp_path / "cache.png"
+    old_temp = tmp_path / "old.tmp"
+    newer_temp = tmp_path / "newer.tmp"
+    newest_temp = tmp_path / "newest.tmp"
+
+    first_generation = model._next_cache_save_generation(save_key)
+    second_generation = model._next_cache_save_generation(save_key)
+    old_temp.write_text("old", encoding="utf-8")
+    newer_temp.write_text("newer", encoding="utf-8")
+
+    assert model._commit_cache_save(save_key, second_generation, newer_temp, cache_path)
+    third_generation = model._next_cache_save_generation(save_key)
+    newest_temp.write_text("newest", encoding="utf-8")
+
+    assert third_generation == 3
+    assert not model._commit_cache_save(save_key, first_generation, old_temp, cache_path)
+    assert model._commit_cache_save(save_key, third_generation, newest_temp, cache_path)
+    assert cache_path.read_text(encoding="utf-8") == "newest"
 
 
 def test_media_file_system_model_ensure_thumbnail_skips_memory_pending_failed(

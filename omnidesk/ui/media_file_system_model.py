@@ -553,7 +553,6 @@ class MediaFileSystemModel(QFileSystemModel):
             if self._cache_save_generations.get(save_key) != generation:
                 return False
             temp_path.replace(cache_path)
-            self._cache_save_generations.pop(save_key, None)
             return True
 
     def _emit_thumbnail_changed(self, key: str) -> None:
