@@ -107,8 +107,8 @@ class TabContainer(QWidget):
             "QTabBar::tab { font-size: 9pt; padding: 5px 3px 5px 2px; "
             "min-width: 4.3em; max-width: 220px; text-align: left; }"
         )
-        # (C) ホイールをタブバーで受ける（フォーカス不要でも届くように）
-        bar.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
+        # タブクリック後の矢印キー操作は、タブバーではなくファイル一覧へ向ける。
+        bar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         bar.installEventFilter(self)
 
         # ★★★ 再構築はここまで ★★★
@@ -201,6 +201,15 @@ class TabContainer(QWidget):
                     return True
 
             # ここに他の処理（中クリックでクローズ等）があれば続けてOK
+            elif event.type() == QEvent.Type.MouseButtonPress:
+                mouse = cast(QMouseEvent, event)
+                if (
+                    mouse.button() == Qt.MouseButton.LeftButton
+                    and tab_bar.tabAt(mouse.position().toPoint()) >= 0
+                ):
+                    self._focus_current_tab_later()
+                return False
+
             elif event.type() == QEvent.Type.MouseButtonRelease:
                 mouse = cast(QMouseEvent, event)
                 if mouse.button() == Qt.MouseButton.MiddleButton:
@@ -381,6 +390,9 @@ class TabContainer(QWidget):
         if tab:
             tab.focus_view()
 
+    def _focus_current_tab_later(self) -> None:
+        QTimer.singleShot(0, self.focus_current)
+
     def navigate_current_to(self, path: Path) -> None:
         tab = self.current_tab()
         if tab:
@@ -509,6 +521,7 @@ class TabContainer(QWidget):
                 # 以前 _emit_current_path がやっていた処理もここで行う
                 self.currentPathChanged.emit(widget.current_path())
                 self.statusChanged.emit(widget.current_path(), widget.status_summary())
+                self._focus_current_tab_later()
             # それ以外のタブは deactivate する
             else:
                 widget.deactivate()
