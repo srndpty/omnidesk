@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 from contextlib import suppress
 from pathlib import Path
 from threading import Lock
@@ -14,6 +13,7 @@ from PyQt6.QtGui import QFileSystemModel, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import QFileIconProvider
 
 from ..utils.thumbnail_cache import file_thumbnail_cache, folder_preview_cache
+from .file_operations import perform_copy_or_move_with_result
 from .media_icon_provider import MediaThumbnailProvider
 from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
 
@@ -103,7 +103,6 @@ class MediaFileSystemModel(QFileSystemModel):
         self._request_edges: dict[str, int] = {}
         self._allow_folder_preview_for_visible_targets = True
         self.setReadOnly(False)
-        # ★★★ フォルダアイコン取得用のプロバイダを追加 ★★★
         self._icon_provider = QFileIconProvider()
         self._folder_scans: dict[str, FolderScanJob] = {}
         self._scan_pool = QThreadPool.globalInstance()
@@ -178,6 +177,14 @@ class MediaFileSystemModel(QFileSystemModel):
         for key in list(self._visible_keys):
             self._cancel_thumbnail_key(key)
         self._visible_keys.clear()
+
+    def cancel_background_work(self) -> None:
+        """Cancel thumbnail work owned by this model before shutdown or tab disposal."""
+        self.clear_visible_thumbnail_targets()
+        for key in list(self._tokens):
+            self._cancel_thumbnail_key(key)
+        self._folder_scans.clear()
+        self._cache_jobs.clear()
 
     def _cache_for_info(self, is_dir: bool):
         return folder_preview_cache if is_dir else file_thumbnail_cache
@@ -332,7 +339,6 @@ class MediaFileSystemModel(QFileSystemModel):
         self._failed.add(key)
         self._debug("folder-none", key)
 
-    # ★★★ 追加: ビューからサムネイル生成をリクエストするための新しいメソッド ★★★
     def prioritize_thumbnail_requests(self, indexes: list[QModelIndex]) -> None:
         """Given a list of visible indexes, request thumbnails for them."""
         self.set_visible_thumbnail_targets(indexes)
@@ -357,10 +363,8 @@ class MediaFileSystemModel(QFileSystemModel):
             return
 
         if norm_key in self._pending or norm_key in self._failed:
-            # print(f"[MediaFileSystemModel] skip existing job for {norm_key}", flush=True)
             return
         if suffix in self._provider.VIDEO_EXTENSIONS and not self._provider.video_supported:
-            # print(f"[MediaFileSystemModel] video not supported, marking failed: {norm_key}", flush=True)
             self._failed.add(norm_key)
             return
         token = self._tokens.get(norm_key) or self._new_token(norm_key)
@@ -371,7 +375,6 @@ class MediaFileSystemModel(QFileSystemModel):
             token=token,
         )
         if started:
-            # print(f"[MediaFileSystemModel] job started for {norm_key}", flush=True)
             self._pending.add(norm_key)
         else:
             logger.warning("Thumbnail job not started for %s", norm_key)
@@ -413,7 +416,6 @@ class MediaFileSystemModel(QFileSystemModel):
         self._emit_thumbnail_changed(key)
 
     def _handle_thumbnail_ready(self, path: str, icon: QIcon | None, generation: int) -> None:
-        # print(f"[MediaFileSystemModel] thumbnail ready for {path} icon={'Y' if icon else 'N'}", flush=True)
         key = self._normalise_key(path)
 
         if not self._is_current_request(key, generation):
@@ -424,33 +426,24 @@ class MediaFileSystemModel(QFileSystemModel):
         self._tokens.pop(key, None)
         request_edge = self._request_edges.pop(key, self._thumbnail_edge)
         if icon is None or icon.isNull():
-            # print(f"[MediaFileSystemModel] thumbnail failed for {key}", flush=True)
             self._failed.add(key)
             self._debug("failed", key)
             return
         self._failed.discard(key)
 
-        # ★★★ キーがフォルダかどうかで処理を分岐 ★★★
         target_path = Path(key)
         if target_path.is_dir():
-            # --- フォルダプレビューの合成処理 ---
-            # 1. ベースとなるフォルダアイコンを取得
-            # 1. 文字列のパス(key)から、対応するQModelIndexを取得する
             folder_index = self.index(key)
             if not folder_index.isValid():
-                return  # もしインデックスが無効なら、処理を中断
+                return
 
-            # 2. 取得したQModelIndexを使って、ファイル情報を取得する
             folder_info = self.fileInfo(folder_index)
             base_icon = self._icon_provider.icon(folder_info)
             base_pixmap = folder_base_pixmap(base_icon, request_edge)
 
-            # 2. サムネイル画像を取得
             thumb_pixmap = icon.pixmap(QSize(request_edge, request_edge))
 
-            # 3. Painterを使ってアイコンを合成
             painter = QPainter(base_pixmap)
-            # 中央に描画
             target_size = folder_thumbnail_preview_edge(request_edge)
             scaled_thumb = thumb_pixmap.scaled(
                 target_size,
@@ -463,13 +456,10 @@ class MediaFileSystemModel(QFileSystemModel):
             painter.drawPixmap(x, y, scaled_thumb)
             painter.end()
 
-            # 4. 合成したPixmapから新しいQIconを作成してキャッシュ
             final_icon = QIcon(base_pixmap)
             folder_preview_cache.put_memory(key, final_icon, base_pixmap)
             self._save_cache_async(folder_preview_cache, key, base_pixmap, hint_edge=request_edge)
         else:
-            # --- 通常のファイルの処理 (変更なし) ---
-            # QIconから元になったPixmapを取得して渡す
             pixmap = icon.pixmap(QSize(request_edge, request_edge))
             pixmap = cache_pixmap_for_edge(pixmap, request_edge)
             icon = QIcon(pixmap)
@@ -606,7 +596,7 @@ class MediaFileSystemModel(QFileSystemModel):
     def dropMimeData(
         self, data: QMimeData, action: Qt.DropAction, row: int, column: int, parent: QModelIndex
     ) -> bool:
-        """ドラッグ＆ドロップによるファイル移動を処理"""
+        """Handle model-level file drops with action-correct copy/move semantics."""
         if action == Qt.DropAction.IgnoreAction:
             logger.debug("drop ignored")
             return True
@@ -624,22 +614,27 @@ class MediaFileSystemModel(QFileSystemModel):
             logger.warning("drop target directory does not exist: %s", dest_dir)
             return False
 
-        moved = False
-        for url in data.urls():
-            src_path = Path(url.toLocalFile())
-            if not src_path.exists():
-                continue
+        if action not in (
+            Qt.DropAction.CopyAction,
+            Qt.DropAction.MoveAction,
+            Qt.DropAction.TargetMoveAction,
+        ):
+            logger.warning("drop action is not supported: %s", action)
+            return False
 
-            dest_path = dest_dir / src_path.name
+        sources = [Path(url.toLocalFile()) for url in data.urls() if url.isLocalFile()]
+        if not sources:
+            logger.warning("drop has no local file URLs")
+            return False
 
-            try:
-                # os.rename だとドライブを跨ぐと失敗する → shutil.move を推奨
-                shutil.move(str(src_path), str(dest_path))
-                moved = True
-            except Exception:
-                logger.exception("drop move failed: %s -> %s", src_path, dest_path)
-
-        return moved
+        result = perform_copy_or_move_with_result(
+            sources,
+            dest_dir,
+            move=action in (Qt.DropAction.MoveAction, Qt.DropAction.TargetMoveAction),
+        )
+        if result.errors:
+            logger.warning("drop completed with errors: %s", result.errors)
+        return bool(result.changed_dirs) and not result.cancelled
 
     def canDropMimeData(
         self, data: QMimeData, action: Qt.DropAction, row: int, column: int, parent: QModelIndex

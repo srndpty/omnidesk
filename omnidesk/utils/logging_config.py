@@ -8,16 +8,21 @@ import tempfile
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from .config import DEFAULT_CONFIG_DIR
-
 LOG_ENV_VAR = "OMNIDESK_LOG_LEVEL"
 LOG_FILE_NAME = "omnidesk.log"
 DEFAULT_LOG_LEVEL = logging.INFO
 
 
+def _default_log_dir() -> Path:
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        return Path(local_appdata) / "OmniDesk" / "logs"
+    return Path.home() / ".omnidesk" / "logs"
+
+
 def log_dir() -> Path:
     """Return the directory used for persistent application logs."""
-    return DEFAULT_CONFIG_DIR / "logs"
+    return _default_log_dir()
 
 
 def log_file_path() -> Path:

@@ -89,7 +89,7 @@ pytest-xdist による並列実行を試す場合:
 
 Qtを使うテストがあるため、このスクリプトは安定性優先で `-n 2` に固定しています。
 
-依存を更新する場合は `requirements-dev.in` を編集し、pip-toolsで `requirements.txt` を再生成します。
+依存を更新する場合は `requirements-dev.in` を編集し、pip-toolsで `requirements.txt` を再生成します。現状の `requirements.txt` は CI とローカル開発で使う dev lock で、`requirements-dev.txt` はその入口として残しています。
 
 ```powershell
 .\scripts\compile-requirements.ps1

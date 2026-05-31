@@ -19,6 +19,12 @@ def test_log_level_from_environment_defaults_and_accepts_known_level() -> None:
     )
 
 
+def test_log_dir_prefers_local_app_data(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    assert logging_config.log_dir() == tmp_path / "OmniDesk" / "logs"
+
+
 @freeze_time("2030-01-02 03:04:05")
 def test_configure_logging_writes_rotating_log_file(tmp_path: Path) -> None:
     log_file = tmp_path / "logs" / "omnidesk.log"

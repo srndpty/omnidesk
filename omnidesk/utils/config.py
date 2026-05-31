@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict
 
-DEFAULT_CONFIG_DIR = Path.home() / ".omnidesk"
+LEGACY_CONFIG_DIR = Path.home() / ".omnidesk"
+
+
+def _default_config_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "OmniDesk"
+    return LEGACY_CONFIG_DIR
+
+
+DEFAULT_CONFIG_DIR = _default_config_dir()
 CONFIG_FILE = DEFAULT_CONFIG_DIR / "settings.json"
+LEGACY_CONFIG_FILE = LEGACY_CONFIG_DIR / "settings.json"
 
 logger = logging.getLogger(__name__)
 
@@ -108,18 +120,28 @@ class AppSettings:
 
 
 def load_settings() -> dict[str, Any]:
-    if not CONFIG_FILE.exists():
-        return {}
+    source = CONFIG_FILE
+    if not source.exists():
+        if LEGACY_CONFIG_FILE != CONFIG_FILE and LEGACY_CONFIG_FILE.exists():
+            source = LEGACY_CONFIG_FILE
+        else:
+            return {}
     try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return json.loads(source.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        logger.exception("Failed to load settings from %s", CONFIG_FILE)
+        logger.exception("Failed to load settings from %s", source)
         return {}
 
 
 def save_settings(data: dict[str, Any]) -> None:
+    temp_file = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.tmp")
     try:
         DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        temp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        temp_file.replace(CONFIG_FILE)
     except OSError:
         logger.exception("Failed to save settings to %s", CONFIG_FILE)
+        try:
+            temp_file.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Failed to remove temporary settings file: %s", temp_file, exc_info=True)

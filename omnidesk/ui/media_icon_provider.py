@@ -57,7 +57,9 @@ class MediaThumbnailProvider(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._thread_pool = QThreadPool.globalInstance()
+        thread_pool = QThreadPool.globalInstance()
+        assert thread_pool is not None
+        self._thread_pool: QThreadPool = thread_pool
         # これにより、メインスレッドへのシグナルの殺到を防ぎ、UIの応答性を保つ
         self._thread_pool.setMaxThreadCount(4)
         self._image_jobs: dict[str, _ImageJob] = {}
@@ -146,10 +148,8 @@ class MediaThumbnailProvider(QObject):
             return
         icon: QIcon | None = None
         if image is not None and not image.isNull():
-            # Image is already scaled by _ImageJob
             pixmap = QPixmap.fromImage(image)
             icon = QIcon(pixmap)
-            # print(f"[MediaThumbnailProvider] created pixmap for {key} size={pixmap.width()}x{pixmap.height()}", flush=True)
         else:
             logger.warning("Image thumbnail job finished with no image: %s", key)
         self.thumbnailReady.emit(key, icon, generation)
@@ -158,7 +158,6 @@ class MediaThumbnailProvider(QObject):
         job = self._video_jobs.pop(key, None)
         if job is not None:
             job.deleteLater()
-        # print(f"[MediaThumbnailProvider] video job finished: {key} icon={'Y' if icon else 'N'}", flush=True)
         self.thumbnailReady.emit(key, icon, generation)
 
         self._active_video_jobs -= 1
@@ -187,7 +186,6 @@ class _ImageJob(QRunnable):
         self.signals = WorkerSignals()
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
-        # print(f"[_ImageJob] processing image: {self._path}", flush=True)
         if self._token.cancelled:
             return
         image = self._load_image(self._path)
@@ -215,9 +213,7 @@ class _ImageJob(QRunnable):
         reader.setAutoTransform(True)
         image = reader.read()
         if image.isNull():
-            # print(f"[_ImageJob] failed to read image: {path}", flush=True)
             return None
-        # print(f"[_ImageJob] image read success: {path} size={image.width()}x{image.height()}", flush=True)
         return image
 
 

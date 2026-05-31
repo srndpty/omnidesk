@@ -326,6 +326,26 @@ def test_media_file_system_model_drop_mime_data_moves_file(monkeypatch, tmp_path
     assert (dest / "source.txt").read_text(encoding="utf-8") == "move"
 
 
+def test_media_file_system_model_drop_mime_data_copies_file_when_copy_action(
+    monkeypatch, tmp_path: Path
+) -> None:
+    model = MediaFileSystemModel()
+    source = tmp_path / "source.txt"
+    dest = tmp_path / "dest"
+    source.write_text("copy", encoding="utf-8")
+    dest.mkdir()
+    parent = model.index(str(dest))
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(str(source))])
+
+    monkeypatch.setattr(model, "isDir", lambda index: True)
+    monkeypatch.setattr(model, "filePath", lambda index: str(dest))
+
+    assert model.dropMimeData(data, Qt.DropAction.CopyAction, 0, 0, parent)
+    assert source.exists()
+    assert (dest / "source.txt").read_text(encoding="utf-8") == "copy"
+
+
 def test_media_file_system_model_can_drop_urls_on_directory(monkeypatch, tmp_path: Path) -> None:
     model = MediaFileSystemModel()
     source = tmp_path / "source"
@@ -340,6 +360,7 @@ def test_media_file_system_model_can_drop_urls_on_directory(monkeypatch, tmp_pat
 
     assert model.canDropMimeData(data, Qt.DropAction.MoveAction, 0, 0, parent)
     assert model.canDropMimeData(data, Qt.DropAction.TargetMoveAction, 0, 0, parent)
+    assert model.canDropMimeData(data, Qt.DropAction.CopyAction, 0, 0, parent)
 
 
 def test_folder_thumbnail_rect_centers_and_offsets_preview() -> None:

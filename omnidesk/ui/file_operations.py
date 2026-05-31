@@ -4,19 +4,31 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
+from typing import Literal
 
 from omnidesk.utils.config import DEFAULT_CONFIG_DIR
 
 logger = logging.getLogger(__name__)
+
+FileOperationMode = Literal["copy", "move", "delete"]
 
 
 @dataclass(frozen=True)
 class FileOperationResult:
     errors: list[str]
     changed_dirs: list[Path]
+    cancelled: bool = False
+
+
+@dataclass(frozen=True)
+class FileOperationRequest:
+    sources: list[Path]
+    destination: Path | None
+    mode: FileOperationMode
 
 
 def is_dangerous_operation_path(path: Path) -> bool:
@@ -48,9 +60,21 @@ def is_plain_child_name(name: str) -> bool:
 
 def delete_paths(paths: list[Path]) -> list[str]:
     """Delete files or directories and return user-facing error messages."""
+    return delete_paths_with_result(paths).errors
+
+
+def delete_paths_with_result(
+    paths: list[Path],
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> FileOperationResult:
+    """Delete files or directories and return errors plus directories that changed."""
     errors: list[str] = []
+    changed_dirs: list[Path] = []
     logger.info("Deleting %d path(s)", len(paths))
     for path in paths:
+        if is_cancelled is not None and is_cancelled():
+            return FileOperationResult(errors, changed_dirs, cancelled=True)
         if is_dangerous_operation_path(path):
             logger.error("Refusing to delete dangerous path: %s", path)
             errors.append(f"Refusing to delete dangerous path: {path}")
@@ -60,10 +84,11 @@ def delete_paths(paths: list[Path]) -> list[str]:
                 shutil.rmtree(path)
             else:
                 path.unlink()
+            changed_dirs.append(path.parent)
         except Exception as exc:  # pragma: no cover - filesystem dependent
             logger.exception("Failed to delete path: %s", path)
             errors.append(f"{path}: {exc}")
-    return errors
+    return FileOperationResult(errors, changed_dirs)
 
 
 def perform_copy_or_move(sources: list[Path], dest_dir: Path, *, move: bool) -> list[str]:
@@ -72,7 +97,11 @@ def perform_copy_or_move(sources: list[Path], dest_dir: Path, *, move: bool) -> 
 
 
 def perform_copy_or_move_with_result(
-    sources: list[Path], dest_dir: Path, *, move: bool
+    sources: list[Path],
+    dest_dir: Path,
+    *,
+    move: bool,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> FileOperationResult:
     """Copy or move paths and return errors plus directories that changed."""
     errors: list[str] = []
@@ -83,6 +112,8 @@ def perform_copy_or_move_with_result(
         len(sources),
         dest_dir,
     )
+    if is_cancelled is not None and is_cancelled():
+        return FileOperationResult(errors, changed_dirs, cancelled=True)
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:  # pragma: no cover - filesystem dependent
@@ -90,6 +121,8 @@ def perform_copy_or_move_with_result(
         return FileOperationResult([f"{dest_dir}: {exc}"], [])
 
     for src in sources:
+        if is_cancelled is not None and is_cancelled():
+            return FileOperationResult(errors, changed_dirs, cancelled=True)
         if is_dangerous_operation_path(src):
             logger.error("Refusing to operate on dangerous source path: %s", src)
             errors.append(f"Refusing to operate on dangerous path: {src}")
@@ -106,6 +139,11 @@ def perform_copy_or_move_with_result(
                 "Could not resolve source/destination for same-directory check", exc_info=True
             )
         try:
+            guard_error = validate_copy_or_move(src, dest_dir, move=move)
+            if guard_error is not None:
+                logger.warning("Refusing file operation: %s", guard_error)
+                errors.append(guard_error)
+                continue
             target = resolve_destination(dest_dir, src.name, move)
         except ValueError as exc:
             logger.warning("Could not resolve destination for %s into %s: %s", src, dest_dir, exc)
@@ -125,6 +163,51 @@ def perform_copy_or_move_with_result(
             logger.exception("Failed to copy/move %s to %s", src, target)
             errors.append(f"{src} -> {target}: {exc}")
     return FileOperationResult(errors, changed_dirs)
+
+
+def execute_file_operation(
+    request: FileOperationRequest,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> FileOperationResult:
+    """Execute a file operation request."""
+    if request.mode == "delete":
+        return delete_paths_with_result(request.sources, is_cancelled=is_cancelled)
+    if request.destination is None:
+        return FileOperationResult(["Destination is required."], [])
+    return perform_copy_or_move_with_result(
+        request.sources,
+        request.destination,
+        move=request.mode == "move",
+        is_cancelled=is_cancelled,
+    )
+
+
+def validate_copy_or_move(src: Path, dest_dir: Path, *, move: bool) -> str | None:
+    """Return a user-facing error when a copy/move request is unsafe."""
+    try:
+        src_resolved = src.resolve(strict=False)
+        dest_resolved = dest_dir.resolve(strict=False)
+    except OSError as exc:
+        logger.debug("Could not resolve copy/move safety paths", exc_info=True)
+        return f"{src}: {exc}"
+
+    target_resolved = dest_resolved / src.name
+    if src_resolved == target_resolved:
+        return f"Source and destination are the same: {src}"
+
+    if src.is_dir() and _is_relative_to(dest_resolved, src_resolved):
+        return f"Refusing to {'move' if move else 'copy'} a folder into itself: {src}"
+
+    return None
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:

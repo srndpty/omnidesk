@@ -72,17 +72,23 @@ source = ["omnidesk"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+fail_under = 80
 
 [tool.pyright]
 include = [
     "omnidesk/ui/file_browser_actions.py",
+    "omnidesk/ui/file_browser_background.py",
     "omnidesk/ui/file_browser_drop.py",
     "omnidesk/ui/file_browser_helpers.py",
     "omnidesk/ui/file_browser_media_mode.py",
     "omnidesk/ui/file_browser_navigation.py",
     "omnidesk/ui/file_browser_selection.py",
     "omnidesk/ui/file_browser_visible.py",
+    "omnidesk/ui/file_operation_jobs.py",
+    "omnidesk/ui/media_icon_provider.py",
+    "omnidesk/ui/thumbnail_jobs.py",
     "omnidesk/ui/file_operations.py",
+    "omnidesk/utils/thumbnail_cache.py",
     "omnidesk/utils/config.py",
     "omnidesk/utils/logging_config.py",
     "omnidesk/utils/paths.py",

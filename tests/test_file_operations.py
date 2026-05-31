@@ -5,9 +5,11 @@ from pathlib import Path
 from pytest_mock import MockerFixture
 
 from omnidesk.ui.file_operations import (
+    FileOperationRequest,
     create_file,
     create_folder,
     delete_paths,
+    execute_file_operation,
     is_dangerous_operation_path,
     is_plain_child_name,
     perform_copy_or_move,
@@ -144,3 +146,43 @@ def test_copy_or_move_result_reports_changed_dirs_for_partial_success(tmp_path: 
     assert "Missing:" in result.errors[0]
     assert result.changed_dirs == [dest]
     assert (dest / copied.name).read_text(encoding="utf-8") == "copied"
+
+
+def test_copy_directory_into_own_descendant_is_refused(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "file.txt").write_text("source", encoding="utf-8")
+    descendant = source / "child"
+    descendant.mkdir()
+
+    result = perform_copy_or_move_with_result([source], descendant, move=False)
+
+    assert len(result.errors) == 1
+    assert "folder into itself" in result.errors[0]
+    assert not (descendant / "source").exists()
+
+
+def test_move_directory_into_own_descendant_is_refused(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    descendant = source / "child"
+    descendant.mkdir()
+
+    result = perform_copy_or_move_with_result([source], descendant, move=True)
+
+    assert len(result.errors) == 1
+    assert "folder into itself" in result.errors[0]
+    assert source.exists()
+
+
+def test_execute_file_operation_can_cancel_before_start(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    dest = tmp_path / "dest"
+    request = FileOperationRequest([source], dest, "copy")
+
+    result = execute_file_operation(request, is_cancelled=lambda: True)
+
+    assert result.cancelled
+    assert result.errors == []
+    assert not dest.exists()
