@@ -137,6 +137,7 @@ def test_tab_bar_is_not_closable_and_elides_from_right(qtbot) -> None:
 
     assert not container._tabs.tabsClosable()
     assert tab_bar.elideMode() == Qt.TextElideMode.ElideRight
+    assert tab_bar.focusPolicy() == Qt.FocusPolicy.NoFocus
 
 
 def test_close_current_tab_uses_shared_close_path(qtbot) -> None:
@@ -182,6 +183,41 @@ def test_open_tabs_and_navigation_methods_use_current_tab(
     assert "refresh" in second.calls
     assert "focus" in second.calls
     assert second.current_path() == tmp_path / "three"
+
+
+def test_current_tab_change_focuses_browser_view(monkeypatch, qtbot, tmp_path: Path) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    first = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "one"))
+    second = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "two"))
+    first.calls.clear()
+    second.calls.clear()
+
+    container._tabs.setCurrentIndex(0)
+
+    qtbot.waitUntil(lambda: "focus" in first.calls, timeout=1000)
+    assert "focus" not in second.calls
+
+
+def test_left_clicking_current_tab_refocuses_browser_view(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    tab = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "one"))
+    tab.calls.clear()
+    tab_bar = container._tabs.tabBar()
+    monkeypatch.setattr(tab_bar, "tabAt", lambda _point: 0)
+
+    left_click = StubEvent(
+        QEvent.Type.MouseButtonPress,
+        button=Qt.MouseButton.LeftButton,
+    )
+
+    assert not container.eventFilter(tab_bar, cast(QEvent, left_click))
+    qtbot.waitUntil(lambda: "focus" in tab.calls, timeout=1000)
 
 
 def test_tab_pinning_uses_tab_data_without_changing_label(
