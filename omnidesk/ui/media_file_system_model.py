@@ -67,7 +67,17 @@ def pixmap_edge(pixmap: QPixmap) -> int:
 def cache_pixmap_for_edge(pixmap: QPixmap, edge: int) -> QPixmap:
     """Return a cache pixmap whose outer edge matches the requested cache edge."""
     target_size = QSize(edge, edge)
-    if pixmap.isNull() or edge <= 0 or pixmap.size() == target_size:
+    if pixmap.isNull() or edge <= 0:
+        return pixmap
+
+    if pixmap.width() > edge or pixmap.height() > edge:
+        pixmap = pixmap.scaled(
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    if pixmap.size() == target_size:
         return pixmap
 
     canvas = QPixmap(target_size)
@@ -477,15 +487,16 @@ class MediaFileSystemModel(QFileSystemModel):
     def _save_cache_async(
         self, cache, key: str, pixmap: QPixmap, *, hint_edge: int | None = None
     ) -> None:
-        image = pixmap.toImage()
-        if image.isNull():
+        if pixmap.isNull():
             return
         edge = hint_edge if hint_edge is not None else self._thumbnail_edge
-        pixmap = cache_pixmap_for_edge(pixmap, edge)
+        cache_pixmap = cache_pixmap_for_edge(pixmap, edge)
+        if cache_pixmap.isNull():
+            return
         self._scan_pool.start(
             CacheSaveJob(
                 cache.disk_path(key, hint_edge=edge),
-                pixmap.toImage(),
+                cache_pixmap.toImage(),
                 cache.enforce_disk_budget,
             )
         )
