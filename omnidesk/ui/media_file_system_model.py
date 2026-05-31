@@ -7,6 +7,7 @@ import os
 import shutil
 from contextlib import suppress
 from pathlib import Path
+from threading import Lock
 
 from PyQt6.QtCore import QMimeData, QModelIndex, QSize, Qt, QThreadPool
 from PyQt6.QtGui import QFileSystemModel, QIcon, QImage, QPainter, QPixmap
@@ -106,6 +107,8 @@ class MediaFileSystemModel(QFileSystemModel):
         self._folder_scans: dict[str, FolderScanJob] = {}
         self._scan_pool = QThreadPool.globalInstance()
         self._cache_jobs: dict[str, CacheLoadJob] = {}
+        self._cache_save_generations: dict[tuple[int, str, int], int] = {}
+        self._cache_save_lock = Lock()
         self._debug_thumbnails = os.environ.get("OMNIDESK_THUMB_DEBUG", "").lower() in {
             "1",
             "true",
@@ -287,6 +290,7 @@ class MediaFileSystemModel(QFileSystemModel):
         key = self._normalise_key(path)
         self._cancel_thumbnail_key(key)
         self._failed.discard(key)
+        self._invalidate_cache_saves(folder_preview_cache, key)
         folder_preview_cache.discard_memory(key)
         folder_preview_cache.discard_disk(key, hint_edge=self._thumbnail_edge)
         self._emit_thumbnail_changed(key)
@@ -497,13 +501,56 @@ class MediaFileSystemModel(QFileSystemModel):
         cache_pixmap = cache_pixmap_for_edge(pixmap, edge)
         if cache_pixmap.isNull():
             return
+        save_key = self._cache_save_key(cache, key, edge)
+        generation = self._next_cache_save_generation(save_key)
         self._scan_pool.start(
             CacheSaveJob(
                 cache.disk_path(key, hint_edge=edge),
                 cache_pixmap.toImage(),
                 cache.enforce_disk_budget,
+                lambda temp_path, cache_path: self._commit_cache_save(
+                    save_key,
+                    generation,
+                    temp_path,
+                    cache_path,
+                ),
             )
         )
+
+    @staticmethod
+    def _cache_save_key(cache, key: str, edge: int) -> tuple[int, str, int]:
+        return id(cache), key, edge
+
+    def _next_cache_save_generation(self, save_key: tuple[int, str, int]) -> int:
+        with self._cache_save_lock:
+            generation = self._cache_save_generations.get(save_key, 0) + 1
+            self._cache_save_generations[save_key] = generation
+            return generation
+
+    def _invalidate_cache_saves(self, cache, key: str) -> None:
+        cache_id = id(cache)
+        with self._cache_save_lock:
+            matching_keys = [
+                save_key
+                for save_key in self._cache_save_generations
+                if save_key[0] == cache_id and save_key[1] == key
+            ]
+            for save_key in matching_keys:
+                self._cache_save_generations[save_key] += 1
+
+    def _commit_cache_save(
+        self,
+        save_key: tuple[int, str, int],
+        generation: int,
+        temp_path: Path,
+        cache_path: Path,
+    ) -> bool:
+        with self._cache_save_lock:
+            if self._cache_save_generations.get(save_key) != generation:
+                return False
+            temp_path.replace(cache_path)
+            self._cache_save_generations.pop(save_key, None)
+            return True
 
     def _emit_thumbnail_changed(self, key: str) -> None:
         index = self.index(key)

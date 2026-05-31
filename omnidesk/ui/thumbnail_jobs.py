@@ -109,17 +109,36 @@ class CacheSaveJob(QRunnable):
         cache_path: Path,
         image: QImage,
         cleanup: Callable[[], None] | None = None,
+        commit: Callable[[Path, Path], bool] | None = None,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._cache_path = cache_path
         self._image = image
         self._cleanup = cleanup
+        self._commit = commit
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-        if self._image.save(str(self._cache_path), "PNG") and self._cleanup is not None:
-            self._cleanup()
+        temp_path = self._cache_path.with_name(f"{self._cache_path.name}.{id(self)}.tmp")
+        try:
+            if not self._image.save(str(temp_path), "PNG"):
+                return
+            committed = (
+                self._commit(temp_path, self._cache_path)
+                if self._commit is not None
+                else self._default_commit(temp_path, self._cache_path)
+            )
+            if committed and self._cleanup is not None:
+                self._cleanup()
+        finally:
+            with suppress(OSError):
+                temp_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _default_commit(temp_path: Path, cache_path: Path) -> bool:
+        temp_path.replace(cache_path)
+        return True
 
 
 def scaled_image(image: QImage, edge: int) -> QImage:

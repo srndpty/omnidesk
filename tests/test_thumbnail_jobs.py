@@ -122,6 +122,27 @@ def test_cache_save_job_writes_png_and_runs_cleanup(tmp_path: Path) -> None:
     assert cleaned == [True]
 
 
+def test_cache_save_job_skips_cleanup_when_commit_rejects(tmp_path: Path) -> None:
+    cache_path = tmp_path / "cache.png"
+    image = QImage(12, 12, QImage.Format.Format_RGB32)
+    image.fill(0x0000FF)
+    cleaned: list[bool] = []
+    commits: list[tuple[Path, Path]] = []
+    job = CacheSaveJob(
+        cache_path,
+        image,
+        lambda: cleaned.append(True),
+        lambda temp_path, final_path: commits.append((temp_path, final_path)) or False,
+    )
+
+    job.run()
+
+    assert not cache_path.exists()
+    assert cleaned == []
+    assert len(commits) == 1
+    assert not commits[0][0].exists()
+
+
 def test_scaled_image_preserves_null_and_scales_non_null() -> None:
     null_image = QImage()
     image = QImage(100, 50, QImage.Format.Format_RGB32)

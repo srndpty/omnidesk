@@ -533,6 +533,28 @@ def test_media_file_system_model_invalidate_folder_thumbnail_preview_clears_stat
     assert emitted == [key]
 
 
+def test_media_file_system_model_invalidate_folder_preview_rejects_pending_save(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(160)
+    key = model._normalise_key(tmp_path)
+    fake_cache = _FakeCache(tmp_path / "cache.png")
+    started: list[object] = []
+    monkeypatch.setattr(model_module, "folder_preview_cache", fake_cache)
+    monkeypatch.setattr(model._scan_pool, "start", started.append)
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda _key: None)
+
+    pixmap = QPixmap(160, 160)
+    pixmap.fill()
+    model._save_cache_async(fake_cache, key, pixmap, hint_edge=160)
+    model.invalidate_folder_thumbnail_preview(tmp_path)
+    cast(model_module.CacheSaveJob, started[0]).run()
+
+    assert not fake_cache._disk_path.exists()
+
+
 def test_media_file_system_model_ensure_thumbnail_skips_memory_pending_failed(
     monkeypatch,
     tmp_path: Path,
