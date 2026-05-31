@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+DirectoryFingerprint = tuple[int, int]
+
 
 @dataclass(frozen=True)
 class NavigationHistoryStep:
@@ -43,6 +45,24 @@ def same_navigation_path(left: Path, right: Path) -> bool:
 def is_parent_navigation(current: Path, destination: Path) -> bool:
     """Return whether destination is the parent directory of current."""
     return same_navigation_path(destination, current.parent)
+
+
+def directory_fingerprint(path: Path) -> DirectoryFingerprint | None:
+    """Return a lightweight directory change fingerprint."""
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return None
+    mtime = getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1e9))
+    return mtime, stat_result.st_size
+
+
+def directory_fingerprint_changed(path: Path, previous: DirectoryFingerprint | None) -> bool:
+    """Return whether a directory fingerprint changed since it was captured."""
+    if previous is None:
+        return False
+    current = directory_fingerprint(path)
+    return current is not None and current != previous
 
 
 def navigation_history_step(

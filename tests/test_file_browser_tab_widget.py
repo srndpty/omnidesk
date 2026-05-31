@@ -148,10 +148,43 @@ def test_file_browser_tab_go_up_invalidates_folder_preview(
         "invalidate_folder_thumbnail_preview",
         invalidated.append,
     )
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: path == child and previous is not None,
+    )
 
     tab.go_up()
 
     assert invalidated == [child]
+
+
+def test_file_browser_tab_go_up_keeps_folder_preview_when_directory_unchanged(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(child)
+    monkeypatch.setattr(
+        tab._model,
+        "invalidate_folder_thumbnail_preview",
+        invalidated.append,
+    )
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: False,
+    )
+
+    tab.go_up()
+
+    assert invalidated == []
 
 
 def test_file_browser_tab_navigation_buttons_use_modern_arrow_text(qtbot) -> None:
@@ -260,6 +293,11 @@ def test_file_browser_tab_go_back_to_parent_invalidates_folder_preview(
         tab._model,
         "invalidate_folder_thumbnail_preview",
         invalidated.append,
+    )
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: path == child and previous is not None,
     )
 
     tab.go_back()
@@ -1527,6 +1565,39 @@ def test_file_browser_tab_delete_selected_confirms_deletes_and_refreshes(
     assert not source.exists()
     assert tab._pending_selection_path == tmp_path
     assert refreshed == [True]
+
+
+def test_file_browser_tab_delete_then_go_up_invalidates_folder_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    source = child / "source.jpg"
+    source.write_text("source", encoding="utf-8")
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(child)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [source])
+    monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: None)
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: False,
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    tab._delete_selected()
+    tab.go_up()
+
+    assert invalidated == [child]
 
 
 def test_file_browser_tab_delete_selected_warns_when_delete_reports_errors(

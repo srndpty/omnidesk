@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PyQt6.QtCore import QSize
@@ -10,6 +11,8 @@ from omnidesk.ui.file_browser_media_mode import (
     media_mode_button_text,
 )
 from omnidesk.ui.file_browser_navigation import (
+    directory_fingerprint,
+    directory_fingerprint_changed,
     is_parent_navigation,
     navigation_history_step,
     navigation_target,
@@ -51,6 +54,21 @@ def test_navigation_path_comparison_uses_resolved_paths(tmp_path: Path) -> None:
 
     assert same_navigation_path(current, current / ".." / "current")
     assert is_parent_navigation(current, current / "..")
+
+
+def test_directory_fingerprint_detects_directory_metadata_change(tmp_path: Path) -> None:
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    before = directory_fingerprint(folder)
+
+    assert before is not None
+    assert not directory_fingerprint_changed(folder, before)
+
+    current_stat = folder.stat()
+    atime = getattr(current_stat, "st_atime_ns", int(current_stat.st_atime * 1e9))
+    os.utime(folder, ns=(atime, before[0] + 1_000_000))
+
+    assert directory_fingerprint_changed(folder, before)
 
 
 def test_navigation_history_step_moves_between_back_and_forward_stacks(

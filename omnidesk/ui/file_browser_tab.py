@@ -79,11 +79,15 @@ from .file_browser_media_mode import (
     media_mode_button_text,
 )
 from .file_browser_navigation import (
+    DirectoryFingerprint,
+    directory_fingerprint,
+    directory_fingerprint_changed,
     is_parent_navigation,
     navigation_history_step,
     navigation_target,
     path_to_focus_after_go_up,
     resolve_address_path,
+    same_navigation_path,
     should_record_history,
 )
 from .file_browser_selection import (
@@ -877,6 +881,8 @@ class FileBrowserTab(QWidget):
         self._navigation_history: list[Path] = []
         self._forward_history: list[Path] = []
         self._has_loaded_root = False
+        self._current_directory_fingerprint: DirectoryFingerprint | None = None
+        self._current_directory_has_local_changes = False
         self._is_active = False
 
         self._model = MediaFileSystemModel(self)
@@ -1201,6 +1207,8 @@ class FileBrowserTab(QWidget):
             return
         if target is None:
             return
+        if self._path_parent_is_current(original) or self._path_parent_is_current(target):
+            self._mark_current_directory_changed()
         self.refresh()
         self._select_path(target)
 
@@ -1216,6 +1224,7 @@ class FileBrowserTab(QWidget):
             return
         if target is None:
             return
+        self._mark_current_directory_changed()
         self.refresh()
         self._select_path(target)
 
@@ -1231,6 +1240,7 @@ class FileBrowserTab(QWidget):
             return
         if target is None:
             return
+        self._mark_current_directory_changed()
         self.refresh()
         self._select_path(target)
 
@@ -1293,7 +1303,9 @@ class FileBrowserTab(QWidget):
         if not paths:
             return
         move = self._clipboard["mode"] == "move"
-        self._perform_copy_or_move(paths, self._current_path, move=move)
+        errors = self._perform_copy_or_move(paths, self._current_path, move=move)
+        if not errors:
+            self._mark_current_directory_changed()
         if move:
             self._set_clipboard(None)
         else:
@@ -1318,6 +1330,8 @@ class FileBrowserTab(QWidget):
         errors = delete_paths(paths)
         if errors:
             QMessageBox.warning(self, "Delete failed", "\n".join(errors))
+        if any(self._path_parent_is_current(path) and not path.exists() for path in paths):
+            self._mark_current_directory_changed()
         self._pending_selection_path = select_after_delete
         self.refresh()
         self._update_action_states()
@@ -1332,6 +1346,12 @@ class FileBrowserTab(QWidget):
 
     def _resolve_destination(self, dest_dir: Path, name: str, move: bool) -> Path:
         return resolve_destination(dest_dir, name, move)
+
+    def _mark_current_directory_changed(self) -> None:
+        self._current_directory_has_local_changes = True
+
+    def _path_parent_is_current(self, path: Path) -> bool:
+        return same_navigation_path(path.parent, self._current_path)
 
     @staticmethod
     def _is_within(path: Path, potential_parent: Path) -> bool:
@@ -1357,6 +1377,8 @@ class FileBrowserTab(QWidget):
             )
             return False
         errors = self._perform_copy_or_move(paths, target_dir, move=move)
+        if not errors and same_navigation_path(target_dir, self._current_path):
+            self._mark_current_directory_changed()
         if not errors and select_after:
             self._pending_selection_path = next(
                 (path for path in select_after if path.exists()),
@@ -1397,7 +1419,14 @@ class FileBrowserTab(QWidget):
 
         current = self._current_path
         target = navigation_target(path)
-        if self._has_loaded_root and is_parent_navigation(current, target):
+        if (
+            self._has_loaded_root
+            and is_parent_navigation(current, target)
+            and (
+                self._current_directory_has_local_changes
+                or directory_fingerprint_changed(current, self._current_directory_fingerprint)
+            )
+        ):
             self._model.invalidate_folder_thumbnail_preview(current)
         if self._has_loaded_root and should_record_history(
             current, target, from_history=from_history
@@ -1405,7 +1434,12 @@ class FileBrowserTab(QWidget):
             self._navigation_history.append(current)
             self._forward_history.clear()
 
+        target_is_current = self._has_loaded_root and same_navigation_path(current, target)
         self._current_path = target
+        if not target_is_current:
+            self._current_directory_has_local_changes = False
+        if not target_is_current or self._current_directory_fingerprint is None:
+            self._current_directory_fingerprint = directory_fingerprint(target)
         self._has_loaded_root = True
         self._path_edit.setText(str(target))
 
