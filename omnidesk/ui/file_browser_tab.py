@@ -31,6 +31,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction,
+    QCloseEvent,
     QColor,
     QDesktopServices,
     QDrag,
@@ -168,7 +169,8 @@ def navigation_cursor_action(key: int) -> QAbstractItemView.CursorAction | None:
 
 
 def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
-    tab._select_path(path, QAbstractItemView.ScrollHint.PositionAtCenter)
+    with suppress(RuntimeError):
+        tab._select_path(path, QAbstractItemView.ScrollHint.PositionAtCenter)
 
 
 class _DirectoryCountSignals(QObject):
@@ -937,6 +939,7 @@ class FileBrowserTab(QWidget):
         self._status_file_count = 0
         self._status_count_generation = 0
         self._status_count_jobs: dict[int, _DirectoryCountJob] = {}
+        self._status_count_refresh_on_activate = False
         self._status_count_pool = QThreadPool.globalInstance()
         self._file_operation_jobs: list[FileOperationJob] = []
         self._create_actions()
@@ -1537,6 +1540,8 @@ class FileBrowserTab(QWidget):
         logger.debug("Activating tab for %s", self._current_path)
         self._is_active = True
         self._restart_thumbnail_requests()
+        if self._status_count_refresh_on_activate:
+            self._request_status_item_counts(self._current_path)
 
     def deactivate(self) -> None:
         """Stop visible-item thumbnail work when this tab becomes inactive."""
@@ -1550,12 +1555,14 @@ class FileBrowserTab(QWidget):
         """Cancel work that is only useful while this tab is visible."""
         self._thumbnail_scheduler.cancel()
         self._model.cancel_background_work()
+        if self._status_count_jobs:
+            self._status_count_refresh_on_activate = True
         self._status_count_generation += 1
-        self._status_count_jobs.clear()
 
     def cancel_all_work_for_shutdown(self) -> None:
         """Cancel all work owned by this tab during shutdown or disposal."""
         self.cancel_inactive_tab_work()
+        self._selection_restore_timer.stop()
         for job in self._file_operation_jobs:
             job.cancel()
         self._file_operation_jobs.clear()
@@ -1563,6 +1570,10 @@ class FileBrowserTab(QWidget):
     def cancel_background_work(self) -> None:
         """Deprecated: shutdown-only cancellation. Do not use for tab deactivation."""
         self.cancel_all_work_for_shutdown()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
+        self.cancel_all_work_for_shutdown()
+        super().closeEvent(event)
 
     def _on_layout_changed(self) -> None:
         """Restart visible thumbnail requests after model layout changes."""
@@ -2079,6 +2090,7 @@ class FileBrowserTab(QWidget):
         self._selection_restore_timer.start(0)
 
     def _request_status_item_counts(self, path: Path) -> None:
+        self._status_count_refresh_on_activate = False
         self._status_count_generation += 1
         generation = self._status_count_generation
         self._status_folder_count = 0

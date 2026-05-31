@@ -27,7 +27,13 @@ from PyQt6.QtGui import (
     QStandardItem,
     QStandardItemModel,
 )
-from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox, QStyle, QStyleOptionViewItem
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QListView,
+    QMessageBox,
+    QStyle,
+    QStyleOptionViewItem,
+)
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
 from omnidesk.ui.file_browser_status import BrowserStatus
@@ -2078,6 +2084,26 @@ def test_file_browser_tab_request_status_counts_clears_stale_counts(
     assert status.file_count == 0
     assert status.selected_count == 1
     assert status.selected_file_size == 3
+
+
+def test_file_browser_tab_activate_restarts_cancelled_status_count_job(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    requested: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    tab._is_active = True
+    tab._status_count_jobs[1] = cast(file_browser_tab_module._DirectoryCountJob, object())
+    monkeypatch.setattr(tab, "_request_status_item_counts", requested.append)
+
+    tab.deactivate()
+    tab.activate()
+
+    assert tab._is_active
+    assert requested == [tmp_path]
 
 
 def test_file_browser_tab_async_status_counts_keep_current_selection(

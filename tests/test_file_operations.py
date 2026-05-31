@@ -22,8 +22,8 @@ from omnidesk.ui.file_operations import (
 )
 
 
-def test_file_operations_work_on_pyfakefs(fs) -> None:
-    workspace = Path("C:/workspace")
+def test_file_operations_work_on_tmp_path(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
     source = workspace / "source"
     destination = workspace / "destination"
     source.mkdir(parents=True)
