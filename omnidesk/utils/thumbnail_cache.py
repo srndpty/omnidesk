@@ -105,6 +105,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         disk_max_items: int = 10_000,
         disk_max_bytes: int = 1_000_000_000,  # 1GB
         root: Path | None = None,
+        budget_check_interval: int = 100,
     ) -> None:
         super().__init__(capacity=capacity)
         self._root = (root or _app_cache_root()) / namespace
@@ -113,7 +114,10 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         self._disk_max_bytes = max(1, disk_max_bytes)
         self._disk_edges: dict[Key, set[int]] = {}
         self._put_count = 0
-        self._budget_check_interval = 100
+        # Disk budget enforcement is throttled to avoid expensive full scans on
+        # every thumbnail write. The cache may temporarily exceed limits by up to
+        # budget_check_interval writes. Use budget_check_interval=1 for strict enforcement.
+        self._budget_check_interval = max(1, budget_check_interval)
 
     # ---------- ディスクキー生成 ----------
     def _disk_key(self, key: Key, *, hint_edge: int | None = None) -> Path:

@@ -81,7 +81,7 @@ def delete_paths_with_result(
             logger.error("Refusing to delete dangerous path: %s", path)
             errors.append(f"Refusing to delete dangerous path: {path}")
             continue
-        if not path.exists():
+        if not path.exists() and not path.is_symlink():
             logger.warning("Path does not exist, cannot move to trash: %s", path)
             errors.append(f"Missing: {path}")
             continue
