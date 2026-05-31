@@ -1330,8 +1330,8 @@ class FileBrowserTab(QWidget):
         if (
             QMessageBox.question(
                 self,
-                "Delete",
-                f"Delete {len(paths)} item(s)?",
+                "Move to Trash",
+                f"Move {len(paths)} item(s) to Trash?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             != QMessageBox.StandardButton.Yes
@@ -1339,7 +1339,7 @@ class FileBrowserTab(QWidget):
             return
         errors = delete_paths(paths)
         if errors:
-            QMessageBox.warning(self, "Delete failed", "\n".join(errors))
+            QMessageBox.warning(self, "Move to Trash failed", "\n".join(errors))
         self._mark_changed_directories([path.parent for path in paths if not path.exists()])
         self._pending_selection_path = select_after_delete
         self.refresh()

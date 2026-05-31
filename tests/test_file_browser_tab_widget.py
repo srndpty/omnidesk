@@ -1921,7 +1921,7 @@ def test_file_browser_tab_delete_selected_warns_when_delete_reports_errors(
 
     tab._delete_selected()
 
-    assert warnings == [("Delete failed", "delete failed")]
+    assert warnings == [("Move to Trash failed", "delete failed")]
 
 
 def test_file_browser_tab_execute_command_warns_when_start_fails(monkeypatch, qtbot) -> None:

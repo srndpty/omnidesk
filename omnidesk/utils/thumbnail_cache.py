@@ -112,6 +112,8 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         self._disk_max_items = max(1, disk_max_items)
         self._disk_max_bytes = max(1, disk_max_bytes)
         self._disk_edges: dict[Key, set[int]] = {}
+        self._put_count = 0
+        self._budget_check_interval = 100
 
     # ---------- ディスクキー生成 ----------
     def _disk_key(self, key: Key, *, hint_edge: int | None = None) -> Path:
@@ -230,7 +232,9 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
             logger.exception("Failed to save thumbnail cache file: %s", dst)
             return
 
-        self._enforce_disk_budget()
+        self._put_count += 1
+        if self._put_count % self._budget_check_interval == 0:
+            self._enforce_disk_budget()
 
     # ---------- ディスクLRU整理 ----------
     def _enforce_disk_budget(self) -> None:

@@ -7,9 +7,10 @@ import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
-from itertools import count
 from pathlib import Path
 from typing import Literal
+
+from send2trash import send2trash
 
 from omnidesk.utils.config import DEFAULT_CONFIG_DIR
 
@@ -80,14 +81,15 @@ def delete_paths_with_result(
             logger.error("Refusing to delete dangerous path: %s", path)
             errors.append(f"Refusing to delete dangerous path: {path}")
             continue
+        if not path.exists():
+            logger.warning("Path does not exist, cannot move to trash: %s", path)
+            errors.append(f"Missing: {path}")
+            continue
         try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
+            send2trash(str(path))
             changed_dirs.append(path.parent)
         except Exception as exc:  # pragma: no cover - filesystem dependent
-            logger.exception("Failed to delete path: %s", path)
+            logger.exception("Failed to move path to trash: %s", path)
             errors.append(f"{path}: {exc}")
     return FileOperationResult(errors, changed_dirs)
 
@@ -242,6 +244,9 @@ def _path_text_separator() -> str:
     return "\\" if os.name == "nt" else os.sep
 
 
+_COPY_NUMBER_LIMIT = 9999
+
+
 def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:
     """Return a non-conflicting destination path."""
     target = dest_dir / name
@@ -251,11 +256,11 @@ def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:
         raise ValueError(f"Destination already has {name}")
     stem = target.stem
     suffix = target.suffix
-    for n in count(1):
+    for n in range(1, _COPY_NUMBER_LIMIT + 1):
         candidate = dest_dir / f"{stem} - Copy {n}{suffix}"
         if not candidate.exists():
             return candidate
-    raise ValueError("Unable to resolve destination")
+    raise ValueError(f"Unable to resolve destination for {name}: too many copies")
 
 
 def rename_path(original: Path, new_name: str) -> tuple[Path | None, str | None]:
