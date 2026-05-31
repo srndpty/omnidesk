@@ -82,7 +82,6 @@ from .file_browser_navigation import (
     DirectoryFingerprint,
     directory_fingerprint,
     directory_fingerprint_changed,
-    is_parent_navigation,
     navigation_history_step,
     navigation_target,
     path_to_focus_after_go_up,
@@ -1434,14 +1433,16 @@ class FileBrowserTab(QWidget):
 
         current = self._current_path
         target = navigation_target(path)
-        if (
+        target_is_current = self._has_loaded_root and same_navigation_path(current, target)
+        should_invalidate_current_preview = (
             self._has_loaded_root
-            and is_parent_navigation(current, target)
+            and not target_is_current
             and (
                 self._current_directory_has_local_changes
                 or directory_fingerprint_changed(current, self._current_directory_fingerprint)
             )
-        ):
+        )
+        if should_invalidate_current_preview:
             self._model.invalidate_folder_thumbnail_preview(current)
         if self._has_loaded_root and should_record_history(
             current, target, from_history=from_history
@@ -1449,7 +1450,6 @@ class FileBrowserTab(QWidget):
             self._navigation_history.append(current)
             self._forward_history.clear()
 
-        target_is_current = self._has_loaded_root and same_navigation_path(current, target)
         self._current_path = target
         if not target_is_current:
             self._current_directory_has_local_changes = False

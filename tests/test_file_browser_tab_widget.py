@@ -305,7 +305,7 @@ def test_file_browser_tab_go_back_to_parent_invalidates_folder_preview(
     assert invalidated == [child]
 
 
-def test_file_browser_tab_go_back_to_non_parent_does_not_invalidate(
+def test_file_browser_tab_go_back_to_non_parent_keeps_unchanged_preview(
     monkeypatch,
     qtbot,
     tmp_path: Path,
@@ -328,6 +328,59 @@ def test_file_browser_tab_go_back_to_non_parent_does_not_invalidate(
     tab.go_back()
 
     assert invalidated == []
+
+
+def test_file_browser_tab_leaving_changed_directory_invalidates_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "folder"
+    child = folder / "child"
+    folder.mkdir()
+    child.mkdir()
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(folder)
+    tab._mark_current_directory_changed()
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: False,
+    )
+
+    tab.navigate_to(child)
+
+    assert invalidated == [folder]
+    assert not tab._current_directory_has_local_changes
+
+
+def test_file_browser_tab_leaving_changed_directory_for_sibling_invalidates_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(first)
+    tab._mark_current_directory_changed()
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: False,
+    )
+
+    tab.navigate_to(second)
+
+    assert invalidated == [first]
 
 
 def test_file_browser_tab_failed_history_navigation_keeps_stacks(
