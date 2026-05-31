@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -173,6 +174,8 @@ def execute_file_operation(
     """Execute a file operation request."""
     if request.mode == "delete":
         return delete_paths_with_result(request.sources, is_cancelled=is_cancelled)
+    if request.mode not in ("copy", "move"):
+        return FileOperationResult([f"Unsupported file operation mode: {request.mode}"], [])
     if request.destination is None:
         return FileOperationResult(["Destination is required."], [])
     return perform_copy_or_move_with_result(
@@ -188,26 +191,34 @@ def validate_copy_or_move(src: Path, dest_dir: Path, *, move: bool) -> str | Non
     try:
         src_resolved = src.resolve(strict=False)
         dest_resolved = dest_dir.resolve(strict=False)
+        target_resolved = (dest_dir / src.name).resolve(strict=False)
     except OSError as exc:
         logger.debug("Could not resolve copy/move safety paths", exc_info=True)
         return f"{src}: {exc}"
 
-    target_resolved = dest_resolved / src.name
-    if src_resolved == target_resolved:
+    if _same_path(src_resolved, target_resolved):
         return f"Source and destination are the same: {src}"
 
-    if src.is_dir() and _is_relative_to(dest_resolved, src_resolved):
+    if src.is_dir() and _is_relative_to_path(dest_resolved, src_resolved):
         return f"Refusing to {'move' if move else 'copy'} a folder into itself: {src}"
 
     return None
 
 
-def _is_relative_to(path: Path, parent: Path) -> bool:
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
+def _is_relative_to_path(path: Path, parent: Path) -> bool:
+    path_text = os.path.normcase(str(path))
+    parent_text = os.path.normcase(str(parent))
+    if path_text == parent_text:
+        return True
     try:
         path.relative_to(parent)
         return True
     except ValueError:
-        return False
+        return path_text.startswith(parent_text.rstrip("\\/") + os.sep)
 
 
 def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:

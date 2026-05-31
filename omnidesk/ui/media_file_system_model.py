@@ -13,7 +13,6 @@ from PyQt6.QtGui import QFileSystemModel, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import QFileIconProvider
 
 from ..utils.thumbnail_cache import file_thumbnail_cache, folder_preview_cache
-from .file_operations import perform_copy_or_move_with_result
 from .media_icon_provider import MediaThumbnailProvider
 from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
 
@@ -596,58 +595,15 @@ class MediaFileSystemModel(QFileSystemModel):
     def dropMimeData(
         self, data: QMimeData, action: Qt.DropAction, row: int, column: int, parent: QModelIndex
     ) -> bool:
-        """Handle model-level file drops with action-correct copy/move semantics."""
+        """Reject model-level drops so view/controller code owns file operations."""
         if action == Qt.DropAction.IgnoreAction:
             logger.debug("drop ignored")
             return True
-
-        if not data.hasUrls():
-            logger.warning("drop has no URLs")
-            return False
-
-        if not parent.isValid() or not self.isDir(parent):
-            logger.warning("drop target is not a valid directory")
-            return False
-
-        dest_dir = Path(self.filePath(parent))
-        if not dest_dir.exists() or not dest_dir.is_dir():
-            logger.warning("drop target directory does not exist: %s", dest_dir)
-            return False
-
-        if action not in (
-            Qt.DropAction.CopyAction,
-            Qt.DropAction.MoveAction,
-            Qt.DropAction.TargetMoveAction,
-        ):
-            logger.warning("drop action is not supported: %s", action)
-            return False
-
-        sources = [Path(url.toLocalFile()) for url in data.urls() if url.isLocalFile()]
-        if not sources:
-            logger.warning("drop has no local file URLs")
-            return False
-
-        result = perform_copy_or_move_with_result(
-            sources,
-            dest_dir,
-            move=action in (Qt.DropAction.MoveAction, Qt.DropAction.TargetMoveAction),
-        )
-        if result.errors:
-            logger.warning("drop completed with errors: %s", result.errors)
-        return bool(result.changed_dirs) and not result.cancelled
+        logger.info("Ignoring model-level drop; file browser views handle URL drops")
+        return False
 
     def canDropMimeData(
         self, data: QMimeData, action: Qt.DropAction, row: int, column: int, parent: QModelIndex
     ) -> bool:
-        """Allow URL drops onto directory items even while QFileSystemModel is read-only."""
-        if action == Qt.DropAction.IgnoreAction:
-            return True
-        if action not in (
-            Qt.DropAction.CopyAction,
-            Qt.DropAction.MoveAction,
-            Qt.DropAction.TargetMoveAction,
-        ):
-            return False
-        if not data.hasUrls():
-            return False
-        return parent.isValid() and self.isDir(parent)
+        """Reject model-level URL drops; views handle file operations."""
+        return action == Qt.DropAction.IgnoreAction

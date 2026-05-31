@@ -380,7 +380,7 @@ class TabContainer(QWidget):
         for index in range(self._tabs.count()):
             widget = self._tabs.widget(index)
             if isinstance(widget, FileBrowserTab):
-                widget.cancel_background_work()
+                widget.cancel_all_work_for_shutdown()
 
     def _focus_current_tab_later(self) -> None:
         QTimer.singleShot(0, self.focus_current)
@@ -487,6 +487,7 @@ class TabContainer(QWidget):
         widget = self._tabs.widget(index)
         if isinstance(widget, FileBrowserTab):
             self._closed_tabs.append((widget.current_path(), self.is_tab_pinned(index)))
+            widget.cancel_all_work_for_shutdown()
             with suppress(RuntimeError):
                 widget.deleteLater()
         self._tabs.removeTab(index)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 from pytest_mock import MockerFixture
 
@@ -15,6 +16,7 @@ from omnidesk.ui.file_operations import (
     perform_copy_or_move,
     perform_copy_or_move_with_result,
     rename_path,
+    validate_copy_or_move,
 )
 
 
@@ -186,3 +188,23 @@ def test_execute_file_operation_can_cancel_before_start(tmp_path: Path) -> None:
     assert result.cancelled
     assert result.errors == []
     assert not dest.exists()
+
+
+def test_execute_file_operation_rejects_unknown_mode(tmp_path: Path) -> None:
+    request = FileOperationRequest([], tmp_path, cast(Any, "archive"))
+
+    result = execute_file_operation(request)
+
+    assert result.errors == ["Unsupported file operation mode: archive"]
+
+
+def test_validate_copy_or_move_detects_same_target_with_case_difference(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "Source.txt"
+    source.write_text("source", encoding="utf-8")
+
+    error = validate_copy_or_move(source.with_name("SOURCE.txt"), tmp_path, move=False)
+
+    assert error is not None
+    assert "Source and destination are the same" in error

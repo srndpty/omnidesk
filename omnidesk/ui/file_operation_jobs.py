@@ -29,5 +29,7 @@ class FileOperationJob(QRunnable):
         return self._cancelled
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
+        # Cancellation is cooperative and checked between top-level sources.
+        # A single shutil copy/move call may not be interruptible.
         result = execute_file_operation(self._request, is_cancelled=lambda: self._cancelled)
         self.signals.finished.emit(result)

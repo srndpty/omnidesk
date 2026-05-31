@@ -1371,6 +1371,8 @@ class FileBrowserTab(QWidget):
                 self._file_operation_jobs.remove(job)
             if not isinstance(result, FileOperationResult):
                 return
+            if result.cancelled:
+                return
             self._handle_file_operation_finished(result, select_after=select_after)
 
         job.signals.finished.connect(handle_finished)
@@ -1384,6 +1386,8 @@ class FileBrowserTab(QWidget):
         *,
         select_after: list[Path] | None = None,
     ) -> None:
+        if result.cancelled:
+            return
         self._mark_changed_directories(result.changed_dirs)
         if result.errors:
             QMessageBox.warning(self, "Operation issues", "\n".join(result.errors))
@@ -1540,18 +1544,25 @@ class FileBrowserTab(QWidget):
             return
         logger.debug("Deactivating tab for %s", self._current_path)
         self._is_active = False
-        self.cancel_background_work()
+        self.cancel_inactive_tab_work()
 
-    def cancel_background_work(self) -> None:
-        """Cancel thumbnail, status, and file-operation work owned by this tab."""
-        self._thumbnail_request_timer.stop()
+    def cancel_inactive_tab_work(self) -> None:
+        """Cancel work that is only useful while this tab is visible."""
         self._thumbnail_scheduler.cancel()
         self._model.cancel_background_work()
         self._status_count_generation += 1
         self._status_count_jobs.clear()
+
+    def cancel_all_work_for_shutdown(self) -> None:
+        """Cancel all work owned by this tab during shutdown or disposal."""
+        self.cancel_inactive_tab_work()
         for job in self._file_operation_jobs:
             job.cancel()
         self._file_operation_jobs.clear()
+
+    def cancel_background_work(self) -> None:
+        """Backward-compatible shutdown cancellation entrypoint."""
+        self.cancel_all_work_for_shutdown()
 
     def _on_layout_changed(self) -> None:
         """Restart visible thumbnail requests after model layout changes."""

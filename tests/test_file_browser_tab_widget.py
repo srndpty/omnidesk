@@ -36,7 +36,8 @@ from omnidesk.ui.file_browser_tab import (
     navigation_cursor_action,
     navigation_event_without_control,
 )
-from omnidesk.ui.file_operations import FileOperationResult
+from omnidesk.ui.file_operation_jobs import FileOperationJob
+from omnidesk.ui.file_operations import FileOperationRequest, FileOperationResult
 
 
 class _MouseMoveStub:
@@ -886,6 +887,55 @@ def test_file_browser_tab_activate_deactivate_thumbnail_state(qtbot) -> None:
     assert not tab._thumbnail_request_timer.isActive()
     assert not tab._thumbnail_scroll_settle_timer.isActive()
     assert not tab._thumbnail_idle_batch_timer.isActive()
+
+
+def test_file_browser_tab_deactivate_does_not_cancel_file_operation_jobs(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    job = FileOperationJob(FileOperationRequest([], None, "delete"))
+    tab._file_operation_jobs.append(job)
+
+    tab.activate()
+    tab.deactivate()
+
+    assert not job.cancelled
+
+
+def test_file_browser_tab_shutdown_cancels_file_operation_jobs(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    job = FileOperationJob(FileOperationRequest([], None, "delete"))
+    tab._file_operation_jobs.append(job)
+
+    tab.cancel_all_work_for_shutdown()
+
+    assert job.cancelled
+    assert tab._file_operation_jobs == []
+
+
+def test_file_browser_tab_cancelled_file_operation_result_does_not_update_ui(
+    monkeypatch,
+    qtbot,
+) -> None:
+    warnings: list[tuple[str, str]] = []
+    refreshed: list[bool] = []
+    changed_dirs: list[list[Path]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(tab, "_mark_changed_directories", lambda dirs: changed_dirs.append(dirs))
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._handle_file_operation_finished(
+        FileOperationResult(["cancelled"], [Path("dest")], cancelled=True)
+    )
+
+    assert warnings == []
+    assert refreshed == []
+    assert changed_dirs == []
 
 
 def test_file_browser_tab_external_drop_warns_for_missing_destination(
