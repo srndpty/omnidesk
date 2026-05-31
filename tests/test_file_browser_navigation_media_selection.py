@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PyQt6.QtCore import QSize
@@ -10,10 +11,13 @@ from omnidesk.ui.file_browser_media_mode import (
     media_mode_button_text,
 )
 from omnidesk.ui.file_browser_navigation import (
+    directory_fingerprint,
+    directory_fingerprint_changed,
     navigation_history_step,
     navigation_target,
     path_to_focus_after_go_up,
     resolve_address_path,
+    same_navigation_path,
     should_record_history,
 )
 from omnidesk.ui.file_browser_selection import (
@@ -41,6 +45,29 @@ def test_should_record_history_respects_history_flag_and_same_path(tmp_path: Pat
     assert not should_record_history(current, other, from_history=True)
     assert not should_record_history(current, current, from_history=False)
     assert should_record_history(current, other, from_history=False)
+
+
+def test_navigation_path_comparison_uses_resolved_paths(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    current.mkdir()
+
+    assert same_navigation_path(current, current / ".." / "current")
+    assert same_navigation_path(tmp_path, current / "..")
+
+
+def test_directory_fingerprint_detects_directory_metadata_change(tmp_path: Path) -> None:
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    before = directory_fingerprint(folder)
+
+    assert before is not None
+    assert not directory_fingerprint_changed(folder, before)
+
+    current_stat = folder.stat()
+    atime = getattr(current_stat, "st_atime_ns", int(current_stat.st_atime * 1e9))
+    os.utime(folder, ns=(atime, before[0] + 1_000_000))
+
+    assert directory_fingerprint_changed(folder, before)
 
 
 def test_navigation_history_step_moves_between_back_and_forward_stacks(

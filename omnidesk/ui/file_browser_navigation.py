@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+DirectoryFingerprint = tuple[int, int]
+
 
 @dataclass(frozen=True)
 class NavigationHistoryStep:
@@ -27,10 +29,35 @@ def should_record_history(current: Path, destination: Path, *, from_history: boo
     """Return whether navigating to destination should append current to history."""
     if from_history:
         return False
+    return not same_navigation_path(current, destination)
+
+
+def same_navigation_path(left: Path, right: Path) -> bool:
+    """Return whether two paths refer to the same navigation target."""
     try:
-        return current.resolve() != destination.resolve()
+        return os.path.normcase(str(left.resolve(strict=False))) == os.path.normcase(
+            str(right.resolve(strict=False))
+        )
     except OSError:
-        return current != destination
+        return os.path.normcase(str(left.absolute())) == os.path.normcase(str(right.absolute()))
+
+
+def directory_fingerprint(path: Path) -> DirectoryFingerprint | None:
+    """Return a lightweight best-effort directory change fingerprint."""
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return None
+    mtime = getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1e9))
+    return mtime, stat_result.st_size
+
+
+def directory_fingerprint_changed(path: Path, previous: DirectoryFingerprint | None) -> bool:
+    """Return whether a directory fingerprint changed since it was captured."""
+    if previous is None:
+        return False
+    current = directory_fingerprint(path)
+    return current is not None and current != previous
 
 
 def navigation_history_step(

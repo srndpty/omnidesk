@@ -36,6 +36,7 @@ from omnidesk.ui.file_browser_tab import (
     navigation_cursor_action,
     navigation_event_without_control,
 )
+from omnidesk.ui.file_operations import FileOperationResult
 
 
 class _MouseMoveStub:
@@ -131,6 +132,62 @@ def test_file_browser_tab_go_up_selects_previous_folder(monkeypatch, qtbot, tmp_
     assert selected == [(child, QAbstractItemView.ScrollHint.PositionAtCenter)]
 
 
+def test_file_browser_tab_go_up_invalidates_folder_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(child)
+    monkeypatch.setattr(
+        tab._model,
+        "invalidate_folder_thumbnail_preview",
+        invalidated.append,
+    )
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: path == child and previous is not None,
+    )
+
+    tab.go_up()
+
+    assert invalidated == [child]
+
+
+def test_file_browser_tab_go_up_keeps_folder_preview_when_directory_unchanged(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(child)
+    monkeypatch.setattr(
+        tab._model,
+        "invalidate_folder_thumbnail_preview",
+        invalidated.append,
+    )
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: False,
+    )
+
+    tab.go_up()
+
+    assert invalidated == []
+
+
 def test_file_browser_tab_navigation_buttons_use_modern_arrow_text(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
@@ -218,6 +275,131 @@ def test_file_browser_tab_go_back_selects_folder_left_behind(
     assert tab.current_path() == parent
     qtbot.waitUntil(lambda: bool(selected), timeout=1000)
     assert selected == [(child, QAbstractItemView.ScrollHint.PositionAtCenter)]
+
+
+def test_file_browser_tab_go_back_to_parent_invalidates_folder_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(parent)
+    tab.navigate_to(child)
+    monkeypatch.setattr(
+        tab._model,
+        "invalidate_folder_thumbnail_preview",
+        invalidated.append,
+    )
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: path == child and previous is not None,
+    )
+
+    tab.go_back()
+
+    assert invalidated == [child]
+
+
+def test_file_browser_tab_go_back_to_non_parent_keeps_unchanged_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for path in (first, second):
+        path.mkdir()
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(first)
+    tab.navigate_to(second)
+    monkeypatch.setattr(
+        tab._model,
+        "invalidate_folder_thumbnail_preview",
+        invalidated.append,
+    )
+
+    tab.go_back()
+
+    assert invalidated == []
+
+
+def test_file_browser_tab_leaving_changed_directory_invalidates_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "folder"
+    child = folder / "child"
+    folder.mkdir()
+    child.mkdir()
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(folder)
+    tab._mark_current_directory_changed()
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: False,
+    )
+
+    tab.navigate_to(child)
+
+    assert invalidated == [folder]
+    assert not tab._current_directory_has_local_changes
+
+
+def test_file_browser_tab_leaving_changed_directory_for_sibling_invalidates_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(first)
+    tab._mark_current_directory_changed()
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: False,
+    )
+
+    tab.navigate_to(second)
+
+    assert invalidated == [first]
+
+
+def test_file_browser_tab_navigate_to_same_path_keeps_local_change_flag(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    tab._mark_current_directory_changed()
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+
+    tab.navigate_to(tmp_path)
+
+    assert tab._current_directory_has_local_changes
+    assert invalidated == []
 
 
 def test_file_browser_tab_failed_history_navigation_keeps_stacks(
@@ -765,8 +947,9 @@ def test_file_browser_tab_external_drop_performs_operation_and_refreshes(
     qtbot.addWidget(tab)
     monkeypatch.setattr(
         tab,
-        "_perform_copy_or_move",
-        lambda paths, target_dir, move: operations.append((paths, target_dir, move)),
+        "_perform_copy_or_move_with_result",
+        lambda paths, target_dir, move: operations.append((paths, target_dir, move))
+        or FileOperationResult([], []),
     )
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
 
@@ -774,6 +957,58 @@ def test_file_browser_tab_external_drop_performs_operation_and_refreshes(
 
     assert operations == [([source], dest, False)]
     assert refreshed == [True]
+
+
+def test_file_browser_tab_external_drop_into_subfolder_invalidates_target_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.txt"
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(
+        tab,
+        "_perform_copy_or_move_with_result",
+        lambda *args, **kwargs: FileOperationResult([], [dest]),
+    )
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(tab, "refresh", lambda: None)
+
+    tab._handle_external_drop([source], dest, move=False)
+
+    assert invalidated == [dest]
+
+
+def test_file_browser_tab_external_move_invalidates_source_and_target_previews(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source_parent = tmp_path / "source-parent"
+    dest = tmp_path / "dest"
+    source_parent.mkdir()
+    dest.mkdir()
+    source = source_parent / "source.txt"
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(
+        tab,
+        "_perform_copy_or_move_with_result",
+        lambda *args, **kwargs: FileOperationResult([], [dest, source_parent]),
+    )
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(tab, "refresh", lambda: None)
+
+    tab._handle_external_drop([source], dest, move=True)
+
+    assert invalidated == [dest, source_parent]
 
 
 def test_file_browser_tab_rename_selected_success(monkeypatch, qtbot, tmp_path: Path) -> None:
@@ -870,8 +1105,9 @@ def test_file_browser_tab_paste_copy_and_move_updates_clipboard_and_actions(
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(
         tab,
-        "_perform_copy_or_move",
-        lambda paths, dest_dir, move: operations.append((paths, dest_dir, move)),
+        "_perform_copy_or_move_with_result",
+        lambda paths, dest_dir, move: operations.append((paths, dest_dir, move))
+        or FileOperationResult([], [dest_dir]),
     )
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
 
@@ -883,6 +1119,31 @@ def test_file_browser_tab_paste_copy_and_move_updates_clipboard_and_actions(
     assert operations == [([copied], tmp_path, False), ([moved], tmp_path, True)]
     assert refreshed == [True, True]
     assert tab._clipboard is None
+
+
+def test_file_browser_tab_paste_marks_partial_success_changed_dirs(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.txt"
+    changed: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    tab._clipboard = {"paths": [source], "mode": "copy"}
+    monkeypatch.setattr(
+        tab,
+        "_perform_copy_or_move_with_result",
+        lambda paths, dest_dir, move: FileOperationResult(["copy failed"], [dest_dir]),
+    )
+    monkeypatch.setattr(tab, "_mark_changed_directories", lambda dirs: changed.extend(dirs))
+    monkeypatch.setattr(tab, "refresh", lambda: None)
+    monkeypatch.setattr(tab, "_update_action_states", lambda: None)
+
+    tab._paste_into_current()
+
+    assert changed == [tmp_path]
 
 
 def test_file_browser_tab_perform_copy_or_move_warns_on_errors(monkeypatch, qtbot) -> None:
@@ -900,6 +1161,28 @@ def test_file_browser_tab_perform_copy_or_move_warns_on_errors(monkeypatch, qtbo
 
     tab._perform_copy_or_move([Path("source.txt")], Path("dest"), move=False)
 
+    assert warnings == [("Operation issues", "copy failed")]
+
+
+def test_file_browser_tab_perform_copy_or_move_with_result_warns_on_errors(
+    monkeypatch, qtbot
+) -> None:
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    result = FileOperationResult(["copy failed"], [Path("dest")])
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.perform_copy_or_move_with_result",
+        lambda sources, dest_dir, move: result,
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    actual = tab._perform_copy_or_move_with_result([Path("source.txt")], Path("dest"), move=False)
+
+    assert actual is result
     assert warnings == [("Operation issues", "copy failed")]
 
 
@@ -1455,6 +1738,39 @@ def test_file_browser_tab_delete_selected_confirms_deletes_and_refreshes(
     assert not source.exists()
     assert tab._pending_selection_path == tmp_path
     assert refreshed == [True]
+
+
+def test_file_browser_tab_delete_then_go_up_invalidates_folder_preview(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    source = child / "source.jpg"
+    source.write_text("source", encoding="utf-8")
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(child)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [source])
+    monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: None)
+    monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
+    monkeypatch.setattr(
+        file_browser_tab_module,
+        "directory_fingerprint_changed",
+        lambda path, previous: False,
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    tab._delete_selected()
+    tab.go_up()
+
+    assert invalidated == [child]
 
 
 def test_file_browser_tab_delete_selected_warns_when_delete_reports_errors(

@@ -425,6 +425,9 @@ class _FakeCache:
         self._disk_path = disk_path
         self._memory_icon = memory_icon
         self.memory_puts: list[tuple[str, QIcon, QPixmap]] = []
+        self.memory_discards: list[str] = []
+        self.disk_discards: list[tuple[str, int | None]] = []
+        self.all_disk_discards: list[tuple[str, set[int]]] = []
 
     def get_memory(self, _key: str, *, min_edge: int | None = None) -> QIcon | None:
         return self._memory_icon
@@ -434,6 +437,16 @@ class _FakeCache:
 
     def put_memory(self, key: str, icon: QIcon, pixmap: QPixmap) -> None:
         self.memory_puts.append((key, icon, pixmap))
+
+    def discard_memory(self, key: str) -> None:
+        self.memory_discards.append(key)
+
+    def discard_disk(self, key: str, *, hint_edge: int | None = None) -> None:
+        self.disk_discards.append((key, hint_edge))
+
+    def discard_disk_all_sizes(self, key: str, *, hint_edges=()) -> None:
+        self.all_disk_discards.append((key, set(hint_edges)))
+        self._disk_path.unlink(missing_ok=True)
 
     def enforce_disk_budget(self) -> None:
         pass
@@ -492,6 +505,103 @@ def test_media_file_system_model_ensure_folder_thumbnail_ignores_duplicate(
     assert key in model._pending
     assert key in model._folder_scans
     assert len(started) == 1
+
+
+def test_media_file_system_model_invalidate_folder_thumbnail_preview_clears_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(160)
+    key = model._normalise_key(tmp_path)
+    fake_cache = _FakeCache(tmp_path / "cache.png")
+    cancelled: list[str] = []
+    emitted: list[str] = []
+    monkeypatch.setattr(model_module, "folder_preview_cache", fake_cache)
+    monkeypatch.setattr(model._provider, "cancel_thumbnail", cancelled.append)
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", emitted.append)
+
+    token = model._new_token(key)
+    generation = token.generation
+    model._pending.add(key)
+    model._failed.add(key)
+    model._folder_scans[key] = cast(model_module.FolderScanJob, object())
+
+    model.invalidate_folder_thumbnail_preview(tmp_path)
+
+    assert token.cancelled
+    assert model._generations[key] == generation + 1
+    assert cancelled == [key]
+    assert key not in model._pending
+    assert key not in model._failed
+    assert key not in model._folder_scans
+    assert fake_cache.memory_discards == [key]
+    assert fake_cache.all_disk_discards == [(key, {96, 160})]
+    assert emitted == [key]
+
+
+def test_media_file_system_model_invalidate_folder_preview_rejects_late_thumbnail_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    key = model._normalise_key(tmp_path)
+    emitted: list[str] = []
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", emitted.append)
+
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+
+    model.invalidate_folder_thumbnail_preview(tmp_path)
+    model._handle_thumbnail_ready(key, None, token.generation)
+
+    assert emitted == [key]
+
+
+def test_media_file_system_model_invalidate_folder_preview_rejects_pending_save(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(160)
+    key = model._normalise_key(tmp_path)
+    fake_cache = _FakeCache(tmp_path / "cache.png")
+    monkeypatch.setattr(model_module, "folder_preview_cache", fake_cache)
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda _key: None)
+    save_key = model._cache_save_key(fake_cache, key, 160)
+    generation = model._next_cache_save_generation(save_key)
+    temp_path = tmp_path / "stale.tmp"
+    temp_path.write_text("stale", encoding="utf-8")
+
+    model.invalidate_folder_thumbnail_preview(tmp_path)
+
+    assert not model._commit_cache_save(save_key, generation, temp_path, fake_cache._disk_path)
+    assert not fake_cache._disk_path.exists()
+
+
+def test_media_file_system_model_cache_save_generation_is_not_reused(tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    fake_cache = _FakeCache(tmp_path / "cache.png")
+    save_key = model._cache_save_key(fake_cache, "folder-key", 160)
+    cache_path = tmp_path / "cache.png"
+    old_temp = tmp_path / "old.tmp"
+    newer_temp = tmp_path / "newer.tmp"
+    newest_temp = tmp_path / "newest.tmp"
+
+    first_generation = model._next_cache_save_generation(save_key)
+    second_generation = model._next_cache_save_generation(save_key)
+    old_temp.write_text("old", encoding="utf-8")
+    newer_temp.write_text("newer", encoding="utf-8")
+
+    assert model._commit_cache_save(save_key, second_generation, newer_temp, cache_path)
+    third_generation = model._next_cache_save_generation(save_key)
+    newest_temp.write_text("newest", encoding="utf-8")
+
+    assert third_generation == 3
+    assert not model._commit_cache_save(save_key, first_generation, old_temp, cache_path)
+    assert model._commit_cache_save(save_key, third_generation, newest_temp, cache_path)
+    assert cache_path.read_text(encoding="utf-8") == "newest"
 
 
 def test_media_file_system_model_ensure_thumbnail_skips_memory_pending_failed(

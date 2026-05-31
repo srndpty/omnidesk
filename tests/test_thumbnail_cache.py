@@ -47,6 +47,17 @@ def test_get_or_create_returns_factory_icon_without_storing() -> None:
     assert cache.get("missing") is None
 
 
+def test_thumbnail_cache_discards_memory_item() -> None:
+    cache = ThumbnailCache[str]()
+    pixmap = _pixmap()
+    icon = QIcon(pixmap)
+
+    cache.put("stale", icon, pixmap)
+    cache.discard_memory("stale")
+
+    assert cache.get("stale") is None
+
+
 def test_persistent_cache_stores_and_loads_from_disk(tmp_path: Path) -> None:
     cache = PersistentThumbnailCache[str](capacity=1, namespace="files", root=tmp_path)
     key_path = tmp_path / "source.png"
@@ -115,6 +126,38 @@ def test_persistent_cache_put_uses_explicit_hint_edge_for_disk_key(tmp_path: Pat
 
     assert cache.disk_path(str(key_path), hint_edge=160).exists()
     assert not cache.disk_path(str(key_path), hint_edge=96).exists()
+
+
+def test_persistent_cache_discards_single_disk_entry(tmp_path: Path) -> None:
+    cache = PersistentThumbnailCache[str](capacity=1, namespace="files", root=tmp_path)
+    key_path = tmp_path / "source.png"
+    key_path.write_text("source", encoding="utf-8")
+    pixmap = _pixmap(96)
+    icon = QIcon(pixmap)
+
+    cache.put(str(key_path), icon, pixmap, hint_edge=160)
+    cache.discard_disk(str(key_path), hint_edge=160)
+
+    assert not cache.disk_path(str(key_path), hint_edge=160).exists()
+
+
+def test_persistent_cache_discards_all_known_and_hint_edge_entries(tmp_path: Path) -> None:
+    cache = PersistentThumbnailCache[str](capacity=1, namespace="folders", root=tmp_path)
+    key_path = tmp_path / "folder"
+    key_path.mkdir()
+    pixmap = _pixmap(96)
+    icon = QIcon(pixmap)
+
+    cache.put(str(key_path), icon, pixmap, hint_edge=96)
+    cache.put(str(key_path), icon, pixmap, hint_edge=160)
+    extra_path = cache.disk_path(str(key_path), hint_edge=192)
+    extra_path.write_bytes(b"extra")
+
+    cache.discard_disk_all_sizes(str(key_path), hint_edges={96, 160})
+
+    assert not cache.disk_path(str(key_path), hint_edge=96).exists()
+    assert not cache.disk_path(str(key_path), hint_edge=160).exists()
+    assert not extra_path.exists()
 
 
 def test_thumbnail_cache_get_sized_ignores_null_pixmap() -> None:

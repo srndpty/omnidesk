@@ -7,6 +7,7 @@ import os
 import shutil
 from contextlib import suppress
 from pathlib import Path
+from threading import Lock
 
 from PyQt6.QtCore import QMimeData, QModelIndex, QSize, Qt, QThreadPool
 from PyQt6.QtGui import QFileSystemModel, QIcon, QImage, QPainter, QPixmap
@@ -17,6 +18,7 @@ from .media_icon_provider import MediaThumbnailProvider
 from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
 
 logger = logging.getLogger(__name__)
+FOLDER_PREVIEW_DISK_EDGES = frozenset({96, 160})
 
 
 def folder_thumbnail_rect(base_size: QSize, thumb_size: QSize, edge: int) -> tuple[int, int]:
@@ -106,6 +108,8 @@ class MediaFileSystemModel(QFileSystemModel):
         self._folder_scans: dict[str, FolderScanJob] = {}
         self._scan_pool = QThreadPool.globalInstance()
         self._cache_jobs: dict[str, CacheLoadJob] = {}
+        self._cache_save_generations: dict[tuple[int, str, int], int] = {}
+        self._cache_save_lock = Lock()
         self._debug_thumbnails = os.environ.get("OMNIDESK_THUMB_DEBUG", "").lower() in {
             "1",
             "true",
@@ -152,6 +156,9 @@ class MediaFileSystemModel(QFileSystemModel):
         self._tokens[key] = token
         self._request_edges[key] = self._thumbnail_edge
         return token
+
+    def _bump_thumbnail_generation(self, key: str) -> None:
+        self._generations[key] = self._generations.get(key, 0) + 1
 
     def _is_current_request(self, key: str, generation: int) -> bool:
         return key in self._visible_keys and self._generations.get(key) == generation
@@ -281,6 +288,20 @@ class MediaFileSystemModel(QFileSystemModel):
         job.signals.found.connect(self._handle_folder_scan_result)
         self._folder_scans[key] = job
         self._scan_pool.start(job)
+
+    def invalidate_folder_thumbnail_preview(self, path: Path) -> None:
+        """Drop cached folder preview so the next visible request re-scans it."""
+        key = self._normalise_key(path)
+        self._cancel_thumbnail_key(key)
+        self._bump_thumbnail_generation(key)
+        self._failed.discard(key)
+        self._invalidate_cache_saves(folder_preview_cache, key)
+        folder_preview_cache.discard_memory(key)
+        folder_preview_cache.discard_disk_all_sizes(
+            key,
+            hint_edges=FOLDER_PREVIEW_DISK_EDGES | {self._thumbnail_edge},
+        )
+        self._emit_thumbnail_changed(key)
 
     def _handle_folder_scan_result(
         self, key: str, generation: int, image_path: Path | None
@@ -488,13 +509,57 @@ class MediaFileSystemModel(QFileSystemModel):
         cache_pixmap = cache_pixmap_for_edge(pixmap, edge)
         if cache_pixmap.isNull():
             return
+        save_key = self._cache_save_key(cache, key, edge)
+        generation = self._next_cache_save_generation(save_key)
         self._scan_pool.start(
             CacheSaveJob(
                 cache.disk_path(key, hint_edge=edge),
                 cache_pixmap.toImage(),
                 cache.enforce_disk_budget,
+                lambda temp_path, cache_path: self._commit_cache_save(
+                    save_key,
+                    generation,
+                    temp_path,
+                    cache_path,
+                ),
             )
         )
+
+    @staticmethod
+    def _cache_save_key(cache, key: str, edge: int) -> tuple[int, str, int]:
+        return id(cache), key, edge
+
+    def _next_cache_save_generation(self, save_key: tuple[int, str, int]) -> int:
+        with self._cache_save_lock:
+            generation = self._cache_save_generations.get(save_key, 0) + 1
+            self._cache_save_generations[save_key] = generation
+            return generation
+
+    def _invalidate_cache_saves(self, cache, key: str) -> None:
+        cache_id = id(cache)
+        with self._cache_save_lock:
+            matching_keys = [
+                save_key
+                for save_key in self._cache_save_generations
+                if save_key[0] == cache_id and save_key[1] == key
+            ]
+            for save_key in matching_keys:
+                self._cache_save_generations[save_key] += 1
+
+    def _commit_cache_save(
+        self,
+        save_key: tuple[int, str, int],
+        generation: int,
+        temp_path: Path,
+        cache_path: Path,
+    ) -> bool:
+        with self._cache_save_lock:
+            if self._cache_save_generations.get(save_key) != generation:
+                return False
+            # Keep replace under the generation lock so invalidation cannot
+            # interleave between the final generation check and disk commit.
+            temp_path.replace(cache_path)
+            return True
 
     def _emit_thumbnail_changed(self, key: str) -> None:
         index = self.index(key)
