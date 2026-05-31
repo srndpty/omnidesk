@@ -66,10 +66,11 @@ def pixmap_edge(pixmap: QPixmap) -> int:
 
 def cache_pixmap_for_edge(pixmap: QPixmap, edge: int) -> QPixmap:
     """Return a cache pixmap whose outer edge matches the requested cache edge."""
-    if pixmap.isNull() or edge <= 0 or pixmap_edge(pixmap) >= edge:
+    target_size = QSize(edge, edge)
+    if pixmap.isNull() or edge <= 0 or pixmap.size() == target_size:
         return pixmap
 
-    canvas = QPixmap(edge, edge)
+    canvas = QPixmap(target_size)
     canvas.fill(Qt.GlobalColor.transparent)
     x = (edge - pixmap.width()) // 2
     y = (edge - pixmap.height()) // 2

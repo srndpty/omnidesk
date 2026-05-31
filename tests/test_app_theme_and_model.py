@@ -391,6 +391,18 @@ def test_cache_pixmap_for_edge_centers_small_pixmap() -> None:
     assert image.pixelColor(0, 0).alpha() == 0
 
 
+def test_cache_pixmap_for_edge_pads_wide_pixmap_with_matching_long_edge() -> None:
+    pixmap = QPixmap(160, 90)
+    pixmap.fill(Qt.GlobalColor.red)
+
+    normalized = cache_pixmap_for_edge(pixmap, 160)
+
+    assert normalized.size() == QSize(160, 160)
+    image = normalized.toImage()
+    assert image.pixelColor(80, 80) == Qt.GlobalColor.red
+    assert image.pixelColor(80, 0).alpha() == 0
+
+
 def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) -> None:
     model = MediaFileSystemModel()
     invalid_flags = model.flags(model.index(""))
