@@ -31,6 +31,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction,
+    QCloseEvent,
     QColor,
     QDesktopServices,
     QDrag,
@@ -62,6 +63,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .file_browser_actions import file_action_states
+from .file_browser_background import FileBrowserThumbnailScheduler
 from .file_browser_drop import (
     drop_action_for_modifiers,
     drop_target_directory,
@@ -101,7 +103,9 @@ from .file_browser_status import (
     directory_item_counts,
 )
 from .file_browser_visible import index_identity, tile_probe_points, tile_probe_step
+from .file_operation_jobs import FileOperationJob
 from .file_operations import (
+    FileOperationRequest,
     FileOperationResult,
     create_file,
     create_folder,
@@ -165,7 +169,8 @@ def navigation_cursor_action(key: int) -> QAbstractItemView.CursorAction | None:
 
 
 def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
-    tab._select_path(path, QAbstractItemView.ScrollHint.PositionAtCenter)
+    with suppress(RuntimeError):
+        tab._select_path(path, QAbstractItemView.ScrollHint.PositionAtCenter)
 
 
 class _DirectoryCountSignals(QObject):
@@ -524,7 +529,6 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
         self._rubber_band_origin: QPoint | None = None
 
-        # ★★★ リアルタイム選択更新のための状態変数を追加 ★★★
         self._last_selection = QItemSelection()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -536,7 +540,6 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
             self._rubber_band.setGeometry(QRect(origin, QSize()))
             self._rubber_band.show()
 
-            # ★★★ 既存の選択状態を保存しておく ★★★
             self._last_selection = QItemSelection(self.selectionModel().selection())
 
             event.accept()
@@ -547,7 +550,6 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
             rect = QRect(self._rubber_band_origin, event.pos()).normalized()
             self._rubber_band.setGeometry(rect)
 
-            # ★★★ mouseMoveイベント内で直接、選択更新処理を呼び出す ★★★
             self._update_rubber_band_selection(event.modifiers())
 
             event.accept()
@@ -559,7 +561,6 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
         if self._rubber_band.isVisible():
             self._rubber_band.hide()
 
-            # ★★★ 状態変数をリセット ★★★
             self._last_selection = QItemSelection()
 
             event.accept()
@@ -938,7 +939,9 @@ class FileBrowserTab(QWidget):
         self._status_file_count = 0
         self._status_count_generation = 0
         self._status_count_jobs: dict[int, _DirectoryCountJob] = {}
+        self._status_count_refresh_on_activate = False
         self._status_count_pool = QThreadPool.globalInstance()
+        self._file_operation_jobs: list[FileOperationJob] = []
         self._create_actions()
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")
@@ -1028,6 +1031,14 @@ class FileBrowserTab(QWidget):
         self._thumbnail_idle_batch_timer.setSingleShot(True)
         self._thumbnail_idle_batch_timer.timeout.connect(
             lambda: self._request_visible_thumbnails(scrolling=False)
+        )
+        self._thumbnail_scheduler = FileBrowserThumbnailScheduler(
+            request_timer=self._thumbnail_request_timer,
+            scroll_settle_timer=self._thumbnail_scroll_settle_timer,
+            idle_batch_timer=self._thumbnail_idle_batch_timer,
+            is_active=lambda: self._is_active,
+            set_scrolling=self._set_thumbnail_scrolling,
+            request_visible=self._request_visible_thumbnail_batch,
         )
 
         self._selection_restore_timer = QTimer(self)
@@ -1350,6 +1361,48 @@ class FileBrowserTab(QWidget):
             QMessageBox.warning(self, "Operation issues", "\n".join(result.errors))
         return result
 
+    def _start_file_operation(
+        self,
+        request: FileOperationRequest,
+        *,
+        select_after: list[Path] | None = None,
+    ) -> FileOperationJob:
+        job = FileOperationJob(request)
+
+        def handle_finished(result: object) -> None:
+            with suppress(ValueError):
+                self._file_operation_jobs.remove(job)
+            if not isinstance(result, FileOperationResult):
+                return
+            if result.cancelled:
+                return
+            self._handle_file_operation_finished(result, select_after=select_after)
+
+        job.signals.finished.connect(handle_finished)
+        self._file_operation_jobs.append(job)
+        QThreadPool.globalInstance().start(job)
+        return job
+
+    def _handle_file_operation_finished(
+        self,
+        result: FileOperationResult,
+        *,
+        select_after: list[Path] | None = None,
+    ) -> None:
+        if result.cancelled:
+            return
+        self._mark_changed_directories(result.changed_dirs)
+        if result.errors:
+            QMessageBox.warning(self, "Operation issues", "\n".join(result.errors))
+        if not result.errors and select_after:
+            self._pending_selection_path = next(
+                (path for path in select_after if path.exists()),
+                None,
+            )
+        self.refresh()
+        if self._pending_selection_path is not None:
+            self._select_path(self._pending_selection_path)
+
     def _resolve_destination(self, dest_dir: Path, name: str, move: bool) -> Path:
         return resolve_destination(dest_dir, name, move)
 
@@ -1480,66 +1533,81 @@ class FileBrowserTab(QWidget):
         logger.debug("Navigated to %s and restarted thumbnail requests", target)
         return True
 
-    # ★★★ 3. activate と deactivate メソッドを追加 ★★★
     def activate(self) -> None:
-        """このタブがアクティブになったときに呼び出される"""
+        """Start visible-item thumbnail work when this tab becomes active."""
         if self._is_active:
             return
         logger.debug("Activating tab for %s", self._current_path)
         self._is_active = True
-        # アクティブになったので、サムネイル要求を開始する
         self._restart_thumbnail_requests()
+        if self._status_count_refresh_on_activate:
+            self._request_status_item_counts(self._current_path)
 
     def deactivate(self) -> None:
-        """このタブが非アクティブになったときに呼び出される"""
+        """Stop visible-item thumbnail work when this tab becomes inactive."""
         if not self._is_active:
             return
         logger.debug("Deactivating tab for %s", self._current_path)
         self._is_active = False
-        # 保留中のサムネイル要求があればキャンセルする
-        self._thumbnail_request_timer.stop()
-        self._thumbnail_scroll_settle_timer.stop()
-        self._thumbnail_idle_batch_timer.stop()
-        self._model.clear_visible_thumbnail_targets()
+        self.cancel_inactive_tab_work()
 
-    # 場所は _on_directory_loaded や _on_scroll の近くが分かりやすい
-    # def _on_sort_changed(self, logical_index: int, order: Qt.SortOrder) -> None:
-    #     print(f"_on_sort_changed(logical_index={logical_index}, order={order})")
-    #     """ソート順が変更されたときに呼び出されるスロット"""
-    #     # アクティブなタブの場合のみ、サムネイル要求をスケジュールする
-    #     if self._is_active:
-    #         QTimer.singleShot(1000, self._restart_thumbnail_requests)
-    #         print(f"[FileBrowserTab] Sort changed, requesting thumbnails", flush=True)
+    def cancel_inactive_tab_work(self) -> None:
+        """Cancel work that is only useful while this tab is visible."""
+        self._thumbnail_scheduler.cancel()
+        self._model.cancel_background_work()
+        if self._status_count_jobs:
+            self._status_count_refresh_on_activate = True
+        self._status_count_generation += 1
 
-    # ★★★ 3. _on_layout_changed スロットを新設 ★★★
+    def cancel_all_work_for_shutdown(self) -> None:
+        """Cancel all work owned by this tab during shutdown or disposal."""
+        self.cancel_inactive_tab_work()
+        self._selection_restore_timer.stop()
+        for job in self._file_operation_jobs:
+            job.cancel()
+        self._file_operation_jobs.clear()
+
+    def cancel_background_work(self) -> None:
+        """Deprecated: shutdown-only cancellation. Do not use for tab deactivation."""
+        self.cancel_all_work_for_shutdown()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
+        self.cancel_all_work_for_shutdown()
+        super().closeEvent(event)
+
     def _on_layout_changed(self) -> None:
-        """モデルのレイアウト(ソート順含む)が変更されたときに呼び出される"""
+        """Restart visible thumbnail requests after model layout changes."""
         self._restart_thumbnail_requests()
 
     def _on_scroll(self) -> None:
-        if self._is_active:  # アクティブなタブだけがスクロールに応答
-            self._is_scrolling_for_thumbnails = True
-            self._thumbnail_idle_batch_timer.stop()
-            if not self._thumbnail_request_timer.isActive():
-                self._thumbnail_request_timer.start()
-            self._thumbnail_scroll_settle_timer.start()
+        if not hasattr(self, "_thumbnail_scheduler"):
+            return
+        self._thumbnail_scheduler.handle_scroll()
 
     def _restart_thumbnail_requests(self) -> None:
         """Manually trigger a re-evaluation of visible items for thumbnail requests."""
-        if self._is_active:  # アクティブなタブだけがリクエストを再開
-            self._thumbnail_request_timer.stop()
-            self._thumbnail_request_timer.start()
-            self._thumbnail_scroll_settle_timer.start()
-            self._thumbnail_idle_batch_timer.stop()
+        if not hasattr(self, "_thumbnail_scheduler"):
+            return
+        self._thumbnail_scheduler.restart()
 
     def _request_settled_thumbnails(self) -> None:
-        self._is_scrolling_for_thumbnails = False
+        if not hasattr(self, "_thumbnail_scheduler"):
+            return
+        self._set_thumbnail_scrolling(False)
         self._request_visible_thumbnails(scrolling=False)
 
     def _request_visible_thumbnails(self, *, scrolling: bool = False) -> None:
+        if not hasattr(self, "_thumbnail_scheduler"):
+            return
+        self._thumbnail_scheduler.request_visible(scrolling=scrolling)
+
+    def _set_thumbnail_scrolling(self, scrolling: bool) -> None:
+        self._is_scrolling_for_thumbnails = scrolling
+
+    def _request_visible_thumbnail_batch(self, scrolling: bool) -> int:
         view = self._active_view()
         if not view:
-            return
+            return 0
 
         visible_indexes: list[QModelIndex] = []
         if isinstance(view, QTreeView):
@@ -1553,8 +1621,7 @@ class FileBrowserTab(QWidget):
             request_limit=request_limit,
             allow_folder_preview=not scrolling,
         )
-        if not scrolling and requested > 0 and self._is_active:
-            self._thumbnail_idle_batch_timer.start()
+        return requested
 
     def _visible_tree_indexes(self, view: QTreeView) -> list[QModelIndex]:
         indexes: list[QModelIndex] = []
@@ -2023,6 +2090,7 @@ class FileBrowserTab(QWidget):
         self._selection_restore_timer.start(0)
 
     def _request_status_item_counts(self, path: Path) -> None:
+        self._status_count_refresh_on_activate = False
         self._status_count_generation += 1
         generation = self._status_count_generation
         self._status_folder_count = 0

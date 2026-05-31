@@ -34,7 +34,11 @@ def _stable_hash(s: str) -> str:
 
 
 class ThumbnailCache(Generic[Key]):
-    """Lightweight in-memory LRU storing QIcon instances keyed by path (for backward compat)."""
+    """GUI-thread in-memory LRU storing QIcon instances keyed by path.
+
+    Worker jobs load and save QImage data only. QPixmap/QIcon creation and memory-cache
+    mutation stay on the GUI thread to avoid Qt object affinity issues.
+    """
 
     def __init__(self, capacity: int = 256) -> None:
         self._capacity = capacity
@@ -185,7 +189,6 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         path = self._disk_key(key, hint_edge=hint_edge)
         self._remember_disk_edge(key, hint_edge=hint_edge)
         if path.exists():
-            # print(f"[ThumbnailCache] load from disk: {path}", flush=True)
             px = QPixmap()
             if px.load(str(path), "PNG"):
                 ic = QIcon(px)
@@ -220,7 +223,6 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
             saver.open(QSaveFile.OpenModeFlag.WriteOnly)
             pixmap.save(saver, "PNG")
             saver.commit()
-            # print(f"[ThumbnailCache] saved to disk: {dst}", flush=True)
             with suppress(Exception):
                 os.utime(str(dst), None)  # LRU更新
         except Exception:

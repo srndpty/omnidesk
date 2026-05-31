@@ -27,7 +27,13 @@ from PyQt6.QtGui import (
     QStandardItem,
     QStandardItemModel,
 )
-from PyQt6.QtWidgets import QAbstractItemView, QListView, QMessageBox, QStyle, QStyleOptionViewItem
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QListView,
+    QMessageBox,
+    QStyle,
+    QStyleOptionViewItem,
+)
 
 import omnidesk.ui.file_browser_tab as file_browser_tab_module
 from omnidesk.ui.file_browser_status import BrowserStatus
@@ -36,7 +42,8 @@ from omnidesk.ui.file_browser_tab import (
     navigation_cursor_action,
     navigation_event_without_control,
 )
-from omnidesk.ui.file_operations import FileOperationResult
+from omnidesk.ui.file_operation_jobs import FileOperationJob
+from omnidesk.ui.file_operations import FileOperationRequest, FileOperationResult
 
 
 class _MouseMoveStub:
@@ -64,6 +71,42 @@ class _MouseReleaseStub:
 
     def accept(self) -> None:
         self.accepted = True
+
+
+class _DropStub:
+    def __init__(
+        self,
+        mime_data: QMimeData,
+        *,
+        drop_action: Qt.DropAction = Qt.DropAction.MoveAction,
+        modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
+    ) -> None:
+        self._mime_data = mime_data
+        self._drop_action = drop_action
+        self._modifiers = modifiers
+        self.accepted = False
+        self.ignored = False
+
+    def mimeData(self) -> QMimeData:  # noqa: N802
+        return self._mime_data
+
+    def position(self) -> QPointF:
+        return QPointF(1, 1)
+
+    def dropAction(self) -> Qt.DropAction:  # noqa: N802
+        return self._drop_action
+
+    def modifiers(self) -> Qt.KeyboardModifier:
+        return self._modifiers
+
+    def setDropAction(self, action: Qt.DropAction) -> None:  # noqa: N802
+        self._drop_action = action
+
+    def accept(self) -> None:
+        self.accepted = True
+
+    def ignore(self) -> None:
+        self.ignored = True
 
 
 def test_file_browser_tab_initializes_and_navigates(qtbot, tmp_path: Path) -> None:
@@ -888,6 +931,55 @@ def test_file_browser_tab_activate_deactivate_thumbnail_state(qtbot) -> None:
     assert not tab._thumbnail_idle_batch_timer.isActive()
 
 
+def test_file_browser_tab_deactivate_does_not_cancel_file_operation_jobs(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    job = FileOperationJob(FileOperationRequest([], None, "delete"))
+    tab._file_operation_jobs.append(job)
+
+    tab.activate()
+    tab.deactivate()
+
+    assert not job.cancelled
+
+
+def test_file_browser_tab_shutdown_cancels_file_operation_jobs(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    job = FileOperationJob(FileOperationRequest([], None, "delete"))
+    tab._file_operation_jobs.append(job)
+
+    tab.cancel_all_work_for_shutdown()
+
+    assert job.cancelled
+    assert tab._file_operation_jobs == []
+
+
+def test_file_browser_tab_cancelled_file_operation_result_does_not_update_ui(
+    monkeypatch,
+    qtbot,
+) -> None:
+    warnings: list[tuple[str, str]] = []
+    refreshed: list[bool] = []
+    changed_dirs: list[list[Path]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(tab, "_mark_changed_directories", lambda dirs: changed_dirs.append(dirs))
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._handle_file_operation_finished(
+        FileOperationResult(["cancelled"], [Path("dest")], cancelled=True)
+    )
+
+    assert warnings == []
+    assert refreshed == []
+    assert changed_dirs == []
+
+
 def test_file_browser_tab_external_drop_warns_for_missing_destination(
     monkeypatch,
     qtbot,
@@ -1336,6 +1428,41 @@ def test_file_view_event_accepts_url_drag_enter(qtbot, tmp_path: Path) -> None:
     assert view.event(enter_event)
     assert enter_event.isAccepted()
     assert enter_event.dropAction() == Qt.DropAction.MoveAction
+
+
+def test_file_view_drop_uses_controller_path_when_model_drop_is_rejected(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(source))])
+    event = _DropStub(mime)
+    calls: list[tuple[list[Path], Path, bool]] = []
+    monkeypatch.setattr(tab._tile_view, "indexAt", lambda _point: QModelIndex())
+    monkeypatch.setattr(
+        tab,
+        "_handle_external_drop",
+        lambda paths, target_dir, move: calls.append((paths, target_dir, move)) or True,
+    )
+
+    assert not tab._model.canDropMimeData(
+        mime,
+        Qt.DropAction.MoveAction,
+        0,
+        0,
+        QModelIndex(),
+    )
+    assert tab._tile_view._handle_drop_event(event)
+
+    assert calls == [([source], tmp_path, True)]
+    assert event.accepted
+    assert event.dropAction() == Qt.DropAction.MoveAction
 
 
 def test_file_view_drag_paths_falls_back_to_drag_start_path(
@@ -1957,6 +2084,26 @@ def test_file_browser_tab_request_status_counts_clears_stale_counts(
     assert status.file_count == 0
     assert status.selected_count == 1
     assert status.selected_file_size == 3
+
+
+def test_file_browser_tab_activate_restarts_cancelled_status_count_job(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    requested: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    tab._is_active = True
+    tab._status_count_jobs[1] = cast(file_browser_tab_module._DirectoryCountJob, object())
+    monkeypatch.setattr(tab, "_request_status_item_counts", requested.append)
+
+    tab.deactivate()
+    tab.activate()
+
+    assert tab._is_active
+    assert requested == [tmp_path]
 
 
 def test_file_browser_tab_async_status_counts_keep_current_selection(

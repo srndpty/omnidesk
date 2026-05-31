@@ -81,25 +81,18 @@ class TabContainer(QWidget):
         self._drag_hover_timer.setSingleShot(True)
         self._drag_hover_timer.timeout.connect(self._activate_drag_hover_tab)
 
-        # 4. QTabWidget自体の設定を行う
         self._tabs.setDocumentMode(True)
         self._tabs.setMovable(True)
         self._tabs.setTabsClosable(False)
-        self._tabs.setUsesScrollButtons(True)  # これは QTabWidget のプロパティ
+        self._tabs.setUsesScrollButtons(True)
 
-        # 2. デフォルトのタブバーを取得し、設定を適用する
         default_tab_bar = self._tabs.tabBar()
         default_tab_bar.setElideMode(Qt.TextElideMode.ElideRight)
         default_tab_bar.setExpanding(False)
 
-        # 1. 現在のサイズポリシーを取得
         policy = default_tab_bar.sizePolicy()
-        # 2. 水平方向のポリシーを「Minimum」に設定
-        #    これにより、タブバーは自身のsizeHint（理想サイズ）よりは縮まなくなる
         policy.setHorizontalPolicy(QSizePolicy.Policy.Preferred)
-        # 3. 変更したポリシーをタブバーに再設定
         default_tab_bar.setSizePolicy(policy)
-        # 5. イベントフィルタは、セットした後のタブバーにインストールする
         bar = self._tabs.tabBar()
         bar.installEventFilter(self)
         bar.setAcceptDrops(True)
@@ -110,8 +103,6 @@ class TabContainer(QWidget):
         # タブクリック後の矢印キー操作は、タブバーではなくファイル一覧へ向ける。
         bar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         bar.installEventFilter(self)
-
-        # ★★★ 再構築はここまで ★★★
 
         self._tabs.tabCloseRequested.connect(self._close_tab)
         self._tabs.currentChanged.connect(self._handle_current_tab_changed)
@@ -134,11 +125,9 @@ class TabContainer(QWidget):
             final_tab_bar.elideMode(),
         )
 
-    # ★★★ このメソッドをまるごとTabContainerクラスに追加 ★★★
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         tab_bar = self._tabs.tabBar()
         if obj is tab_bar:
-            # ドラッグが入ってきたら受け入れ
             if event.type() == QEvent.Type.DragEnter:
                 drag_event = cast(QDragEnterEvent, event)
                 if drag_event.mimeData().hasUrls():
@@ -147,7 +136,6 @@ class TabContainer(QWidget):
                     return True
                 return False
 
-            # 移動中：どのタブ上かを示し、コピー/移動の種別を決定
             if event.type() == QEvent.Type.DragMove:
                 drag_event = cast(QDragMoveEvent, event)
                 if drag_event.mimeData().hasUrls():
@@ -161,7 +149,6 @@ class TabContainer(QWidget):
                     self._clear_drag_hover_tab()
                 return False
 
-            # ドロップ：対象タブのフォルダへ移動（またはコピー）
             if event.type() == QEvent.Type.Drop:
                 drop_event = cast(QDropEvent, event)
                 self._clear_drag_hover_tab()
@@ -200,7 +187,6 @@ class TabContainer(QWidget):
                     event.accept()
                     return True
 
-            # ここに他の処理（中クリックでクローズ等）があれば続けてOK
             elif event.type() == QEvent.Type.MouseButtonPress:
                 mouse = cast(QMouseEvent, event)
                 if (
@@ -390,6 +376,12 @@ class TabContainer(QWidget):
         if tab:
             tab.focus_view()
 
+    def cancel_all_background_work(self) -> None:
+        for index in range(self._tabs.count()):
+            widget = self._tabs.widget(index)
+            if isinstance(widget, FileBrowserTab):
+                widget.cancel_all_work_for_shutdown()
+
     def _focus_current_tab_later(self) -> None:
         QTimer.singleShot(0, self.focus_current)
 
@@ -495,34 +487,24 @@ class TabContainer(QWidget):
         widget = self._tabs.widget(index)
         if isinstance(widget, FileBrowserTab):
             self._closed_tabs.append((widget.current_path(), self.is_tab_pinned(index)))
+            widget.cancel_all_work_for_shutdown()
             with suppress(RuntimeError):
                 widget.deleteLater()
         self._tabs.removeTab(index)
         self.tabCountChanged.emit(self._tabs.count())
-        # self._emit_current_path(self._tabs.currentIndex())
 
-    # def _emit_current_path(self, index: int) -> None:
-    #     widget = self._tabs.widget(index)
-    #     if isinstance(widget, FileBrowserTab):
-    #         self.currentPathChanged.emit(widget.current_path())
-
-    # ★★★ 3. _emit_current_path を _handle_current_tab_changed に統合・置換 ★★★
     def _handle_current_tab_changed(self, index: int) -> None:
-        """タブが切り替わったときに呼び出される中央ハンドラ"""
-        # すべてのタブをループ
+        """Activate the current tab and deactivate background work in the others."""
         for i in range(self._tabs.count()):
             widget = self._tabs.widget(i)
             if not isinstance(widget, FileBrowserTab):
                 continue
 
-            # 新しくカレントになったタブを activate する
             if i == index:
                 widget.activate()
-                # 以前 _emit_current_path がやっていた処理もここで行う
                 self.currentPathChanged.emit(widget.current_path())
                 self.statusChanged.emit(widget.current_path(), widget.status_summary())
                 self._focus_current_tab_later()
-            # それ以外のタブは deactivate する
             else:
                 widget.deactivate()
 

@@ -51,6 +51,9 @@ class FakeBrowserTab(QWidget):
     def deactivate(self) -> None:
         self.calls.append("deactivate")
 
+    def cancel_all_work_for_shutdown(self) -> None:
+        self.calls.append("cancel_all")
+
     def set_name_column_width(self, width: int) -> None:
         self.name_column_width = width
 

@@ -2,6 +2,11 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
+$Python = if (Test-Path ".\.venv\Scripts\python.exe") {
+    ".\.venv\Scripts\python.exe"
+} else {
+    "python"
+}
 
 function Invoke-Check {
     param(
@@ -19,10 +24,10 @@ function Invoke-Check {
     }
 }
 
-Invoke-Check "pytest" @("pytest", "-q")
-Invoke-Check "ruff check" @("python", "-m", "ruff", "check", ".", "--no-cache")
-Invoke-Check "ruff format" @("python", "-m", "ruff", "format", ".", "--check")
-Invoke-Check "pyright" @("python", "-m", "pyright")
+Invoke-Check "ruff check" @($Python, "-m", "ruff", "check", ".", "--no-cache")
+Invoke-Check "ruff format" @($Python, "-m", "ruff", "format", ".", "--check")
+Invoke-Check "pyright" @($Python, "-m", "pyright")
+Invoke-Check "pytest" @($Python, "-m", "pytest", "-q")
 Invoke-Check "git diff whitespace check" @("git", "diff", "--check")
 
 Write-Host "All checks passed."

@@ -8,6 +8,7 @@ from omnidesk.utils import config, paths, resources
 
 def test_load_settings_returns_empty_when_file_missing(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", tmp_path / "legacy-missing.json")
 
     assert config.load_settings() == {}
 
@@ -18,6 +19,16 @@ def test_load_settings_reads_valid_json(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
 
     assert config.load_settings() == {"window": {"width": 1200}}
+
+
+def test_load_settings_falls_back_to_legacy_file(monkeypatch, tmp_path: Path) -> None:
+    settings_file = tmp_path / "settings.json"
+    legacy_file = tmp_path / "legacy.json"
+    legacy_file.write_text('{"legacy": true}', encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
+    monkeypatch.setattr(config, "LEGACY_CONFIG_FILE", legacy_file)
+
+    assert config.load_settings() == {"legacy": True}
 
 
 def test_load_settings_returns_empty_for_invalid_json(monkeypatch, tmp_path: Path) -> None:
@@ -47,6 +58,29 @@ def test_save_settings_creates_config_file(monkeypatch, tmp_path: Path) -> None:
     config.save_settings({"tabs": ["C:/tmp"]})
 
     assert settings_file.read_text(encoding="utf-8") == '{\n  "tabs": [\n    "C:/tmp"\n  ]\n}'
+    assert not (tmp_path / "settings.json.tmp").exists()
+
+
+def test_save_settings_keeps_existing_file_when_temp_write_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"existing": true}', encoding="utf-8")
+    monkeypatch.setattr(config, "DEFAULT_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_FILE", settings_file)
+
+    original_write_text = Path.write_text
+
+    def fail_temp_write(self: Path, *args, **kwargs):
+        if self.name.endswith(".tmp"):
+            raise OSError()
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_temp_write)
+
+    config.save_settings({"ignored": True})
+
+    assert settings_file.read_text(encoding="utf-8") == '{"existing": true}'
 
 
 def test_save_settings_ignores_os_errors(monkeypatch, tmp_path: Path) -> None:

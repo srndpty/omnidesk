@@ -1,23 +1,29 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import Any, cast
 
+import pytest
 from pytest_mock import MockerFixture
 
 from omnidesk.ui.file_operations import (
+    FileOperationRequest,
     create_file,
     create_folder,
     delete_paths,
+    execute_file_operation,
     is_dangerous_operation_path,
     is_plain_child_name,
     perform_copy_or_move,
     perform_copy_or_move_with_result,
     rename_path,
+    validate_copy_or_move,
 )
 
 
-def test_file_operations_work_on_pyfakefs(fs) -> None:
-    workspace = Path("C:/workspace")
+def test_file_operations_work_on_tmp_path(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
     source = workspace / "source"
     destination = workspace / "destination"
     source.mkdir(parents=True)
@@ -144,3 +150,91 @@ def test_copy_or_move_result_reports_changed_dirs_for_partial_success(tmp_path: 
     assert "Missing:" in result.errors[0]
     assert result.changed_dirs == [dest]
     assert (dest / copied.name).read_text(encoding="utf-8") == "copied"
+
+
+def test_copy_file_into_same_directory_uses_conflict_safe_copy_name(tmp_path: Path) -> None:
+    source = tmp_path / "copied.txt"
+    source.write_text("copied", encoding="utf-8")
+
+    result = perform_copy_or_move_with_result([source], tmp_path, move=False)
+
+    assert result.errors == []
+    assert result.changed_dirs == [tmp_path]
+    assert source.read_text(encoding="utf-8") == "copied"
+    assert (tmp_path / "copied - Copy 1.txt").read_text(encoding="utf-8") == "copied"
+
+
+def test_copy_directory_into_own_descendant_is_refused(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "file.txt").write_text("source", encoding="utf-8")
+    descendant = source / "child"
+    descendant.mkdir()
+
+    result = perform_copy_or_move_with_result([source], descendant, move=False)
+
+    assert len(result.errors) == 1
+    assert "folder into itself" in result.errors[0]
+    assert not (descendant / "source").exists()
+
+
+def test_copy_directory_into_new_own_descendant_does_not_create_destination(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    descendant = source / "newchild"
+
+    result = perform_copy_or_move_with_result([source], descendant, move=False)
+
+    assert len(result.errors) == 1
+    assert "folder into itself" in result.errors[0]
+    assert result.changed_dirs == []
+    assert not descendant.exists()
+
+
+def test_move_directory_into_own_descendant_is_refused(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    descendant = source / "child"
+    descendant.mkdir()
+
+    result = perform_copy_or_move_with_result([source], descendant, move=True)
+
+    assert len(result.errors) == 1
+    assert "folder into itself" in result.errors[0]
+    assert source.exists()
+
+
+def test_execute_file_operation_can_cancel_before_start(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    dest = tmp_path / "dest"
+    request = FileOperationRequest([source], dest, "copy")
+
+    result = execute_file_operation(request, is_cancelled=lambda: True)
+
+    assert result.cancelled
+    assert result.errors == []
+    assert not dest.exists()
+
+
+def test_execute_file_operation_rejects_unknown_mode(tmp_path: Path) -> None:
+    request = FileOperationRequest([], tmp_path, cast(Any, "archive"))
+
+    result = execute_file_operation(request)
+
+    assert result.errors == ["Unsupported file operation mode: archive"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="case-insensitive path behavior is Windows-specific")
+def test_validate_copy_or_move_detects_same_move_target_with_case_difference(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "Source.txt"
+    source.write_text("source", encoding="utf-8")
+
+    error = validate_copy_or_move(source.with_name("SOURCE.txt"), tmp_path, move=True)
+
+    assert error is not None
+    assert "Source and destination are the same" in error

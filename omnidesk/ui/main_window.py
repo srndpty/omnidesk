@@ -321,6 +321,7 @@ class MainWindow(QMainWindow):
         self._show_status()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        QThreadPool.globalInstance().waitForDone()
+        self._tab_container.cancel_all_background_work()
+        QThreadPool.globalInstance().waitForDone(3000)
         self._persist_settings()
         super().closeEvent(event)

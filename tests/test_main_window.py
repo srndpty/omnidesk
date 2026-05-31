@@ -102,6 +102,9 @@ class FakeTabContainer(QWidget):
     def focus_current(self) -> None:
         self.calls.append("focus")
 
+    def cancel_all_background_work(self) -> None:
+        self.calls.append("cancel")
+
     def select_next_tab(self) -> None:
         self.calls.append("next")
 
@@ -255,6 +258,31 @@ def test_main_window_persists_width_and_session(monkeypatch, qtbot, tmp_path: Pa
     assert settings["session"]["tabs"] == [str(tmp_path)]
     assert settings["session"]["pinned_tabs"] == [False]
     assert settings["session"]["view_mode"] == "tabs"
+    assert saved
+
+
+def test_main_window_close_cancels_background_work_before_bounded_wait(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    saved: list[dict] = []
+    waits: list[int] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+
+    class FakePool:
+        def waitForDone(self, timeout: int) -> None:  # noqa: N802
+            waits.append(timeout)
+
+    monkeypatch.setattr(main_window_module.QThreadPool, "globalInstance", lambda: FakePool())
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.close()
+
+    tab_container = cast(FakeTabContainer, window._tab_container)
+    assert "cancel" in tab_container.calls
+    assert waits == [3000]
     assert saved
 
 
