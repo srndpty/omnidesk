@@ -349,6 +349,62 @@ def test_file_browser_tab_tile_delegate_places_two_line_label_below_icon(qtbot) 
     assert text_rect.bottom() <= option.rect.bottom()
 
 
+def test_file_browser_tab_tile_delegate_keeps_generated_thumbnail_height(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    thumbnail = QPixmap(160, 160)
+    thumbnail.fill()
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 166, 110)
+    option.decorationSize = QSize(160, 160)
+    option.icon = QIcon(thumbnail)
+    option.fontMetrics = tab._tile_view.fontMetrics()
+
+    icon_size = delegate._stable_thumbnail_icon_size(option, QIcon.Mode.Normal)
+    icon_rect, text_rect = delegate._tile_rects(option, icon_size=icon_size)
+
+    assert icon_size == QSize(160, 160)
+    assert icon_rect == QRect(3, 4, 160, 160)
+    assert text_rect.y() > icon_rect.bottom()
+
+
+def test_file_browser_tab_tile_delegate_keeps_generated_thumbnail_height_when_selected(
+    qtbot,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    thumbnail = QPixmap(160, 160)
+    thumbnail.fill()
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 166, 110)
+    option.decorationSize = QSize(160, 160)
+    option.icon = QIcon(thumbnail)
+    option.fontMetrics = tab._tile_view.fontMetrics()
+
+    icon_size = delegate._stable_thumbnail_icon_size(option, QIcon.Mode.Selected)
+
+    assert icon_size == QSize(160, 160)
+
+
+def test_file_browser_tab_tile_delegate_keeps_default_folder_icon_clipped(qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 166, 110)
+    option.decorationSize = QSize(160, 160)
+    option.icon = tab.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+    option.fontMetrics = tab._tile_view.fontMetrics()
+
+    icon_size = delegate._stable_thumbnail_icon_size(option, QIcon.Mode.Normal)
+    icon_rect, _ = delegate._tile_rects(option, icon_size=icon_size)
+
+    assert icon_size is None
+    assert icon_rect.height() == 110
+
+
 def test_file_browser_tab_tile_delegate_does_not_fill_selected_tile_background(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)

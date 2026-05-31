@@ -13,6 +13,7 @@ from omnidesk.theme import DARK_STYLESHEET, apply_dark_theme
 from omnidesk.ui.icons import application_icon
 from omnidesk.ui.media_file_system_model import (
     MediaFileSystemModel,
+    cache_pixmap_for_edge,
     file_thumbnail_cache,
     folder_base_pixmap,
     folder_preview_cache,
@@ -200,7 +201,7 @@ def test_media_file_system_model_cache_loaded_branches(monkeypatch, tmp_path: Pa
     assert started == [key]
     assert key not in model._pending
 
-    image = QImage(10, 10, QImage.Format.Format_RGB32)
+    image = QImage(96, 96, QImage.Format.Format_RGB32)
     image.fill(0xFF00FF)
     token = model._new_token(key)
     model._visible_keys.add(key)
@@ -368,6 +369,45 @@ def test_folder_base_pixmap_normalizes_small_theme_icon_to_requested_edge() -> N
     assert not pixmap.isNull()
 
 
+def test_cache_pixmap_for_edge_centers_small_pixmap() -> None:
+    pixmap = QPixmap(48, 96)
+    pixmap.fill(Qt.GlobalColor.red)
+
+    normalized = cache_pixmap_for_edge(pixmap, 160)
+
+    assert normalized.size() == QSize(160, 160)
+    image = normalized.toImage()
+    assert image.pixelColor(80, 80) == Qt.GlobalColor.red
+    assert image.pixelColor(0, 0).alpha() == 0
+
+
+def test_cache_pixmap_for_edge_pads_wide_pixmap_with_matching_long_edge() -> None:
+    pixmap = QPixmap(160, 90)
+    pixmap.fill(Qt.GlobalColor.red)
+
+    normalized = cache_pixmap_for_edge(pixmap, 160)
+
+    assert normalized.size() == QSize(160, 160)
+    image = normalized.toImage()
+    assert image.pixelColor(80, 80) == Qt.GlobalColor.red
+    assert image.pixelColor(80, 34).alpha() == 0
+    assert image.pixelColor(80, 45) == Qt.GlobalColor.red
+    assert image.pixelColor(80, 114) == Qt.GlobalColor.red
+    assert image.pixelColor(80, 125).alpha() == 0
+
+
+def test_cache_pixmap_for_edge_scales_down_large_pixmap() -> None:
+    pixmap = QPixmap(320, 180)
+    pixmap.fill(Qt.GlobalColor.red)
+
+    normalized = cache_pixmap_for_edge(pixmap, 160)
+
+    assert normalized.size() == QSize(160, 160)
+    image = normalized.toImage()
+    assert image.pixelColor(80, 80) == Qt.GlobalColor.red
+    assert image.pixelColor(80, 0).alpha() == 0
+
+
 def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) -> None:
     model = MediaFileSystemModel()
     invalid_flags = model.flags(model.index(""))
@@ -394,6 +434,9 @@ class _FakeCache:
 
     def put_memory(self, key: str, icon: QIcon, pixmap: QPixmap) -> None:
         self.memory_puts.append((key, icon, pixmap))
+
+    def enforce_disk_budget(self) -> None:
+        pass
 
 
 def test_media_file_system_model_request_visible_loads_disk_cache(
@@ -513,6 +556,96 @@ def test_media_file_system_model_cache_loaded_dir_miss_restarts_folder_scan(
 
     assert restarted == [tmp_path]
     assert key not in model._pending
+
+
+def test_media_file_system_model_rejects_undersized_disk_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(160)
+    key = str(tmp_path / "image.png")
+    cache_path = tmp_path / "cache.png"
+    cache_path.write_bytes(b"stale")
+    fake_cache = _FakeCache(cache_path)
+    restarted: list[Path] = []
+    emitted: list[str] = []
+    monkeypatch.setattr(model, "_cache_for_info", lambda is_dir: fake_cache)
+    monkeypatch.setattr(
+        model, "_ensure_thumbnail", lambda path, suffix, key=None: restarted.append(path)
+    )
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", emitted.append)
+
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    image = QImage(96, 96, QImage.Format.Format_RGB32)
+    image.fill(0xFFFFFF)
+
+    model._handle_cache_loaded(key, token.generation, image, is_dir=False)
+
+    assert restarted == [Path(key)]
+    assert emitted == []
+    assert fake_cache.memory_puts == []
+    assert not cache_path.exists()
+
+
+def test_media_file_system_model_rejects_non_square_disk_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(160)
+    key = str(tmp_path / "image.png")
+    cache_path = tmp_path / "cache.png"
+    cache_path.write_bytes(b"stale")
+    fake_cache = _FakeCache(cache_path)
+    restarted: list[Path] = []
+    emitted: list[str] = []
+    monkeypatch.setattr(model, "_cache_for_info", lambda is_dir: fake_cache)
+    monkeypatch.setattr(
+        model, "_ensure_thumbnail", lambda path, suffix, key=None: restarted.append(path)
+    )
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", emitted.append)
+
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    image = QImage(160, 90, QImage.Format.Format_RGB32)
+    image.fill(0xFFFFFF)
+
+    model._handle_cache_loaded(key, token.generation, image, is_dir=False)
+
+    assert restarted == [Path(key)]
+    assert emitted == []
+    assert fake_cache.memory_puts == []
+    assert not cache_path.exists()
+
+
+def test_media_file_system_model_save_cache_async_uses_requested_edge_for_small_pixmap(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    hints: list[int | None] = []
+
+    class FakeCache:
+        def disk_path(self, _key: str, *, hint_edge: int | None = None) -> Path:
+            hints.append(hint_edge)
+            return tmp_path / "cache.png"
+
+        def enforce_disk_budget(self) -> None:
+            pass
+
+    pixmap = QPixmap(96, 96)
+    pixmap.fill()
+    started: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", started.append)
+
+    model._save_cache_async(FakeCache(), "key", pixmap, hint_edge=160)
+
+    assert hints == [160]
+    assert len(started) == 1
 
 
 def test_media_file_system_model_save_cache_async_ignores_null_pixmap(monkeypatch) -> None:

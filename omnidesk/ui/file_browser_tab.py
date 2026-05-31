@@ -675,10 +675,18 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
         self.initStyleOption(view_option, index)
 
         style = view_option.widget.style() if view_option.widget else QApplication.style()
-        icon_rect, text_rect = self._tile_rects(view_option)
-        text = self._two_line_text(view_option.text, view_option.fontMetrics, text_rect.width())
         is_drop_target = self._is_drop_target(view_option, index)
         clipboard_mode = self._clipboard_visual_mode(view_option, index)
+        icon_mode = (
+            QIcon.Mode.Selected
+            if view_option.state & QStyle.StateFlag.State_Selected or is_drop_target
+            else QIcon.Mode.Normal
+        )
+        icon_rect, text_rect = self._tile_rects(
+            view_option,
+            icon_size=self._stable_thumbnail_icon_size(view_option, icon_mode),
+        )
+        text = self._two_line_text(view_option.text, view_option.fontMetrics, text_rect.width())
 
         painter.save()
         self._draw_tile_background(painter, view_option, style)
@@ -690,11 +698,6 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
         if clipboard_mode == "move" and not is_drop_target:
             painter.setOpacity(0.45)
 
-        icon_mode = (
-            QIcon.Mode.Selected
-            if view_option.state & QStyle.StateFlag.State_Selected or is_drop_target
-            else QIcon.Mode.Normal
-        )
         self._draw_icon(painter, view_option.icon, icon_rect, icon_mode)
 
         if view_option.state & QStyle.StateFlag.State_Selected or is_drop_target:
@@ -709,6 +712,26 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
             text,
         )
         painter.restore()
+
+    @staticmethod
+    def _stable_thumbnail_icon_size(
+        option: QStyleOptionViewItem, icon_mode: QIcon.Mode
+    ) -> QSize | None:
+        # QListView can transiently shrink option.rect after jumping to the
+        # bottom while keeping decorationSize at 160. For generated thumbnails
+        # we intentionally keep the decoration height so they are not repainted
+        # smaller. Platform folder icons stay clipped to the item rect because
+        # they may not have a generated 160px pixmap.
+        decoration = option.decorationSize
+        if decoration.isEmpty() or option.rect.height() >= decoration.height():
+            return None
+        available = option.icon.availableSizes(icon_mode, QIcon.State.Off)
+        if decoration in available:
+            return decoration
+        normal_available = option.icon.availableSizes(QIcon.Mode.Normal, QIcon.State.Off)
+        if decoration in normal_available:
+            return decoration
+        return None
 
     @staticmethod
     def _is_drop_target(option: QStyleOptionViewItem, index: QModelIndex) -> bool:
@@ -773,11 +796,17 @@ class _TwoLineTileNameDelegate(QStyledItemDelegate):
         mode = checker(index) if checker else None
         return mode if mode in ("copy", "move") else None
 
-    def _tile_rects(self, option: QStyleOptionViewItem) -> tuple[QRect, QRect]:
+    def _tile_rects(
+        self, option: QStyleOptionViewItem, *, icon_size: QSize | None = None
+    ) -> tuple[QRect, QRect]:
         rect = option.rect
-        icon_size = option.decorationSize
-        icon_width = min(icon_size.width(), rect.width())
-        icon_height = min(icon_size.height(), rect.height())
+        tile_icon_size = icon_size or option.decorationSize
+        icon_width = min(tile_icon_size.width(), rect.width())
+        icon_height = (
+            min(tile_icon_size.height(), rect.height())
+            if icon_size is None
+            else min(tile_icon_size.height(), option.decorationSize.height())
+        )
         icon_x = rect.x() + (rect.width() - icon_width) // 2
         icon_y = rect.y() + self.ICON_TOP_PADDING
         icon_rect = QRect(icon_x, icon_y, icon_width, icon_height)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from contextlib import suppress
 from pathlib import Path
 
 from PyQt6.QtCore import QMimeData, QModelIndex, QSize, Qt, QThreadPool
@@ -52,6 +53,32 @@ def folder_base_pixmap(base_icon: QIcon, edge: int) -> QPixmap:
     y = (edge - scaled.height()) // 2
     painter = QPainter(canvas)
     painter.drawPixmap(x, y, scaled)
+    painter.end()
+    return canvas
+
+
+def cache_pixmap_for_edge(pixmap: QPixmap, edge: int) -> QPixmap:
+    """Return a cache pixmap whose outer edge matches the requested cache edge."""
+    target_size = QSize(edge, edge)
+    if pixmap.isNull() or edge <= 0:
+        return pixmap
+
+    if pixmap.width() > edge or pixmap.height() > edge:
+        pixmap = pixmap.scaled(
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    if pixmap.size() == target_size:
+        return pixmap
+
+    canvas = QPixmap(target_size)
+    canvas.fill(Qt.GlobalColor.transparent)
+    x = (edge - pixmap.width()) // 2
+    y = (edge - pixmap.height()) // 2
+    painter = QPainter(canvas)
+    painter.drawPixmap(x, y, pixmap)
     painter.end()
     return canvas
 
@@ -347,6 +374,17 @@ class MediaFileSystemModel(QFileSystemModel):
                 self._ensure_thumbnail(path, path.suffix.lower(), key)
             return
         pixmap = QPixmap.fromImage(qimage)
+        expected_size = QSize(request_edge, request_edge)
+        if pixmap.size() != expected_size:
+            self._debug("cache-wrong-size", key, f"{pixmap.size()}!={expected_size}")
+            with suppress(OSError):
+                self._cache_for_info(is_dir).disk_path(key, hint_edge=request_edge).unlink()
+            path = Path(key)
+            if is_dir:
+                self._ensure_folder_thumbnail(path)
+            else:
+                self._ensure_thumbnail(path, path.suffix.lower(), key)
+            return
         icon = QIcon(pixmap)
         self._cache_for_info(is_dir).put_memory(key, icon, pixmap)
         self._debug("cache-ready", key)
@@ -412,6 +450,8 @@ class MediaFileSystemModel(QFileSystemModel):
             # --- 通常のファイルの処理 (変更なし) ---
             # QIconから元になったPixmapを取得して渡す
             pixmap = icon.pixmap(QSize(request_edge, request_edge))
+            pixmap = cache_pixmap_for_edge(pixmap, request_edge)
+            icon = QIcon(pixmap)
             file_thumbnail_cache.put_memory(key, icon, pixmap)
             self._save_cache_async(file_thumbnail_cache, key, pixmap, hint_edge=request_edge)
 
@@ -440,14 +480,18 @@ class MediaFileSystemModel(QFileSystemModel):
     def _save_cache_async(
         self, cache, key: str, pixmap: QPixmap, *, hint_edge: int | None = None
     ) -> None:
-        image = pixmap.toImage()
-        if image.isNull():
+        if pixmap.isNull():
             return
         edge = hint_edge if hint_edge is not None else self._thumbnail_edge
+        if edge <= 0:
+            return
+        cache_pixmap = cache_pixmap_for_edge(pixmap, edge)
+        if cache_pixmap.isNull():
+            return
         self._scan_pool.start(
             CacheSaveJob(
                 cache.disk_path(key, hint_edge=edge),
-                image,
+                cache_pixmap.toImage(),
                 cache.enforce_disk_budget,
             )
         )
