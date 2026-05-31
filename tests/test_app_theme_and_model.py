@@ -19,7 +19,6 @@ from omnidesk.ui.media_file_system_model import (
     folder_preview_cache,
     folder_thumbnail_preview_edge,
     folder_thumbnail_rect,
-    pixmap_edge,
 )
 
 
@@ -370,15 +369,6 @@ def test_folder_base_pixmap_normalizes_small_theme_icon_to_requested_edge() -> N
     assert not pixmap.isNull()
 
 
-def test_pixmap_edge_returns_longest_side() -> None:
-    assert pixmap_edge(QPixmap()) == 0
-
-    pixmap = QPixmap(48, 96)
-    pixmap.fill()
-
-    assert pixmap_edge(pixmap) == 96
-
-
 def test_cache_pixmap_for_edge_centers_small_pixmap() -> None:
     pixmap = QPixmap(48, 96)
     pixmap.fill(Qt.GlobalColor.red)
@@ -400,7 +390,10 @@ def test_cache_pixmap_for_edge_pads_wide_pixmap_with_matching_long_edge() -> Non
     assert normalized.size() == QSize(160, 160)
     image = normalized.toImage()
     assert image.pixelColor(80, 80) == Qt.GlobalColor.red
-    assert image.pixelColor(80, 0).alpha() == 0
+    assert image.pixelColor(80, 34).alpha() == 0
+    assert image.pixelColor(80, 45) == Qt.GlobalColor.red
+    assert image.pixelColor(80, 114) == Qt.GlobalColor.red
+    assert image.pixelColor(80, 125).alpha() == 0
 
 
 def test_cache_pixmap_for_edge_scales_down_large_pixmap() -> None:

@@ -57,13 +57,6 @@ def folder_base_pixmap(base_icon: QIcon, edge: int) -> QPixmap:
     return canvas
 
 
-def pixmap_edge(pixmap: QPixmap) -> int:
-    """Return the longest side of a pixmap, or 0 for null pixmaps."""
-    if pixmap.isNull():
-        return 0
-    return max(pixmap.width(), pixmap.height())
-
-
 def cache_pixmap_for_edge(pixmap: QPixmap, edge: int) -> QPixmap:
     """Return a cache pixmap whose outer edge matches the requested cache edge."""
     target_size = QSize(edge, edge)
@@ -490,6 +483,8 @@ class MediaFileSystemModel(QFileSystemModel):
         if pixmap.isNull():
             return
         edge = hint_edge if hint_edge is not None else self._thumbnail_edge
+        if edge <= 0:
+            return
         cache_pixmap = cache_pixmap_for_edge(pixmap, edge)
         if cache_pixmap.isNull():
             return
