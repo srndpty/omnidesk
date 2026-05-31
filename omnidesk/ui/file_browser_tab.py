@@ -102,10 +102,12 @@ from .file_browser_status import (
 )
 from .file_browser_visible import index_identity, tile_probe_points, tile_probe_step
 from .file_operations import (
+    FileOperationResult,
     create_file,
     create_folder,
     delete_paths,
     perform_copy_or_move,
+    perform_copy_or_move_with_result,
     rename_path,
     resolve_destination,
 )
@@ -1301,12 +1303,8 @@ class FileBrowserTab(QWidget):
         if not paths:
             return
         move = self._clipboard["mode"] == "move"
-        errors = self._perform_copy_or_move(paths, self._current_path, move=move)
-        if not errors:
-            changed_dirs = [self._current_path]
-            if move:
-                changed_dirs.extend(path.parent for path in paths)
-            self._mark_changed_directories(changed_dirs)
+        result = self._perform_copy_or_move_with_result(paths, self._current_path, move=move)
+        self._mark_changed_directories(result.changed_dirs)
         if move:
             self._set_clipboard(None)
         else:
@@ -1343,6 +1341,14 @@ class FileBrowserTab(QWidget):
         if errors:
             QMessageBox.warning(self, "Operation issues", "\n".join(errors))
         return errors
+
+    def _perform_copy_or_move_with_result(
+        self, sources: list[Path], dest_dir: Path, *, move: bool
+    ) -> FileOperationResult:
+        result = perform_copy_or_move_with_result(sources, dest_dir, move=move)
+        if result.errors:
+            QMessageBox.warning(self, "Operation issues", "\n".join(result.errors))
+        return result
 
     def _resolve_destination(self, dest_dir: Path, name: str, move: bool) -> Path:
         return resolve_destination(dest_dir, name, move)
@@ -1387,13 +1393,9 @@ class FileBrowserTab(QWidget):
                 "Blocked moving a folder into itself: paths=%s target=%s", paths, target_dir
             )
             return False
-        errors = self._perform_copy_or_move(paths, target_dir, move=move)
-        if not errors:
-            changed_dirs = [target_dir]
-            if move:
-                changed_dirs.extend(path.parent for path in paths)
-            self._mark_changed_directories(changed_dirs)
-        if not errors and select_after:
+        result = self._perform_copy_or_move_with_result(paths, target_dir, move=move)
+        self._mark_changed_directories(result.changed_dirs)
+        if not result.errors and select_after:
             self._pending_selection_path = next(
                 (path for path in select_after if path.exists()),
                 None,
@@ -1401,7 +1403,7 @@ class FileBrowserTab(QWidget):
         self.refresh()
         if self._pending_selection_path is not None:
             self._select_path(self._pending_selection_path)
-        return not bool(errors)
+        return not bool(result.errors)
 
     def selection_replacement_for_removed_paths(self, paths: list[Path]) -> Path | None:
         return self._selection_path_before_deleted_items(paths)

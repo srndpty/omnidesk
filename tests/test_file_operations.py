@@ -11,6 +11,7 @@ from omnidesk.ui.file_operations import (
     is_dangerous_operation_path,
     is_plain_child_name,
     perform_copy_or_move,
+    perform_copy_or_move_with_result,
     rename_path,
 )
 
@@ -129,3 +130,17 @@ def test_copy_or_move_refuses_dangerous_source(
     assert len(errors) == 1
     assert "Refusing to operate on dangerous path" in errors[0]
     assert not (dest / src.name).exists()
+
+
+def test_copy_or_move_result_reports_changed_dirs_for_partial_success(tmp_path: Path) -> None:
+    copied = tmp_path / "copied.txt"
+    missing = tmp_path / "missing.txt"
+    dest = tmp_path / "dest"
+    copied.write_text("copied", encoding="utf-8")
+
+    result = perform_copy_or_move_with_result([copied, missing], dest, move=False)
+
+    assert len(result.errors) == 1
+    assert "Missing:" in result.errors[0]
+    assert result.changed_dirs == [dest]
+    assert (dest / copied.name).read_text(encoding="utf-8") == "copied"

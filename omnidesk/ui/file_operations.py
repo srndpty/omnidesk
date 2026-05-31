@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import logging
 import shutil
+from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
 
 from omnidesk.utils.config import DEFAULT_CONFIG_DIR
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FileOperationResult:
+    errors: list[str]
+    changed_dirs: list[Path]
 
 
 def is_dangerous_operation_path(path: Path) -> bool:
@@ -61,7 +68,15 @@ def delete_paths(paths: list[Path]) -> list[str]:
 
 def perform_copy_or_move(sources: list[Path], dest_dir: Path, *, move: bool) -> list[str]:
     """Copy or move paths into a destination directory."""
+    return perform_copy_or_move_with_result(sources, dest_dir, move=move).errors
+
+
+def perform_copy_or_move_with_result(
+    sources: list[Path], dest_dir: Path, *, move: bool
+) -> FileOperationResult:
+    """Copy or move paths and return errors plus directories that changed."""
     errors: list[str] = []
+    changed_dirs: list[Path] = []
     logger.info(
         "%s %d path(s) into %s",
         "Moving" if move else "Copying",
@@ -72,7 +87,7 @@ def perform_copy_or_move(sources: list[Path], dest_dir: Path, *, move: bool) -> 
         dest_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:  # pragma: no cover - filesystem dependent
         logger.exception("Failed to create destination directory: %s", dest_dir)
-        return [f"{dest_dir}: {exc}"]
+        return FileOperationResult([f"{dest_dir}: {exc}"], [])
 
     for src in sources:
         if is_dangerous_operation_path(src):
@@ -99,14 +114,17 @@ def perform_copy_or_move(sources: list[Path], dest_dir: Path, *, move: bool) -> 
         try:
             if move:
                 shutil.move(str(src), str(target))
+                changed_dirs.extend([dest_dir, src.parent])
             elif src.is_dir():
                 shutil.copytree(src, target)
+                changed_dirs.append(dest_dir)
             else:
                 shutil.copy2(src, target)
+                changed_dirs.append(dest_dir)
         except Exception as exc:  # pragma: no cover - filesystem dependent
             logger.exception("Failed to copy/move %s to %s", src, target)
             errors.append(f"{src} -> {target}: {exc}")
-    return errors
+    return FileOperationResult(errors, changed_dirs)
 
 
 def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:

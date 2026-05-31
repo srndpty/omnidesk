@@ -36,6 +36,7 @@ from omnidesk.ui.file_browser_tab import (
     navigation_cursor_action,
     navigation_event_without_control,
 )
+from omnidesk.ui.file_operations import FileOperationResult
 
 
 class _MouseMoveStub:
@@ -928,8 +929,9 @@ def test_file_browser_tab_external_drop_performs_operation_and_refreshes(
     qtbot.addWidget(tab)
     monkeypatch.setattr(
         tab,
-        "_perform_copy_or_move",
-        lambda paths, target_dir, move: operations.append((paths, target_dir, move)),
+        "_perform_copy_or_move_with_result",
+        lambda paths, target_dir, move: operations.append((paths, target_dir, move))
+        or FileOperationResult([], []),
     )
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
 
@@ -951,7 +953,11 @@ def test_file_browser_tab_external_drop_into_subfolder_invalidates_target_previe
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
-    monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        tab,
+        "_perform_copy_or_move_with_result",
+        lambda *args, **kwargs: FileOperationResult([], [dest]),
+    )
     monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
     monkeypatch.setattr(tab, "refresh", lambda: None)
 
@@ -974,7 +980,11 @@ def test_file_browser_tab_external_move_invalidates_source_and_target_previews(
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
-    monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        tab,
+        "_perform_copy_or_move_with_result",
+        lambda *args, **kwargs: FileOperationResult([], [dest, source_parent]),
+    )
     monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
     monkeypatch.setattr(tab, "refresh", lambda: None)
 
@@ -1077,8 +1087,9 @@ def test_file_browser_tab_paste_copy_and_move_updates_clipboard_and_actions(
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(
         tab,
-        "_perform_copy_or_move",
-        lambda paths, dest_dir, move: operations.append((paths, dest_dir, move)),
+        "_perform_copy_or_move_with_result",
+        lambda paths, dest_dir, move: operations.append((paths, dest_dir, move))
+        or FileOperationResult([], [dest_dir]),
     )
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
 
@@ -1090,6 +1101,31 @@ def test_file_browser_tab_paste_copy_and_move_updates_clipboard_and_actions(
     assert operations == [([copied], tmp_path, False), ([moved], tmp_path, True)]
     assert refreshed == [True, True]
     assert tab._clipboard is None
+
+
+def test_file_browser_tab_paste_marks_partial_success_changed_dirs(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.txt"
+    changed: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    tab._clipboard = {"paths": [source], "mode": "copy"}
+    monkeypatch.setattr(
+        tab,
+        "_perform_copy_or_move_with_result",
+        lambda paths, dest_dir, move: FileOperationResult(["copy failed"], [dest_dir]),
+    )
+    monkeypatch.setattr(tab, "_mark_changed_directories", lambda dirs: changed.extend(dirs))
+    monkeypatch.setattr(tab, "refresh", lambda: None)
+    monkeypatch.setattr(tab, "_update_action_states", lambda: None)
+
+    tab._paste_into_current()
+
+    assert changed == [tmp_path]
 
 
 def test_file_browser_tab_perform_copy_or_move_warns_on_errors(monkeypatch, qtbot) -> None:
@@ -1107,6 +1143,28 @@ def test_file_browser_tab_perform_copy_or_move_warns_on_errors(monkeypatch, qtbo
 
     tab._perform_copy_or_move([Path("source.txt")], Path("dest"), move=False)
 
+    assert warnings == [("Operation issues", "copy failed")]
+
+
+def test_file_browser_tab_perform_copy_or_move_with_result_warns_on_errors(
+    monkeypatch, qtbot
+) -> None:
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    result = FileOperationResult(["copy failed"], [Path("dest")])
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.perform_copy_or_move_with_result",
+        lambda sources, dest_dir, move: result,
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    actual = tab._perform_copy_or_move_with_result([Path("source.txt")], Path("dest"), move=False)
+
+    assert actual is result
     assert warnings == [("Operation issues", "copy failed")]
 
 
