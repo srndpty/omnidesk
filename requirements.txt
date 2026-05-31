@@ -123,6 +123,8 @@ python-dotenv==1.1.1
     # via
     #   -r requirements.in
     #   pyqt6-tools
+send2trash==2.1.0
+    # via -r requirements.in
 pywin32-ctypes==0.2.3
     # via pyinstaller
 pyyaml==6.0.3

@@ -12,6 +12,7 @@ from omnidesk.ui.file_operations import (
     create_file,
     create_folder,
     delete_paths,
+    delete_paths_with_result,
     execute_file_operation,
     is_dangerous_operation_path,
     is_plain_child_name,
@@ -238,3 +239,63 @@ def test_validate_copy_or_move_detects_same_move_target_with_case_difference(
 
     assert error is not None
     assert "Source and destination are the same" in error
+
+
+def test_delete_paths_calls_send2trash_for_existing_path(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("content", encoding="utf-8")
+    mock_send2trash = mocker.patch("omnidesk.ui.file_operations.send2trash")
+
+    result = delete_paths_with_result([file_path])
+
+    mock_send2trash.assert_called_once_with(str(file_path))
+    assert result.errors == []
+    assert result.changed_dirs == [file_path.parent]
+
+
+def test_delete_paths_skips_send2trash_for_dangerous_path(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    mocker.patch(
+        "omnidesk.ui.file_operations.is_dangerous_operation_path",
+        lambda path: path == tmp_path,
+    )
+    mock_send2trash = mocker.patch("omnidesk.ui.file_operations.send2trash")
+
+    result = delete_paths_with_result([tmp_path])
+
+    mock_send2trash.assert_not_called()
+    assert len(result.errors) == 1
+    assert "Refusing to delete dangerous path" in result.errors[0]
+
+
+def test_delete_paths_reports_missing_path_without_calling_send2trash(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    missing = tmp_path / "missing.txt"
+    mock_send2trash = mocker.patch("omnidesk.ui.file_operations.send2trash")
+
+    result = delete_paths_with_result([missing])
+
+    mock_send2trash.assert_not_called()
+    assert len(result.errors) == 1
+    assert str(missing) in result.errors[0]
+    assert result.changed_dirs == []
+
+
+def test_delete_paths_passes_broken_symlink_to_send2trash(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    broken_link = tmp_path / "broken"
+    try:
+        broken_link.symlink_to(tmp_path / "nonexistent")
+    except (OSError, NotImplementedError):
+        pytest.skip("Cannot create symlinks in this environment")
+    mock_send2trash = mocker.patch("omnidesk.ui.file_operations.send2trash")
+
+    result = delete_paths_with_result([broken_link])
+
+    mock_send2trash.assert_called_once_with(str(broken_link))
+    assert result.errors == []
