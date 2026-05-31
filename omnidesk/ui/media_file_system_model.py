@@ -381,9 +381,9 @@ class MediaFileSystemModel(QFileSystemModel):
                 self._ensure_thumbnail(path, path.suffix.lower(), key)
             return
         pixmap = QPixmap.fromImage(qimage)
-        loaded_edge = pixmap_edge(pixmap)
-        if loaded_edge < request_edge:
-            self._debug("cache-undersized", key, f"{loaded_edge}<{request_edge}")
+        expected_size = QSize(request_edge, request_edge)
+        if pixmap.size() != expected_size:
+            self._debug("cache-wrong-size", key, f"{pixmap.size()}!={expected_size}")
             with suppress(OSError):
                 self._cache_for_info(is_dir).disk_path(key, hint_edge=request_edge).unlink()
             path = Path(key)
@@ -395,7 +395,7 @@ class MediaFileSystemModel(QFileSystemModel):
         icon = QIcon(pixmap)
         self._cache_for_info(is_dir).put_memory(key, icon, pixmap)
         self._debug("cache-ready", key)
-        self._request_current_edge_if_needed(key, Path(key), is_dir, loaded_edge)
+        self._request_current_edge_if_needed(key, Path(key), is_dir, request_edge)
         self._emit_thumbnail_changed(key)
 
     def _handle_thumbnail_ready(self, path: str, icon: QIcon | None, generation: int) -> None:

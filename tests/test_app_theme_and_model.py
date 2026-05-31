@@ -597,6 +597,38 @@ def test_media_file_system_model_rejects_undersized_disk_cache(
     assert not cache_path.exists()
 
 
+def test_media_file_system_model_rejects_non_square_disk_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(160)
+    key = str(tmp_path / "image.png")
+    cache_path = tmp_path / "cache.png"
+    cache_path.write_bytes(b"stale")
+    fake_cache = _FakeCache(cache_path)
+    restarted: list[Path] = []
+    emitted: list[str] = []
+    monkeypatch.setattr(model, "_cache_for_info", lambda is_dir: fake_cache)
+    monkeypatch.setattr(
+        model, "_ensure_thumbnail", lambda path, suffix, key=None: restarted.append(path)
+    )
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", emitted.append)
+
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+    image = QImage(160, 90, QImage.Format.Format_RGB32)
+    image.fill(0xFFFFFF)
+
+    model._handle_cache_loaded(key, token.generation, image, is_dir=False)
+
+    assert restarted == [Path(key)]
+    assert emitted == []
+    assert fake_cache.memory_puts == []
+    assert not cache_path.exists()
+
+
 def test_media_file_system_model_save_cache_async_uses_requested_edge_for_small_pixmap(
     monkeypatch,
     tmp_path: Path,
