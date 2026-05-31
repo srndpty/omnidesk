@@ -178,6 +178,21 @@ def test_copy_directory_into_own_descendant_is_refused(tmp_path: Path) -> None:
     assert not (descendant / "source").exists()
 
 
+def test_copy_directory_into_new_own_descendant_does_not_create_destination(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    descendant = source / "newchild"
+
+    result = perform_copy_or_move_with_result([source], descendant, move=False)
+
+    assert len(result.errors) == 1
+    assert "folder into itself" in result.errors[0]
+    assert result.changed_dirs == []
+    assert not descendant.exists()
+
+
 def test_move_directory_into_own_descendant_is_refused(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

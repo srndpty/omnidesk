@@ -115,12 +115,7 @@ def perform_copy_or_move_with_result(
     )
     if is_cancelled is not None and is_cancelled():
         return FileOperationResult(errors, changed_dirs, cancelled=True)
-    try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:  # pragma: no cover - filesystem dependent
-        logger.exception("Failed to create destination directory: %s", dest_dir)
-        return FileOperationResult([f"{dest_dir}: {exc}"], [])
-
+    operation_sources: list[Path] = []
     for src in sources:
         if is_cancelled is not None and is_cancelled():
             return FileOperationResult(errors, changed_dirs, cancelled=True)
@@ -139,12 +134,27 @@ def perform_copy_or_move_with_result(
             logger.debug(
                 "Could not resolve source/destination for same-directory check", exc_info=True
             )
+        guard_error = validate_copy_or_move(src, dest_dir, move=move)
+        if guard_error is not None:
+            logger.warning("Refusing file operation: %s", guard_error)
+            errors.append(guard_error)
+            continue
+        operation_sources.append(src)
+
+    if not operation_sources:
+        return FileOperationResult(errors, changed_dirs)
+    if is_cancelled is not None and is_cancelled():
+        return FileOperationResult(errors, changed_dirs, cancelled=True)
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # pragma: no cover - filesystem dependent
+        logger.exception("Failed to create destination directory: %s", dest_dir)
+        return FileOperationResult([*errors, f"{dest_dir}: {exc}"], [])
+
+    for src in operation_sources:
+        if is_cancelled is not None and is_cancelled():
+            return FileOperationResult(errors, changed_dirs, cancelled=True)
         try:
-            guard_error = validate_copy_or_move(src, dest_dir, move=move)
-            if guard_error is not None:
-                logger.warning("Refusing file operation: %s", guard_error)
-                errors.append(guard_error)
-                continue
             target = resolve_destination(dest_dir, src.name, move)
         except ValueError as exc:
             logger.warning("Could not resolve destination for %s into %s: %s", src, dest_dir, exc)
