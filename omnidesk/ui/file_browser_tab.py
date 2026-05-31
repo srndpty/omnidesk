@@ -79,6 +79,7 @@ from .file_browser_media_mode import (
     media_mode_button_text,
 )
 from .file_browser_navigation import (
+    is_parent_navigation,
     navigation_history_step,
     navigation_target,
     path_to_focus_after_go_up,
@@ -1396,7 +1397,7 @@ class FileBrowserTab(QWidget):
 
         current = self._current_path
         target = navigation_target(path)
-        if self._has_loaded_root and target == current.parent:
+        if self._has_loaded_root and is_parent_navigation(current, target):
             self._model.invalidate_folder_thumbnail_preview(current)
         if self._has_loaded_root and should_record_history(
             current, target, from_history=from_history

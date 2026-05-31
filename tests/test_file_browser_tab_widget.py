@@ -267,6 +267,31 @@ def test_file_browser_tab_go_back_to_parent_invalidates_folder_preview(
     assert invalidated == [child]
 
 
+def test_file_browser_tab_go_back_to_non_parent_does_not_invalidate(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for path in (first, second):
+        path.mkdir()
+    invalidated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(first)
+    tab.navigate_to(second)
+    monkeypatch.setattr(
+        tab._model,
+        "invalidate_folder_thumbnail_preview",
+        invalidated.append,
+    )
+
+    tab.go_back()
+
+    assert invalidated == []
+
+
 def test_file_browser_tab_failed_history_navigation_keeps_stacks(
     monkeypatch,
     qtbot,

@@ -27,10 +27,22 @@ def should_record_history(current: Path, destination: Path, *, from_history: boo
     """Return whether navigating to destination should append current to history."""
     if from_history:
         return False
+    return not same_navigation_path(current, destination)
+
+
+def same_navigation_path(left: Path, right: Path) -> bool:
+    """Return whether two paths refer to the same navigation target."""
     try:
-        return current.resolve() != destination.resolve()
+        return os.path.normcase(str(left.resolve(strict=False))) == os.path.normcase(
+            str(right.resolve(strict=False))
+        )
     except OSError:
-        return current != destination
+        return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
+def is_parent_navigation(current: Path, destination: Path) -> bool:
+    """Return whether destination is the parent directory of current."""
+    return same_navigation_path(destination, current.parent)
 
 
 def navigation_history_step(
