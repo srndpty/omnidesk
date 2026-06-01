@@ -31,14 +31,17 @@ def is_media_heavy_directory(
     scan_limit: int,
 ) -> bool:
     """Return whether a directory has enough media files to prefer tile mode."""
+    total_files = 0
+    media_files = 0
     try:
         iterator = directory.iterdir()
     except OSError:
         return False
-
-    total_files = 0
-    media_files = 0
-    for entry in iterator:
+    try:
+        entries = list(iterator)
+    except OSError:
+        return False
+    for entry in entries:
         if entry.is_file():
             total_files += 1
             if entry.suffix.lower() in extensions:

@@ -93,6 +93,10 @@ include = [
     "omnidesk/utils/logging_config.py",
     "omnidesk/utils/paths.py",
     "omnidesk/utils/resources.py",
+    "omnidesk/utils/windows_theme.py",
+    "omnidesk/ui/icons.py",
+    "omnidesk/ui/tab_bar_helpers.py",
+    "omnidesk/ui/shortcuts_dialog.py",
 ]
 exclude = [
     ".venv",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict
@@ -105,6 +106,11 @@ class AppSettings:
         file_browser["name_column_width"] = width
         return True
 
+    def video_thumbnail_timeout_ms(self) -> int:
+        thumbnails = self.data.get("thumbnails", {})
+        value = thumbnails.get("video_timeout_ms") if isinstance(thumbnails, dict) else None
+        return value if isinstance(value, int) and value >= 1000 else 5000
+
     def set_session(
         self,
         *,
@@ -120,6 +126,11 @@ class AppSettings:
 
 
 def load_settings() -> dict[str, Any]:
+    temp_file = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.tmp")
+    if temp_file.exists():
+        logger.warning("Removing stale settings temp file: %s", temp_file)
+        with suppress(OSError):
+            temp_file.unlink(missing_ok=True)
     source = CONFIG_FILE
     if not source.exists():
         if LEGACY_CONFIG_FILE != CONFIG_FILE and LEGACY_CONFIG_FILE.exists():
