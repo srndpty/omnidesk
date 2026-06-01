@@ -570,6 +570,27 @@ def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
     assert tab.current_path() == current
 
 
+def test_file_browser_tab_shutdown_cancels_deferred_refresh(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: True)
+
+    tab.refresh()
+
+    assert tab._deferred_refresh_timer.isActive()
+    assert tab._deferred_refresh_target == tmp_path
+
+    tab.cancel_all_work_for_shutdown()
+
+    assert not tab._deferred_refresh_timer.isActive()
+    assert tab._deferred_refresh_target is None
+
+
 def test_file_browser_tab_refresh_sort_does_not_override_new_user_selection(
     monkeypatch,
     qtbot,

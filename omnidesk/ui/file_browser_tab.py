@@ -889,6 +889,7 @@ class FileBrowserTab(QWidget):
         self._refresh_sort_active = False
         self._refresh_sort_retries = 0
         self._refresh_selection_path: Path | None = None
+        self._deferred_refresh_target: Path | None = None
         self._preserve_selection_on_refresh = True
 
         self._model = MediaFileSystemModel(self)
@@ -1057,6 +1058,11 @@ class FileBrowserTab(QWidget):
         self._refresh_sort_timer.setSingleShot(True)
         self._refresh_sort_timer.setInterval(80)
         self._refresh_sort_timer.timeout.connect(self._apply_refresh_sort)
+
+        self._deferred_refresh_timer = QTimer(self)
+        self._deferred_refresh_timer.setSingleShot(True)
+        self._deferred_refresh_timer.setInterval(0)
+        self._deferred_refresh_timer.timeout.connect(self._complete_deferred_refresh)
 
         self._tree_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self._tile_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
@@ -1588,6 +1594,10 @@ class FileBrowserTab(QWidget):
         """Cancel all work owned by this tab during shutdown or disposal."""
         self.cancel_inactive_tab_work()
         self._selection_restore_timer.stop()
+        self._settled_scroll_timer.stop()
+        self._refresh_sort_timer.stop()
+        self._deferred_refresh_timer.stop()
+        self._deferred_refresh_target = None
         for job in self._file_operation_jobs:
             job.cancel()
         self._file_operation_jobs.clear()
@@ -1712,7 +1722,15 @@ class FileBrowserTab(QWidget):
         self._refresh_sort_retries = 10
         target = self._current_path
         if self._reset_root_before_refresh(target):
-            QTimer.singleShot(0, partial(self._complete_refresh, target))
+            self._deferred_refresh_target = target
+            self._deferred_refresh_timer.start()
+            return
+        self._complete_refresh(target)
+
+    def _complete_deferred_refresh(self) -> None:
+        target = self._deferred_refresh_target
+        self._deferred_refresh_target = None
+        if target is None:
             return
         self._complete_refresh(target)
 
