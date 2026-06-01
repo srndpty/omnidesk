@@ -543,6 +543,33 @@ def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
     assert tab.current_path() == current
 
 
+def test_file_browser_tab_refresh_sort_does_not_override_new_user_selection(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    old_selection = tmp_path / "old.txt"
+    new_selection = tmp_path / "new.txt"
+    old_selection.write_text("old", encoding="utf-8")
+    new_selection.write_text("new", encoding="utf-8")
+    selected: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    tab._refresh_sort_active = True
+    tab._refresh_sort_retries = 3
+    tab._refresh_selection_path = old_selection
+    monkeypatch.setattr(tab, "_selected_index_path", lambda: new_selection)
+    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
+
+    tab._apply_refresh_sort()
+
+    assert selected == []
+    assert tab._refresh_selection_path is None
+    assert not tab._refresh_sort_active
+    assert tab._refresh_sort_retries == 0
+
+
 def test_file_browser_tab_new_navigation_clears_forward_history(qtbot, tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

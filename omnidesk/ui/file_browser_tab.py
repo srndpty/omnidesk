@@ -1965,6 +1965,7 @@ class FileBrowserTab(QWidget):
         if (
             self._refresh_selection_path
             and self._refresh_selection_path.exists()
+            and self._can_restore_refresh_selection(self._refresh_selection_path)
             and self._select_path(self._refresh_selection_path)
         ):
             self._refresh_selection_path = None
@@ -1974,6 +1975,17 @@ class FileBrowserTab(QWidget):
         if self._refresh_sort_retries <= 0:
             self._refresh_sort_active = False
         self._schedule_refresh_sort()
+
+    def _can_restore_refresh_selection(self, path: Path) -> bool:
+        current = self._selected_index_path()
+        if current is None:
+            return True
+        if same_navigation_path(current, path):
+            return True
+        self._refresh_selection_path = None
+        self._refresh_sort_retries = 0
+        self._refresh_sort_active = False
+        return False
 
     def _defer_settled_scroll(
         self,
