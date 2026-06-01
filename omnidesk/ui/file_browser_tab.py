@@ -1268,7 +1268,6 @@ class FileBrowserTab(QWidget):
             return
         if target is None:
             return
-        logger.info("New folder created path=%s current=%s", target, self._current_path)
         self._mark_directory_changed(self._current_path)
         self._pending_selection_path = target
         self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
@@ -1290,11 +1289,6 @@ class FileBrowserTab(QWidget):
     ) -> bool:
         index = self._model.index(str(path))
         if not index.isValid():
-            logger.info(
-                "Select path skipped because model index is invalid path=%s scroll_hint=%s",
-                path,
-                scroll_hint,
-            )
             return False
         view = self._active_view()
         selection_model = view.selectionModel()
@@ -1523,13 +1517,6 @@ class FileBrowserTab(QWidget):
 
         current = self._current_path
         target = navigation_target(path)
-        logger.info(
-            "Navigate requested current=%s target=%s from_history=%s pending=%s",
-            current,
-            target,
-            from_history,
-            self._pending_selection_path,
-        )
         target_is_current = self._has_loaded_root and same_navigation_path(current, target)
         should_invalidate_current_preview = (
             self._has_loaded_root
@@ -1558,13 +1545,6 @@ class FileBrowserTab(QWidget):
         root_index = self._model.setRootPath(str(target))
         self._tree_view.setRootIndex(root_index)
         self._tile_view.setRootIndex(root_index)
-        logger.info(
-            "Navigate root set target=%s root_valid=%s root_rows=%s target_is_current=%s",
-            target,
-            root_index.isValid(),
-            self._model.rowCount(root_index) if root_index.isValid() else -1,
-            target_is_current,
-        )
         self._update_media_mode(target, select_default=False)
         self._configure_header_sections()
         self._apply_name_column_width()
@@ -1579,12 +1559,6 @@ class FileBrowserTab(QWidget):
 
         self._restart_thumbnail_requests()  # ナビゲート後にサムネイル要求を再開
         self._update_navigation_button_states()
-        logger.info(
-            "Navigate completed target=%s pending=%s deferred_selection=%s",
-            target,
-            self._pending_selection_path,
-            deferred_selection,
-        )
         logger.debug("Navigated to %s and restarted thumbnail requests", target)
         return True
 
@@ -1637,15 +1611,7 @@ class FileBrowserTab(QWidget):
         self._restart_thumbnail_requests()
 
     def _on_rows_inserted(self, parent: QModelIndex, first: int, last: int) -> None:
-        parent_path = self._model.filePath(parent) if parent.isValid() else ""
-        logger.info(
-            "Model rows inserted parent=%s first=%s last=%s parent_rows=%s current=%s",
-            parent_path,
-            first,
-            last,
-            self._model.rowCount(parent) if parent.isValid() else -1,
-            self._current_path,
-        )
+        _ = (parent, first, last)
         self._schedule_settled_scroll()
         self._schedule_refresh_sort()
 
@@ -1737,14 +1703,6 @@ class FileBrowserTab(QWidget):
         """Refresh the current directory view."""
         selected = self._selected_index_path()
         preserve_selection = self._preserve_selection_on_refresh
-        logger.info(
-            "Refresh requested current=%s selected=%s pending_before=%s preserve_selection=%s",
-            self._current_path,
-            selected,
-            self._pending_selection_path,
-            preserve_selection,
-        )
-        self._log_refresh_snapshot("refresh-start", selected)
         if (
             preserve_selection
             and selected
@@ -1762,15 +1720,9 @@ class FileBrowserTab(QWidget):
 
     def _complete_refresh(self, target: Path) -> None:
         if target != self._current_path:
-            logger.info(
-                "Refresh skipped because current path changed target=%s current=%s",
-                target,
-                self._current_path,
-            )
             return
         self.navigate_to(target)
         self._sort_current_directory(reason="refresh-immediate")
-        self._log_refresh_snapshot("refresh-after-immediate-sort", self._refresh_selection_path)
         self._schedule_refresh_sort()
 
     def _reset_root_before_refresh(self, target: Path) -> bool:
@@ -1780,13 +1732,6 @@ class FileBrowserTab(QWidget):
         root_index = self._model.setRootPath(str(parent))
         self._tree_view.setRootIndex(root_index)
         self._tile_view.setRootIndex(root_index)
-        logger.info(
-            "Refresh root reset current=%s parent=%s parent_valid=%s parent_rows=%s",
-            target,
-            parent,
-            root_index.isValid(),
-            self._model.rowCount(root_index) if root_index.isValid() else -1,
-        )
         return True
 
     def go_back(self) -> None:
@@ -2004,26 +1949,9 @@ class FileBrowserTab(QWidget):
         if column < 0:
             column = 0
         order = self._header.sortIndicatorOrder()
-        root = self._active_view().rootIndex()
-        logger.info(
-            "Sort current directory reason=%s path=%s column=%s order=%s rows_before=%s",
-            reason,
-            self._current_path,
-            column,
-            order,
-            self._model.rowCount(root) if root.isValid() else -1,
-        )
+        _ = reason
         self._model.sort(column, order)
         self._tile_view.scheduleDelayedItemsLayout()
-        logger.info(
-            "Sort current directory completed reason=%s path=%s column=%s order=%s rows_after=%s",
-            reason,
-            self._current_path,
-            column,
-            order,
-            self._model.rowCount(root) if root.isValid() else -1,
-        )
-        self._log_root_order(f"sort-{reason}")
 
     def _schedule_refresh_sort(self) -> None:
         if self._refresh_sort_retries <= 0:
@@ -2038,7 +1966,6 @@ class FileBrowserTab(QWidget):
         self._sort_current_directory(reason="refresh-deferred")
         if self._refresh_selection_path and self._refresh_selection_path.exists():
             self._select_path(self._refresh_selection_path)
-        self._log_refresh_snapshot("refresh-deferred-sort", self._refresh_selection_path)
         self._schedule_refresh_sort()
 
     def _defer_settled_scroll(
@@ -2067,87 +1994,6 @@ class FileBrowserTab(QWidget):
             return
         self._select_path(path, self._settled_scroll_hint, defer_settle=False)
         self._schedule_settled_scroll()
-
-    def _log_root_order(self, event: str, limit: int = 8) -> None:
-        if not logger.isEnabledFor(logging.INFO):
-            return
-        with suppress(RuntimeError):
-            root = self._active_view().rootIndex()
-            if not root.isValid():
-                return
-            row_count = self._model.rowCount(root)
-            names = [
-                self._model.fileName(self._model.index(row, 0, root))
-                for row in range(min(limit, row_count))
-            ]
-            logger.info(
-                "Root order event=%s current=%s rows=%s first_names=%s",
-                event,
-                self._current_path,
-                row_count,
-                names,
-            )
-
-    def _log_refresh_snapshot(
-        self,
-        event: str,
-        focus_path: Path | None = None,
-    ) -> None:
-        if not logger.isEnabledFor(logging.INFO):
-            return
-        with suppress(RuntimeError):
-            view = self._active_view()
-            root = view.rootIndex()
-            model = view.model()
-            if not model or not root.isValid():
-                logger.info(
-                    "Refresh snapshot event=%s current=%s root_valid=%s focus=%s",
-                    event,
-                    self._current_path,
-                    root.isValid(),
-                    focus_path,
-                )
-                return
-            row_count = model.rowCount(root)
-            focus_index = self._model.index(str(focus_path)) if focus_path else QModelIndex()
-            selection_model = view.selectionModel()
-            selected_paths = self._selected_paths()
-            new_folder = self._current_path / "New Folder"
-            new_folder_index = self._model.index(str(new_folder))
-            first_names = [
-                self._model.fileName(self._model.index(row, 0, root))
-                for row in range(min(10, row_count))
-            ]
-            last_names = [
-                self._model.fileName(self._model.index(row, 0, root))
-                for row in range(max(0, row_count - 5), row_count)
-            ]
-            logger.info(
-                (
-                    "Refresh snapshot event=%s current=%s view=%s rows=%s "
-                    "focus=%s focus_valid=%s focus_row=%s new_folder_row=%s "
-                    "selected_count=%s selected_paths=%s current_index_valid=%s current_row=%s "
-                    "status_counts=%s/%s first_names=%s last_names=%s"
-                ),
-                event,
-                self._current_path,
-                type(view).__name__,
-                row_count,
-                focus_path,
-                focus_index.isValid(),
-                focus_index.row() if focus_index.isValid() else -1,
-                new_folder_index.row() if new_folder_index.isValid() else -1,
-                len(selected_paths),
-                selected_paths,
-                bool(selection_model and selection_model.currentIndex().isValid()),
-                selection_model.currentIndex().row()
-                if selection_model and selection_model.currentIndex().isValid()
-                else -1,
-                self._status_folder_count,
-                self._status_file_count,
-                first_names,
-                last_names,
-            )
 
     def _configure_header_sections(self) -> None:
         if self._media_icon_mode:
@@ -2188,12 +2034,6 @@ class FileBrowserTab(QWidget):
         pending = self._pending_selection_path
         pending_scroll_hint = self._pending_selection_scroll_hint
         pending_exists = bool(pending and pending.exists())
-        logger.info(
-            "Select pending or first row pending=%s exists=%s scroll_hint=%s",
-            pending,
-            pending_exists,
-            pending_scroll_hint,
-        )
         selected_pending = bool(
             pending and pending_exists and self._select_path(pending, pending_scroll_hint)
         )
@@ -2202,12 +2042,6 @@ class FileBrowserTab(QWidget):
             pending_exists=pending_exists,
             selected_in_current_directory=self._has_current_selection_in_current_directory(),
             pending_select_succeeded=selected_pending,
-        )
-        logger.info(
-            "Select pending action=%s pending=%s selected_pending=%s",
-            action,
-            pending,
-            selected_pending,
         )
         if action == "selected_pending":
             self._pending_selection_path = None
@@ -2366,14 +2200,6 @@ class FileBrowserTab(QWidget):
                     viewport.update(rect)
 
     def _emit_status_changed(self, selected_paths: list[Path] | None = None) -> None:
-        logger.info(
-            "Status changed current=%s folders=%s files=%s selected_count=%s selected_paths=%s",
-            self._current_path,
-            self._status_folder_count,
-            self._status_file_count,
-            len(selected_paths or []),
-            selected_paths or [],
-        )
         self.statusChanged.emit(
             browser_status_from_counts(
                 self._status_folder_count,
@@ -2390,12 +2216,6 @@ class FileBrowserTab(QWidget):
         self._status_count_refresh_on_activate = False
         self._status_count_generation += 1
         generation = self._status_count_generation
-        logger.info(
-            "Status count requested path=%s generation=%s selected_before_reset=%s",
-            path,
-            generation,
-            self._selected_paths(),
-        )
         job = _DirectoryCountJob(path, generation)
         job.signals.counted.connect(self._handle_status_item_counts_ready)
         self._status_count_jobs[generation] = job
@@ -2411,29 +2231,9 @@ class FileBrowserTab(QWidget):
         self._status_count_jobs.pop(generation, None)
         path = Path(path_text)
         if generation != self._status_count_generation or path != self._current_path:
-            logger.info(
-                (
-                    "Status count ignored path=%s generation=%s current=%s "
-                    "current_generation=%s folders=%s files=%s"
-                ),
-                path,
-                generation,
-                self._current_path,
-                self._status_count_generation,
-                folder_count,
-                file_count,
-            )
             return
         self._status_folder_count = folder_count
         self._status_file_count = file_count
-        logger.info(
-            "Status count ready path=%s generation=%s folders=%s files=%s selected=%s",
-            path,
-            generation,
-            folder_count,
-            file_count,
-            self._selected_paths(),
-        )
         self._emit_status_changed(self._selected_paths())
 
     def _update_status_item_counts(self) -> None:
