@@ -26,7 +26,8 @@ def apply_dark_title_bar(widget: QWidget) -> None:
 def _set_dark_mode_for_hwnd(hwnd: int) -> None:
     """Try DWM attributes that switch the title bar to dark mode."""
     value = ctypes.c_int(1)
-    dwmapi = getattr(ctypes.windll, "dwmapi", None)
+    windll = getattr(ctypes, "windll", None)  # windll is Windows-only; absent on Linux/macOS stubs
+    dwmapi = getattr(windll, "dwmapi", None) if windll is not None else None
     if dwmapi is None:
         return
 

@@ -88,7 +88,7 @@ def delete_paths_with_result(
         try:
             send2trash(str(path))
             changed_dirs.append(path.parent)
-        except Exception as exc:  # pragma: no cover - filesystem dependent
+        except Exception as exc:  # pragma: no cover - send2trash/backend dependent
             logger.exception("Failed to move path to trash: %s", path)
             errors.append(f"{path}: {exc}")
     return FileOperationResult(errors, changed_dirs)
@@ -132,7 +132,7 @@ def perform_copy_or_move_with_result(
         try:
             if move and src.parent.resolve() == dest_dir.resolve():
                 continue
-        except Exception:  # pragma: no cover - resolution failure on some systems
+        except OSError:  # pragma: no cover - resolution failure on some systems
             logger.debug(
                 "Could not resolve source/destination for same-directory check", exc_info=True
             )
@@ -149,7 +149,7 @@ def perform_copy_or_move_with_result(
         return FileOperationResult(errors, changed_dirs, cancelled=True)
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:  # pragma: no cover - filesystem dependent
+    except OSError as exc:  # pragma: no cover - filesystem dependent
         logger.exception("Failed to create destination directory: %s", dest_dir)
         return FileOperationResult([*errors, f"{dest_dir}: {exc}"], [])
 
@@ -172,7 +172,7 @@ def perform_copy_or_move_with_result(
             else:
                 shutil.copy2(src, target)
                 changed_dirs.append(dest_dir)
-        except Exception as exc:  # pragma: no cover - filesystem dependent
+        except (OSError, shutil.Error) as exc:  # pragma: no cover - filesystem dependent
             logger.exception("Failed to copy/move %s to %s", src, target)
             errors.append(f"{src} -> {target}: {exc}")
     return FileOperationResult(errors, changed_dirs)

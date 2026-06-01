@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from contextlib import suppress
 from pathlib import Path
 
@@ -67,11 +68,16 @@ class MediaThumbnailProvider(QObject):
 
         # Video job management
         self._video_jobs: dict[str, _VideoJob] = {}
-        self._video_queue: list[tuple[str, Path, int, CancellationToken]] = []
+        self._video_queue: deque[tuple[str, Path, int, CancellationToken]] = deque()
         self._active_video_jobs = 0
         self.MAX_CONCURRENT_VIDEO_JOBS = 1
 
         self._video_support = QMediaPlayer is not None and QVideoSink is not None
+        self._video_timeout_ms = 5000
+
+    def set_video_timeout_ms(self, ms: int) -> None:
+        if 1000 <= ms <= 30000:
+            self._video_timeout_ms = ms
 
     # ------------------------------------------------------------------
     @property
@@ -123,10 +129,10 @@ class MediaThumbnailProvider(QObject):
         token = self._image_tokens.get(key)
         if token is not None:
             token.cancel()
-        self._video_queue = [item for item in self._video_queue if item[0] != key]
+        self._video_queue = deque(item for item in self._video_queue if item[0] != key)
 
     def _start_video_job(self, key: str, path: Path, edge: int, token: CancellationToken) -> None:
-        job = _VideoJob(key, path, edge, token)
+        job = _VideoJob(key, path, edge, token, timeout_ms=self._video_timeout_ms)
         job.finished.connect(self._on_video_finished)
         self._video_jobs[key] = job
         self._active_video_jobs += 1
@@ -165,7 +171,7 @@ class MediaThumbnailProvider(QObject):
 
     def _process_video_queue(self) -> None:
         while self._active_video_jobs < self.MAX_CONCURRENT_VIDEO_JOBS and self._video_queue:
-            key, path, edge, token = self._video_queue.pop(0)
+            key, path, edge, token = self._video_queue.popleft()
             if token.cancelled:
                 continue
             if key in self._video_jobs:  # Should not happen usually
@@ -222,7 +228,15 @@ class _VideoJob(QObject):
 
     finished = pyqtSignal(str, object, int)
 
-    def __init__(self, key: str, path: Path, edge: int, token: CancellationToken) -> None:
+    def __init__(
+        self,
+        key: str,
+        path: Path,
+        edge: int,
+        token: CancellationToken,
+        *,
+        timeout_ms: int = 5000,
+    ) -> None:
         super().__init__()
         media_player_cls = QMediaPlayer
         video_sink_cls = QVideoSink
@@ -232,6 +246,7 @@ class _VideoJob(QObject):
         self._path = path
         self._edge = edge
         self._token = token
+        self._timeout_ms = timeout_ms
         self._player = media_player_cls(self)
         self._audio = QAudioOutput(self) if QAudioOutput is not None else None
         if self._audio is not None:
@@ -256,7 +271,7 @@ class _VideoJob(QObject):
         self._player.setSource(QUrl.fromLocalFile(str(self._path)))
         self._player.setPosition(0)
         self._player.play()
-        self._timeout.start(2000)
+        self._timeout.start(self._timeout_ms)
 
     def _handle_frame(self, frame) -> None:  # type: ignore[override]
         if self._complete or self._token.cancelled or not frame.isValid():

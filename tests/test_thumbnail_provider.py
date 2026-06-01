@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 from typing import cast
 
@@ -78,10 +79,12 @@ def test_cancel_thumbnail_cancels_image_token_and_removes_queued_video() -> None
     provider = MediaThumbnailProvider()
     token = CancellationToken(5)
     provider._image_tokens["image-key"] = token
-    provider._video_queue = [
-        ("drop-me", Path("queued.mp4"), 100, CancellationToken(1)),
-        ("keep-me", Path("other.mp4"), 100, CancellationToken(2)),
-    ]
+    provider._video_queue = deque(
+        [
+            ("drop-me", Path("queued.mp4"), 100, CancellationToken(1)),
+            ("keep-me", Path("other.mp4"), 100, CancellationToken(2)),
+        ]
+    )
 
     provider.cancel_thumbnail("drop-me")
     provider.cancel_thumbnail("image-key")
@@ -110,11 +113,13 @@ def test_process_video_queue_skips_cancelled_and_duplicate_jobs(monkeypatch) -> 
     cancelled.cancel()
     ready = CancellationToken(3)
     provider._video_jobs["duplicate"] = cast(_VideoJob, object())
-    provider._video_queue = [
-        ("cancelled", Path("cancelled.mp4"), 100, cancelled),
-        ("duplicate", Path("duplicate.mp4"), 100, duplicate),
-        ("ready", Path("ready.mp4"), 100, ready),
-    ]
+    provider._video_queue = deque(
+        [
+            ("cancelled", Path("cancelled.mp4"), 100, cancelled),
+            ("duplicate", Path("duplicate.mp4"), 100, duplicate),
+            ("ready", Path("ready.mp4"), 100, ready),
+        ]
+    )
     monkeypatch.setattr(
         provider,
         "_start_video_job",
@@ -124,7 +129,7 @@ def test_process_video_queue_skips_cancelled_and_duplicate_jobs(monkeypatch) -> 
     provider._process_video_queue()
 
     assert started == ["ready"]
-    assert provider._video_queue == []
+    assert len(provider._video_queue) == 0
 
 
 def test_on_video_finished_starts_next_queued_job(monkeypatch, qtbot) -> None:
@@ -132,7 +137,7 @@ def test_on_video_finished_starts_next_queued_job(monkeypatch, qtbot) -> None:
     started: list[str] = []
     provider._active_video_jobs = 1
     provider._video_jobs["done"] = cast(_VideoJob, None)
-    provider._video_queue = [("next", Path("next.mp4"), 100, CancellationToken(4))]
+    provider._video_queue = deque([("next", Path("next.mp4"), 100, CancellationToken(4))])
     monkeypatch.setattr(
         provider,
         "_start_video_job",
@@ -314,7 +319,7 @@ def test_video_job_start_configures_player(monkeypatch, tmp_path: Path) -> None:
     assert player.position == 0
     assert player.played
     assert timer.single_shot is True
-    assert timer.started_with == 2000
+    assert timer.started_with == 5000
 
 
 def test_video_job_cancelled_start_finishes_without_icon(

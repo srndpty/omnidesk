@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import suppress
@@ -118,6 +119,7 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         # every thumbnail write. The cache may temporarily exceed limits by up to
         # budget_check_interval writes. Use budget_check_interval=1 for strict enforcement.
         self._budget_check_interval = max(1, budget_check_interval)
+        self._budget_lock = threading.Lock()
 
     # ---------- ディスクキー生成 ----------
     def _disk_key(self, key: Key, *, hint_edge: int | None = None) -> Path:
@@ -242,6 +244,8 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
 
     # ---------- ディスクLRU整理 ----------
     def _enforce_disk_budget(self) -> None:
+        if not self._budget_lock.acquire(blocking=False):
+            return  # 別スレッドが実行中 → スキップ
         try:
             files = list(self._root.glob("*.png"))
             if not files:
@@ -271,6 +275,8 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
                 total -= sz
         except Exception:
             logger.exception("Failed to enforce thumbnail cache budget in %s", self._root)
+        finally:
+            self._budget_lock.release()
 
     # 任意: クリアAPI
     def clear_disk(self) -> None:
