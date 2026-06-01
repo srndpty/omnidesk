@@ -549,6 +549,35 @@ def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
     assert tab._refresh_selection_path == pending_selection
 
 
+def test_file_browser_tab_refresh_and_select_defers_selection_until_model_ready(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "created.txt"
+    target.write_text("created", encoding="utf-8")
+    selected: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    tab._has_loaded_root = True
+    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda path: True)
+    monkeypatch.setattr(
+        tab,
+        "_select_path",
+        lambda path,
+        scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible,
+        **kwargs: selected.append(path) or False,
+    )
+
+    tab._refresh_and_select(target)
+
+    assert selected == [target]
+    assert tab._pending_selection_path == target
+    assert tab._refresh_selection_path == target
+    assert tab._deferred_refresh_target == tmp_path
+
+
 def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
     qtbot,
     tmp_path: Path,

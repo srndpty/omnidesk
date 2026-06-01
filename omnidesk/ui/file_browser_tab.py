@@ -1239,8 +1239,7 @@ class FileBrowserTab(QWidget):
         if target is None:
             return
         self._mark_changed_directories([original.parent, target.parent])
-        self.refresh()
-        self._select_path(target)
+        self._refresh_and_select(target)
 
     def _create_new_file(self) -> None:
         if not self._current_path.exists():
@@ -1255,8 +1254,7 @@ class FileBrowserTab(QWidget):
         if target is None:
             return
         self._mark_directory_changed(self._current_path)
-        self.refresh()
-        self._select_path(target)
+        self._refresh_and_select(target)
 
     def _create_new_folder(self) -> None:
         if not self._current_path.exists():
@@ -1271,16 +1269,7 @@ class FileBrowserTab(QWidget):
         if target is None:
             return
         self._mark_directory_changed(self._current_path)
-        self._pending_selection_path = target
-        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-        self._preserve_selection_on_refresh = False
-        try:
-            self.refresh()
-        finally:
-            self._preserve_selection_on_refresh = True
-        if self._select_path(target):
-            self._pending_selection_path = None
-            self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
+        self._refresh_and_select(target, preserve_selection=False)
 
     def _select_path(
         self,
@@ -1302,6 +1291,32 @@ class FileBrowserTab(QWidget):
         view.scrollTo(index, scroll_hint)
         if defer_settle and scroll_hint == QAbstractItemView.ScrollHint.PositionAtCenter:
             self._defer_settled_scroll(path, scroll_hint)
+        return True
+
+    def _refresh_and_select(
+        self,
+        path: Path,
+        *,
+        preserve_selection: bool = True,
+    ) -> None:
+        self._pending_selection_path = path
+        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
+        old_preserve_selection = self._preserve_selection_on_refresh
+        self._preserve_selection_on_refresh = preserve_selection
+        try:
+            self.refresh()
+        finally:
+            self._preserve_selection_on_refresh = old_preserve_selection
+        self._select_pending_path_if_ready()
+
+    def _select_pending_path_if_ready(self) -> bool:
+        pending = self._pending_selection_path
+        if pending is None:
+            return False
+        if not self._select_path(pending):
+            return False
+        self._pending_selection_path = None
+        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         return True
 
     def _show_context_menu(self, view: QAbstractItemView, point) -> None:
@@ -1431,8 +1446,7 @@ class FileBrowserTab(QWidget):
                 None,
             )
         self.refresh()
-        if self._pending_selection_path is not None:
-            self._select_path(self._pending_selection_path)
+        self._select_pending_path_if_ready()
 
     def _resolve_destination(self, dest_dir: Path, name: str, move: bool) -> Path:
         return resolve_destination(dest_dir, name, move)
@@ -1485,8 +1499,7 @@ class FileBrowserTab(QWidget):
                 None,
             )
         self.refresh()
-        if self._pending_selection_path is not None:
-            self._select_path(self._pending_selection_path)
+        self._select_pending_path_if_ready()
         return not bool(result.errors)
 
     def selection_replacement_for_removed_paths(self, paths: list[Path]) -> Path | None:
@@ -1505,7 +1518,7 @@ class FileBrowserTab(QWidget):
             return
         self._pending_selection_path = replacement
         self.refresh()
-        self._select_path(replacement)
+        self._select_pending_path_if_ready()
         self.focus_view()
 
     # ------------------------------------------------------------------
