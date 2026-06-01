@@ -522,6 +522,33 @@ def test_file_browser_tab_refresh_preserves_selection_and_resorts(
     assert sorted_columns == [(0, Qt.SortOrder.AscendingOrder)]
 
 
+def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    old_selection = tmp_path / "old.txt"
+    pending_selection = tmp_path / "created.txt"
+    old_selection.write_text("old", encoding="utf-8")
+    pending_selection.write_text("created", encoding="utf-8")
+    navigated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    tab._has_loaded_root = True
+    tab._pending_selection_path = pending_selection
+    monkeypatch.setattr(tab, "_selected_index_path", lambda: old_selection)
+    monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
+    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
+    monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
+
+    tab.refresh()
+
+    qtbot.waitUntil(lambda: bool(navigated), timeout=1000)
+    assert tab._pending_selection_path == pending_selection
+    assert tab._refresh_selection_path == pending_selection
+
+
 def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
     qtbot,
     tmp_path: Path,
@@ -2086,6 +2113,7 @@ def test_file_browser_tab_selection_status_uses_cached_item_counts(
     selected.write_bytes(b"abc")
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
+    qtbot.wait(100)
     tab._status_folder_count = 4
     tab._status_file_count = 5
     monkeypatch.setattr(tab, "_request_status_item_counts", lambda _path: None)

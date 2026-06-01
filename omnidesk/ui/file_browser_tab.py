@@ -1702,6 +1702,7 @@ class FileBrowserTab(QWidget):
         if (
             preserve_selection
             and selected
+            and self._pending_selection_path is None
             and has_selection_path_in_directory(selected, self._current_path)
         ):
             self._pending_selection_path = selected
