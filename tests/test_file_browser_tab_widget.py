@@ -522,6 +522,27 @@ def test_file_browser_tab_refresh_preserves_selection_and_resorts(
     assert sorted_columns == [(0, Qt.SortOrder.AscendingOrder)]
 
 
+def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / "a.txt").write_text("a", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(current)
+
+    tab.refresh()
+
+    qtbot.waitUntil(
+        lambda: Path(tab._model.filePath(tab._tree_view.rootIndex())) == current
+        and Path(tab._model.filePath(tab._tile_view.rootIndex())) == current,
+        timeout=1000,
+    )
+    assert tab.current_path() == current
+
+
 def test_file_browser_tab_new_navigation_clears_forward_history(qtbot, tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

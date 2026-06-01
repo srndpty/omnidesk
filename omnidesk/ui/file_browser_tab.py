@@ -168,11 +168,6 @@ def navigation_cursor_action(key: int) -> QAbstractItemView.CursorAction | None:
     return NAVIGATION_CURSOR_ACTIONS.get(Qt.Key(key))
 
 
-def _select_path_later(tab: FileBrowserTab, path: Path) -> None:
-    with suppress(RuntimeError):
-        tab._select_path(path, QAbstractItemView.ScrollHint.PositionAtCenter)
-
-
 class _DirectoryCountSignals(QObject):
     counted = pyqtSignal(str, int, int, int)  # path, generation, folders, files
 
@@ -891,6 +886,7 @@ class FileBrowserTab(QWidget):
         self._settled_scroll_path: Path | None = None
         self._settled_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._settled_scroll_retries = 0
+        self._refresh_sort_active = False
         self._refresh_sort_retries = 0
         self._refresh_selection_path: Path | None = None
         self._preserve_selection_on_refresh = True
@@ -1711,7 +1707,8 @@ class FileBrowserTab(QWidget):
             self._pending_selection_path = selected
             self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._refresh_selection_path = self._pending_selection_path or selected
-        self._refresh_sort_retries = 6
+        self._refresh_sort_active = True
+        self._refresh_sort_retries = 10
         target = self._current_path
         if self._reset_root_before_refresh(target):
             QTimer.singleShot(0, partial(self._complete_refresh, target))
@@ -1720,6 +1717,8 @@ class FileBrowserTab(QWidget):
 
     def _complete_refresh(self, target: Path) -> None:
         if target != self._current_path:
+            self._refresh_sort_active = False
+            self._refresh_sort_retries = 0
             return
         self.navigate_to(target)
         self._sort_current_directory(reason="refresh-immediate")
@@ -1729,9 +1728,7 @@ class FileBrowserTab(QWidget):
         parent = target.parent
         if parent == target or not parent.exists():
             return False
-        root_index = self._model.setRootPath(str(parent))
-        self._tree_view.setRootIndex(root_index)
-        self._tile_view.setRootIndex(root_index)
+        self._model.setRootPath(str(parent))
         return True
 
     def go_back(self) -> None:
@@ -1954,18 +1951,28 @@ class FileBrowserTab(QWidget):
         self._tile_view.scheduleDelayedItemsLayout()
 
     def _schedule_refresh_sort(self) -> None:
-        if self._refresh_sort_retries <= 0:
+        if not self._refresh_sort_active or self._refresh_sort_retries <= 0:
             return
         if not self._refresh_sort_timer.isActive():
             self._refresh_sort_timer.start()
 
     def _apply_refresh_sort(self) -> None:
-        if self._refresh_sort_retries <= 0:
+        if not self._refresh_sort_active or self._refresh_sort_retries <= 0:
+            self._refresh_sort_active = False
             return
         self._refresh_sort_retries -= 1
         self._sort_current_directory(reason="refresh-deferred")
-        if self._refresh_selection_path and self._refresh_selection_path.exists():
-            self._select_path(self._refresh_selection_path)
+        if (
+            self._refresh_selection_path
+            and self._refresh_selection_path.exists()
+            and self._select_path(self._refresh_selection_path)
+        ):
+            self._refresh_selection_path = None
+            self._refresh_sort_retries = 0
+            self._refresh_sort_active = False
+            return
+        if self._refresh_sort_retries <= 0:
+            self._refresh_sort_active = False
         self._schedule_refresh_sort()
 
     def _defer_settled_scroll(
