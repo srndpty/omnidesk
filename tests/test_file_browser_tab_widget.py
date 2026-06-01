@@ -597,6 +597,36 @@ def test_file_browser_tab_refresh_sort_does_not_override_new_user_selection(
     assert tab._refresh_sort_retries == 0
 
 
+def test_file_browser_tab_settled_scroll_does_not_override_new_user_selection(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    old_selection = tmp_path / "old"
+    new_selection = tmp_path / "new"
+    old_selection.mkdir()
+    new_selection.mkdir()
+    selected: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._settled_scroll_path = old_selection
+    tab._settled_scroll_retries = 3
+    monkeypatch.setattr(tab, "_selected_index_path", lambda: new_selection)
+    monkeypatch.setattr(
+        tab,
+        "_select_path",
+        lambda path,
+        scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible,
+        **kwargs: selected.append(path) or True,
+    )
+
+    tab._apply_settled_scroll()
+
+    assert selected == []
+    assert tab._settled_scroll_path is None
+    assert tab._settled_scroll_retries == 0
+
+
 def test_file_browser_tab_new_navigation_clears_forward_history(qtbot, tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

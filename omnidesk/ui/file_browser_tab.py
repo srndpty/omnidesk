@@ -2012,8 +2012,20 @@ class FileBrowserTab(QWidget):
         if not path.exists():
             self._settled_scroll_path = None
             return
+        if not self._can_apply_settled_scroll(path):
+            return
         self._select_path(path, self._settled_scroll_hint, defer_settle=False)
         self._schedule_settled_scroll()
+
+    def _can_apply_settled_scroll(self, path: Path) -> bool:
+        current = self._selected_index_path()
+        if current is None:
+            return True
+        if same_navigation_path(current, path):
+            return True
+        self._settled_scroll_path = None
+        self._settled_scroll_retries = 0
+        return False
 
     def _configure_header_sections(self) -> None:
         if self._media_icon_mode:
