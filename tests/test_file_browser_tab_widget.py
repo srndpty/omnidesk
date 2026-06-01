@@ -493,6 +493,35 @@ def test_file_browser_tab_go_up_does_not_record_navigation_history(qtbot, tmp_pa
     assert tab._navigation_history == history_before
 
 
+def test_file_browser_tab_refresh_preserves_selection_and_resorts(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    selected_path = tmp_path / "selected"
+    selected_path.mkdir()
+    navigated: list[Path] = []
+    sorted_columns: list[tuple[int, Qt.SortOrder]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(tab, "_selected_index_path", lambda: selected_path)
+    monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
+    monkeypatch.setattr(
+        tab._model,
+        "sort",
+        lambda column, order: sorted_columns.append((column, order)),
+    )
+
+    tab.refresh()
+
+    qtbot.waitUntil(lambda: bool(navigated), timeout=1000)
+    assert navigated == [tmp_path]
+    assert tab._refresh_selection_path == selected_path
+    assert tab._pending_selection_scroll_hint == QAbstractItemView.ScrollHint.EnsureVisible
+    assert sorted_columns == [(0, Qt.SortOrder.AscendingOrder)]
+
+
 def test_file_browser_tab_new_navigation_clears_forward_history(qtbot, tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -2011,6 +2040,7 @@ def test_file_browser_tab_selection_status_uses_cached_item_counts(
     qtbot.addWidget(tab)
     tab._status_folder_count = 4
     tab._status_file_count = 5
+    monkeypatch.setattr(tab, "_request_status_item_counts", lambda _path: None)
     monkeypatch.setattr(tab, "_selected_paths", lambda: [selected])
     monkeypatch.setattr(
         file_browser_tab_module,
@@ -2049,7 +2079,7 @@ def test_file_browser_tab_directory_loaded_updates_status_item_counts(
     assert status.total_count == 5
 
 
-def test_file_browser_tab_request_status_counts_clears_stale_counts(
+def test_file_browser_tab_request_status_counts_keeps_previous_counts_until_ready(
     monkeypatch,
     qtbot,
     tmp_path: Path,
@@ -2077,13 +2107,9 @@ def test_file_browser_tab_request_status_counts_clears_stale_counts(
     tab._request_status_item_counts(tmp_path)
 
     assert pool.jobs
-    assert tab._status_folder_count == 0
-    assert tab._status_file_count == 0
-    status = statuses[-1]
-    assert status.folder_count == 0
-    assert status.file_count == 0
-    assert status.selected_count == 1
-    assert status.selected_file_size == 3
+    assert tab._status_folder_count == 8
+    assert tab._status_file_count == 13
+    assert statuses == []
 
 
 def test_file_browser_tab_activate_restarts_cancelled_status_count_job(
