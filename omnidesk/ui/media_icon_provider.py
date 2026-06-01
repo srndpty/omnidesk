@@ -76,7 +76,7 @@ class MediaThumbnailProvider(QObject):
         self._video_timeout_ms = 5000
 
     def set_video_timeout_ms(self, ms: int) -> None:
-        if ms >= 1000:
+        if 1000 <= ms <= 30000:
             self._video_timeout_ms = ms
 
     # ------------------------------------------------------------------

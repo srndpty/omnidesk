@@ -161,6 +161,20 @@ def test_app_settings_preserves_pin_positions_when_tabs_contain_invalid_items() 
     assert settings.session_pinned_tabs() == [False, False]
 
 
+def test_app_settings_video_thumbnail_timeout_ms_boundaries() -> None:
+    def _settings(value: object) -> config.AppSettings:
+        return config.AppSettings.from_raw({"thumbnails": {"video_timeout_ms": value}})
+
+    assert _settings(None).video_thumbnail_timeout_ms() == 5000
+    assert config.AppSettings().video_thumbnail_timeout_ms() == 5000
+    assert _settings(999).video_thumbnail_timeout_ms() == 5000
+    assert _settings(1000).video_thumbnail_timeout_ms() == 1000
+    assert _settings(5000).video_thumbnail_timeout_ms() == 5000
+    assert _settings(30000).video_thumbnail_timeout_ms() == 30000
+    assert _settings(30001).video_thumbnail_timeout_ms() == 5000
+    assert _settings("5000").video_thumbnail_timeout_ms() == 5000
+
+
 def test_resolve_for_navigation_resolves_existing_path(tmp_path: Path) -> None:
     target = tmp_path / "folder"
     target.mkdir()

@@ -38,16 +38,19 @@ def is_media_heavy_directory(
     except OSError:
         return False
     try:
-        entries = list(iterator)
+        for entry in iterator:
+            try:
+                is_file = entry.is_file()
+            except OSError:
+                continue
+            if is_file:
+                total_files += 1
+                if entry.suffix.lower() in extensions:
+                    media_files += 1
+            if total_files >= scan_limit:
+                break
     except OSError:
         return False
-    for entry in entries:
-        if entry.is_file():
-            total_files += 1
-            if entry.suffix.lower() in extensions:
-                media_files += 1
-        if total_files >= scan_limit:
-            break
 
     if media_files == 0:
         return False

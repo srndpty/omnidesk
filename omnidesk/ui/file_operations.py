@@ -88,7 +88,7 @@ def delete_paths_with_result(
         try:
             send2trash(str(path))
             changed_dirs.append(path.parent)
-        except OSError as exc:  # pragma: no cover - filesystem dependent
+        except Exception as exc:  # pragma: no cover - send2trash/backend dependent
             logger.exception("Failed to move path to trash: %s", path)
             errors.append(f"{path}: {exc}")
     return FileOperationResult(errors, changed_dirs)

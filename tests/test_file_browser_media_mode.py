@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from PyQt6.QtCore import QSize
 
@@ -90,6 +91,37 @@ class TestIsMediaHeavyDirectory:
             scan_limit=scan_limit,
         )
         assert result is True
+
+    def test_scan_limit_stops_iteration_early(self) -> None:
+        """scan_limit=3 の場合、4件目を読もうとしてはならない（逐次走査の退行検出）。"""
+        read_count = 0
+
+        def _make_entry(name: str) -> MagicMock:
+            e = MagicMock()
+            e.is_file.return_value = True
+            e.suffix = Path(name).suffix
+            return e
+
+        def _counting_iter():
+            nonlocal read_count
+            for name in ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg", "f.jpg"]:
+                read_count += 1
+                if read_count > 3:
+                    raise AssertionError(
+                        f"Read {read_count} entries — scan_limit=3 was not respected"
+                    )
+                yield _make_entry(name)
+
+        with patch.object(Path, "iterdir", return_value=_counting_iter()):
+            is_media_heavy_directory(
+                Path("/fake"),
+                self.EXTENSIONS,
+                ratio_threshold=0.5,
+                min_count=3,
+                scan_limit=3,
+            )
+
+        assert read_count == 3
 
     def test_handles_os_error(self, tmp_path: Path) -> None:
         non_existent = tmp_path / "does_not_exist"

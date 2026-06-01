@@ -109,7 +109,7 @@ class AppSettings:
     def video_thumbnail_timeout_ms(self) -> int:
         thumbnails = self.data.get("thumbnails", {})
         value = thumbnails.get("video_timeout_ms") if isinstance(thumbnails, dict) else None
-        return value if isinstance(value, int) and value >= 1000 else 5000
+        return value if isinstance(value, int) and 1000 <= value <= 30000 else 5000
 
     def set_session(
         self,
