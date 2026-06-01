@@ -578,6 +578,23 @@ def test_file_browser_tab_refresh_and_select_defers_selection_until_model_ready(
     assert tab._deferred_refresh_target == tmp_path
 
 
+def test_file_browser_tab_pending_selection_survives_deferred_refresh(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "created.txt"
+    target.write_text("created", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._pending_selection_path = target
+    tab._deferred_refresh_target = tmp_path
+    monkeypatch.setattr(tab, "_select_path", lambda path: True)
+
+    assert tab._select_pending_path_if_ready()
+    assert tab._pending_selection_path == target
+
+
 def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
     qtbot,
     tmp_path: Path,

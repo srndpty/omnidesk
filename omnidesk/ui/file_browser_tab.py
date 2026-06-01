@@ -1315,6 +1315,8 @@ class FileBrowserTab(QWidget):
             return False
         if not self._select_path(pending):
             return False
+        if self._deferred_refresh_target is not None:
+            return True
         self._pending_selection_path = None
         self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         return True
