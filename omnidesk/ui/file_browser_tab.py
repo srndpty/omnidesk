@@ -1755,6 +1755,7 @@ class FileBrowserTab(QWidget):
             self._refresh_sort_retries = 0
             return
         self.navigate_to(target)
+        self._select_pending_path_if_ready()
         self._sort_current_directory(reason="refresh-immediate")
         self._schedule_refresh_sort()
 

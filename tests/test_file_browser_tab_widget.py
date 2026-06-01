@@ -532,6 +532,7 @@ def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
     old_selection.write_text("old", encoding="utf-8")
     pending_selection.write_text("created", encoding="utf-8")
     navigated: list[Path] = []
+    selected: list[Path] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab._current_path = tmp_path
@@ -541,12 +542,14 @@ def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
     monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
     monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
+    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or False)
 
     tab.refresh()
 
     qtbot.waitUntil(lambda: bool(navigated), timeout=1000)
     assert tab._pending_selection_path == pending_selection
     assert tab._refresh_selection_path == pending_selection
+    assert selected == [pending_selection]
 
 
 def test_file_browser_tab_refresh_and_select_defers_selection_until_model_ready(
@@ -593,6 +596,35 @@ def test_file_browser_tab_pending_selection_survives_deferred_refresh(
 
     assert tab._select_pending_path_if_ready()
     assert tab._pending_selection_path == target
+
+
+def test_file_browser_tab_deferred_refresh_clears_pending_selection_after_ready(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "created.txt"
+    target.write_text("created", encoding="utf-8")
+    selected: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    tab._has_loaded_root = True
+    tab._pending_selection_path = target
+    tab._deferred_refresh_target = tmp_path
+    monkeypatch.setattr(tab, "navigate_to", lambda path: True)
+    monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
+    monkeypatch.setattr(
+        tab,
+        "_select_path",
+        lambda path, *args, **kwargs: selected.append(path) or True,
+    )
+
+    tab._complete_deferred_refresh()
+
+    assert selected == [target]
+    assert tab._pending_selection_path is None
+    assert tab._pending_selection_scroll_hint == QAbstractItemView.ScrollHint.EnsureVisible
 
 
 def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
