@@ -65,6 +65,7 @@ class MediaThumbnailProvider(QObject):
         self._thread_pool.setMaxThreadCount(4)
         self._image_jobs: dict[str, _ImageJob] = {}
         self._image_tokens: dict[str, CancellationToken] = {}
+        self._default_generations: dict[str, int] = {}
 
         # Video job management
         self._video_jobs: dict[str, _VideoJob] = {}
@@ -88,6 +89,11 @@ class MediaThumbnailProvider(QObject):
     def video_supported(self) -> bool:
         return self._video_support
 
+    def _new_default_token(self, key: str) -> CancellationToken:
+        generation = self._default_generations.get(key, -1) + 1
+        self._default_generations[key] = generation
+        return CancellationToken(generation)
+
     def request_thumbnail(
         self,
         path: Path,
@@ -100,12 +106,12 @@ class MediaThumbnailProvider(QObject):
 
         # 通知用のキーが指定されていなければ、元のパスをキーとする
         final_key = result_key or str(path)
-        token = token or CancellationToken(0)
         if suffix in self.IMAGE_EXTENSIONS:
             if final_key in self._image_jobs:
                 existing_token = self._image_tokens.get(final_key)
                 if existing_token is None or not existing_token.cancelled:
                     return False
+            token = token or self._new_default_token(final_key)
             job = _ImageJob(final_key, path, edge, token)
             job.signals.finished.connect(self._handle_image_from_worker)
             self._image_jobs[final_key] = job
@@ -119,6 +125,7 @@ class MediaThumbnailProvider(QObject):
                 return False
 
             # Check if we can start immediately
+            token = token or self._new_default_token(final_key)
             if self._active_video_jobs < self.MAX_CONCURRENT_VIDEO_JOBS:
                 self._start_video_job(final_key, path, edge, token)
             else:

@@ -100,6 +100,37 @@ def test_cancelled_duplicate_image_key_can_be_requested_again(
     assert "same-key" in provider._image_jobs
 
 
+def test_cancelled_default_token_image_key_uses_new_generation(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "default-token.png"
+    _save_image(image_path)
+
+    provider = MediaThumbnailProvider()
+    started: list[_ImageJob] = []
+    monkeypatch.setattr(provider._thread_pool, "start", started.append)
+
+    assert provider.request_thumbnail(image_path, 100, result_key="same-key")
+    old_token = provider._image_tokens["same-key"]
+    assert old_token.generation == 0
+
+    provider.cancel_thumbnail("same-key")
+    assert provider.request_thumbnail(image_path, 100, result_key="same-key")
+    new_token = provider._image_tokens["same-key"]
+    assert new_token.generation == 1
+    assert len(started) == 2
+
+    stale_image = QImage(20, 20, QImage.Format.Format_RGB32)
+    stale_image.fill(0x00FF00)
+    with qtbot.assertNotEmitted(provider.thumbnailReady, wait=100):
+        provider._on_image_finished("same-key", stale_image, 100, old_token.generation)
+
+    assert provider._image_tokens["same-key"] is new_token
+    assert "same-key" in provider._image_jobs
+
+
 def test_unsupported_thumbnail_extension_is_rejected(tmp_path: Path) -> None:
     file_path = tmp_path / "notes.txt"
     file_path.write_text("not media", encoding="utf-8")
