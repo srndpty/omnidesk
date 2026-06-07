@@ -507,6 +507,8 @@ def test_file_browser_tab_refresh_preserves_selection_and_resorts(
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(tab, "_selected_index_path", lambda: selected_path)
     monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
+    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
+    monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(
         tab._model,
         "sort",
