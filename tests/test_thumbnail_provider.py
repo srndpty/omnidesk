@@ -66,6 +66,40 @@ def test_duplicate_result_key_is_rejected(tmp_path: Path) -> None:
     assert not provider.request_thumbnail(image_path, 100, result_key="same-key")
 
 
+def test_cancelled_duplicate_image_key_can_be_requested_again(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "restart.png"
+    _save_image(image_path)
+
+    provider = MediaThumbnailProvider()
+    started: list[_ImageJob] = []
+    monkeypatch.setattr(provider._thread_pool, "start", started.append)
+    old_token = CancellationToken(1)
+    old_token.cancel()
+    provider._image_jobs["same-key"] = cast(_ImageJob, object())
+    provider._image_tokens["same-key"] = old_token
+
+    new_token = CancellationToken(2)
+
+    assert provider.request_thumbnail(
+        image_path,
+        100,
+        result_key="same-key",
+        token=new_token,
+    )
+    assert len(started) == 1
+    assert provider._image_tokens["same-key"] is new_token
+
+    with qtbot.assertNotEmitted(provider.thumbnailReady, wait=100):
+        provider._on_image_finished("same-key", QImage(), 100, old_token.generation)
+
+    assert provider._image_tokens["same-key"] is new_token
+    assert "same-key" in provider._image_jobs
+
+
 def test_unsupported_thumbnail_extension_is_rejected(tmp_path: Path) -> None:
     file_path = tmp_path / "notes.txt"
     file_path.write_text("not media", encoding="utf-8")

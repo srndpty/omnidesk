@@ -103,7 +103,9 @@ class MediaThumbnailProvider(QObject):
         token = token or CancellationToken(0)
         if suffix in self.IMAGE_EXTENSIONS:
             if final_key in self._image_jobs:
-                return False
+                existing_token = self._image_tokens.get(final_key)
+                if existing_token is None or not existing_token.cancelled:
+                    return False
             job = _ImageJob(final_key, path, edge, token)
             job.signals.finished.connect(self._handle_image_from_worker)
             self._image_jobs[final_key] = job
@@ -148,8 +150,17 @@ class MediaThumbnailProvider(QObject):
     def _on_image_finished(
         self, key: str, image: QImage | None, edge: int, generation: int
     ) -> None:
+        token = self._image_tokens.get(key)
+        if token is not None and token.generation != generation:
+            logger.debug(
+                "Ignoring stale image thumbnail job: %s generation=%s current=%s",
+                key,
+                generation,
+                token.generation,
+            )
+            return
         self._image_jobs.pop(key, None)
-        token = self._image_tokens.pop(key, None)
+        self._image_tokens.pop(key, None)
         if token is not None and token.cancelled:
             return
         icon: QIcon | None = None
