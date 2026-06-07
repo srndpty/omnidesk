@@ -65,12 +65,16 @@ class ShortcutHelpDialog(QDialog):
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         table.setWordWrap(False)
-        table.verticalHeader().setVisible(False)
-        table.verticalHeader().setMinimumSectionSize(self.ROW_HEIGHT)
-        table.verticalHeader().setDefaultSectionSize(self.ROW_HEIGHT)
-        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        vertical_header = table.verticalHeader()
+        horizontal_header = table.horizontalHeader()
+        assert vertical_header is not None
+        assert horizontal_header is not None
+        vertical_header.setVisible(False)
+        vertical_header.setMinimumSectionSize(self.ROW_HEIGHT)
+        vertical_header.setDefaultSectionSize(self.ROW_HEIGHT)
+        vertical_header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        horizontal_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        horizontal_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         table.setAlternatingRowColors(True)
         table.setStyleSheet(
             """

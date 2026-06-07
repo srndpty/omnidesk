@@ -228,9 +228,16 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         self._remember_disk_edge(key, hint_edge=hint_edge)
         try:
             saver = QSaveFile(str(dst))
-            saver.open(QSaveFile.OpenModeFlag.WriteOnly)
-            pixmap.save(saver, "PNG")
-            saver.commit()
+            if not saver.open(QSaveFile.OpenModeFlag.WriteOnly):
+                logger.warning("Failed to open thumbnail cache file for writing: %s", dst)
+                return
+            if not pixmap.save(saver, "PNG"):
+                logger.warning("Failed to encode thumbnail cache image: %s", dst)
+                saver.cancelWriting()
+                return
+            if not saver.commit():
+                logger.warning("Failed to commit thumbnail cache file: %s", dst)
+                return
             with suppress(Exception):
                 os.utime(str(dst), None)  # LRU更新
         except Exception:
