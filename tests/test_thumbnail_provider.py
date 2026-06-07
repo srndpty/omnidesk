@@ -143,19 +143,27 @@ def test_unsupported_thumbnail_extension_is_rejected(tmp_path: Path) -> None:
 def test_cancel_thumbnail_cancels_image_token_and_removes_queued_video() -> None:
     provider = MediaThumbnailProvider()
     token = CancellationToken(5)
+    active_video_token = CancellationToken(6)
+    queued_video_token = CancellationToken(7)
     provider._image_tokens["image-key"] = token
+    provider._video_tokens["active-video"] = active_video_token
     provider._video_queue = deque(
         [
-            ("drop-me", Path("queued.mp4"), 100, CancellationToken(1)),
+            ("drop-me", Path("queued.mp4"), 100, queued_video_token),
             ("keep-me", Path("other.mp4"), 100, CancellationToken(2)),
         ]
     )
+    provider._queued_video_keys = {"drop-me", "keep-me"}
 
     provider.cancel_thumbnail("drop-me")
     provider.cancel_thumbnail("image-key")
+    provider.cancel_thumbnail("active-video")
 
     assert token.cancelled
+    assert active_video_token.cancelled
+    assert queued_video_token.cancelled
     assert [item[0] for item in provider._video_queue] == ["keep-me"]
+    assert provider._queued_video_keys == {"keep-me"}
 
 
 def test_on_image_finished_suppresses_cancelled_token(qtbot) -> None:
@@ -195,6 +203,50 @@ def test_process_video_queue_skips_cancelled_and_duplicate_jobs(monkeypatch) -> 
 
     assert started == ["ready"]
     assert len(provider._video_queue) == 0
+
+
+def test_duplicate_queued_video_key_is_rejected(monkeypatch, tmp_path: Path) -> None:
+    _install_video_fakes(monkeypatch)
+    provider = MediaThumbnailProvider()
+    provider._active_video_jobs = provider.MAX_CONCURRENT_VIDEO_JOBS
+    video_path = tmp_path / "queued.mp4"
+    video_path.write_bytes(b"fake")
+
+    assert provider.request_thumbnail(video_path, 100, result_key="queued-key")
+    assert not provider.request_thumbnail(video_path, 100, result_key="queued-key")
+
+    assert [item[0] for item in provider._video_queue] == ["queued-key"]
+    assert provider._queued_video_keys == {"queued-key"}
+
+
+def test_cancelled_active_video_thumbnail_does_not_emit(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    _install_video_fakes(monkeypatch)
+    provider = MediaThumbnailProvider()
+    provider.MAX_CONCURRENT_VIDEO_JOBS = 1
+    video_path = tmp_path / "active.mp4"
+    next_video_path = tmp_path / "next.mp4"
+    video_path.write_bytes(b"fake")
+    next_video_path.write_bytes(b"fake")
+
+    assert provider.request_thumbnail(video_path, 100, result_key="active-key")
+    assert provider.request_thumbnail(next_video_path, 100, result_key="next-key")
+    job = provider._video_jobs["active-key"]
+
+    with qtbot.assertNotEmitted(provider.thumbnailReady, wait=100):
+        provider.cancel_thumbnail("active-key")
+
+    assert provider._active_video_jobs == 1
+    assert "active-key" not in provider._video_jobs
+    assert "active-key" not in provider._video_tokens
+    assert job._complete
+    assert _FakePlayer.instances[0].stopped
+    assert "next-key" in provider._video_jobs
+    assert "next-key" in provider._video_tokens
+    assert provider._queued_video_keys == set()
 
 
 def test_on_video_finished_starts_next_queued_job(monkeypatch, qtbot) -> None:

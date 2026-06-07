@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from PyQt6.QtGui import QIcon, QPixmap
 
+from omnidesk.utils import thumbnail_cache as cache_module
 from omnidesk.utils.thumbnail_cache import PersistentThumbnailCache, ThumbnailCache, _stable_hash
 
 pytestmark = pytest.mark.usefixtures("qapp")
@@ -126,6 +127,32 @@ def test_persistent_cache_put_uses_explicit_hint_edge_for_disk_key(tmp_path: Pat
 
     assert cache.disk_path(str(key_path), hint_edge=160).exists()
     assert not cache.disk_path(str(key_path), hint_edge=96).exists()
+
+
+def test_persistent_cache_put_reports_qsavefile_open_failure(
+    monkeypatch,
+    caplog,
+    tmp_path: Path,
+) -> None:
+    class FailingSaveFile:
+        class OpenModeFlag:
+            WriteOnly = object()
+
+        def __init__(self, _path: str) -> None:
+            pass
+
+        def open(self, _mode: object) -> bool:
+            return False
+
+    cache = PersistentThumbnailCache[str](capacity=1, namespace="files", root=tmp_path)
+    pixmap = _pixmap()
+    icon = QIcon(pixmap)
+    monkeypatch.setattr(cache_module, "QSaveFile", FailingSaveFile)
+
+    with caplog.at_level("WARNING"):
+        cache.put("key", icon, pixmap, hint_edge=16)
+
+    assert "Failed to open thumbnail cache file for writing" in caplog.text
 
 
 def test_persistent_cache_discards_single_disk_entry(tmp_path: Path) -> None:
