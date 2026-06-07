@@ -144,6 +144,9 @@ class MediaThumbnailProvider(QObject):
         video_token = self._video_tokens.get(key)
         if video_token is not None:
             video_token.cancel()
+            job = self._video_jobs.get(key)
+            if job is not None:
+                job.cancel()
         queued_items = []
         for item in self._video_queue:
             queued_key, _, _, queued_token = item
@@ -340,7 +343,13 @@ class _VideoJob(QObject):
             logger.warning("Video thumbnail job timed out: %s", self._path)
             self._finish(None)
 
+    def cancel(self) -> None:
+        self._token.cancel()
+        self._finish(None)
+
     def _finish(self, icon: QIcon | None) -> None:
+        if self._complete:
+            return
         self._complete = True
         with suppress(TypeError, RuntimeError):
             self._sink.videoFrameChanged.disconnect(self._handle_frame)
