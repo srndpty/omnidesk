@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QItemSelectionModel, QRect
+from PyQt6.QtCore import QItemSelectionModel, QMimeData, QRect, Qt
+from PyQt6.QtGui import QInputMethodEvent, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import QAbstractItemView
 
 from omnidesk.ui.file_browser.delegates import (
@@ -122,23 +123,70 @@ def test_text_editor_height_is_clamped_to_viewport(qtbot) -> None:
     assert editor.geometry().bottom() <= viewport.bottom()
 
 
-def test_text_editor_enter_emits_commit(qtbot) -> None:
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QKeyEvent
+def _press(editor, key: Qt.Key, modifier: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier):
+    editor.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, key, modifier))
 
+
+def test_text_editor_enter_emits_commit(qtbot) -> None:
     editor = _InlineRenameTextEdit()
     qtbot.addWidget(editor)
     editor.set_rename_value("name.txt")
 
     committed: list[bool] = []
     editor.committed.connect(lambda: committed.append(True))
-    editor.keyPressEvent(
-        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
-    )
+    _press(editor, Qt.Key.Key_Return)
 
     assert committed == [True]
     # Enter must not insert a newline into the (single-line) filename.
     assert editor.rename_value() == "name.txt"
+
+
+def test_text_editor_shift_enter_commits_without_newline(qtbot) -> None:
+    editor = _InlineRenameTextEdit()
+    qtbot.addWidget(editor)
+    editor.set_rename_value("name.txt")
+
+    committed: list[bool] = []
+    editor.committed.connect(lambda: committed.append(True))
+    _press(editor, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+
+    assert committed == [True]
+    assert "\n" not in editor.rename_value()
+    assert editor.rename_value() == "name.txt"
+
+
+def test_text_editor_paste_newline_is_sanitized(qtbot) -> None:
+    editor = _InlineRenameTextEdit()
+    qtbot.addWidget(editor)
+
+    mime = QMimeData()
+    mime.setText("first line\r\nsecond line")
+    editor.insertFromMimeData(mime)
+
+    assert "\n" not in editor.toPlainText()
+    assert "\r" not in editor.toPlainText()
+    assert editor.rename_value() == "first line second line"
+
+
+def test_text_editor_skips_resize_during_ime_composition(qtbot) -> None:
+    editor = _InlineRenameTextEdit()
+    qtbot.addWidget(editor)
+    editor.show()
+    editor.set_rename_value("name.txt")
+    editor.configure_geometry(QRect(0, 0, 160, 200), QRect(0, 0, 1000, 600), text_top=180)
+    stable_height = editor.height()
+
+    # A pre-edit (composition in progress) must not trigger a resize.
+    composing = QInputMethodEvent("あ", [])
+    editor.inputMethodEvent(composing)
+    assert editor._composing is True
+
+    # Committing the composition clears the flag and resizes again.
+    commit = QInputMethodEvent("", [])
+    commit.setCommitString("あ")
+    editor.inputMethodEvent(commit)
+    assert editor._composing is False
+    assert editor.height() >= stable_height
 
 
 def test_rename_selected_opens_inline_editor(qtbot, tmp_path: Path) -> None:
@@ -155,5 +203,25 @@ def test_rename_selected_opens_inline_editor(qtbot, tmp_path: Path) -> None:
     view.selectionModel().select(index, QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
     tab._rename_selected()
+
+    assert view.state() == QAbstractItemView.State.EditingState
+
+
+def test_f2_action_starts_inline_rename(qtbot, tmp_path: Path) -> None:
+    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    with qtbot.waitSignal(tab._model.directoryLoaded, timeout=5000):
+        tab.navigate_to(tmp_path)
+
+    index = tab._model.index(str(tmp_path / "file.txt"))
+    view = tab._active_view()
+    view.setCurrentIndex(index)
+    view.selectionModel().select(index, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+
+    # F2 is wired through an explicit QAction, independent of the view edit
+    # triggers; triggering it must open the in-place editor.
+    assert tab._rename_action.shortcut() == QKeySequence(Qt.Key.Key_F2)
+    tab._rename_action.trigger()
 
     assert view.state() == QAbstractItemView.State.EditingState

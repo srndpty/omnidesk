@@ -1480,6 +1480,32 @@ def test_file_browser_tab_apply_rename_warns_for_conflict(
     assert original.exists()
 
 
+def test_file_browser_tab_apply_rename_warns_when_original_missing(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    # The editor captures the path eagerly, so a rename can be committed after
+    # the file disappeared underneath us; the failure must surface as a warning.
+    original = tmp_path / "gone.txt"
+    warnings: list[tuple[str, str]] = []
+    refreshed: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._apply_rename(original, "renamed.txt")
+
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Rename failed"
+    assert not (tmp_path / "renamed.txt").exists()
+    assert refreshed == []
+
+
 def test_file_browser_tab_create_new_file_and_folder_success(
     monkeypatch,
     qtbot,

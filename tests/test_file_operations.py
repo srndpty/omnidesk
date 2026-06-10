@@ -8,7 +8,10 @@ import pytest
 from pytest_mock import MockerFixture
 
 from omnidesk.ui.file_operations import (
+    MAX_NAME_COMPONENT_UNITS,
+    MAX_PATH_UNITS,
     FileOperationRequest,
+    clip_child_name,
     create_file,
     create_folder,
     delete_paths,
@@ -21,6 +24,10 @@ from omnidesk.ui.file_operations import (
     rename_path,
     validate_copy_or_move,
 )
+
+
+def _utf16_units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
 
 
 def test_file_operations_work_on_tmp_path(tmp_path: Path) -> None:
@@ -59,6 +66,51 @@ def test_rename_path_success(tmp_path: Path) -> None:
     assert renamed is not None
     assert renamed == tmp_path / "renamed.txt"
     assert renamed.read_text(encoding="utf-8") == "original"
+
+
+def test_clip_child_name_keeps_short_names_unchanged() -> None:
+    parent = Path("C:/Users/lambe/Pictures")
+    assert clip_child_name(parent, "photo.png") == "photo.png"
+
+
+def test_clip_child_name_trims_overlong_name_and_keeps_extension() -> None:
+    parent = Path("C:/Users/lambe/OneDrive/Pictures/Screenshots")
+    name = "スクリーンショット 2025-02-27 204923 " * 30 + ".png"
+
+    clipped = clip_child_name(parent, name)
+
+    assert clipped.endswith(".png")
+    assert len(clipped) < len(name)
+    assert _utf16_units(clipped) <= MAX_NAME_COMPONENT_UNITS
+    # The whole path must stay within the classic MAX_PATH budget.
+    assert _utf16_units(str(parent)) + 1 + _utf16_units(clipped) <= MAX_PATH_UNITS
+    # No invalid trailing space/dot before the extension.
+    assert not clipped[: -len(".png")].endswith((" ", "."))
+
+
+def test_clip_child_name_folder_does_not_treat_dot_as_extension() -> None:
+    parent = Path("C:/data")
+    name = "あ" * 400 + ".tar.gz"
+
+    clipped = clip_child_name(parent, name, keep_extension=False)
+
+    assert "." not in clipped  # whole name treated as a stem and trimmed
+    assert _utf16_units(clipped) <= MAX_NAME_COMPONENT_UNITS
+
+
+def test_rename_path_clips_overlong_target_instead_of_failing(tmp_path: Path) -> None:
+    original = tmp_path / "src.txt"
+    original.write_text("data", encoding="utf-8")
+    long_name = "あ" * 500 + ".txt"
+
+    renamed, error = rename_path(original, long_name)
+
+    assert error is None
+    assert renamed is not None
+    assert renamed.exists()
+    assert renamed.suffix == ".txt"
+    assert renamed.read_text(encoding="utf-8") == "data"
+    assert not original.exists()
 
 
 def test_create_file_and_folder_use_copy_names_for_conflicts(tmp_path: Path) -> None:

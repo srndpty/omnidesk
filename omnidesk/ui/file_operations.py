@@ -263,6 +263,54 @@ def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:
     raise ValueError(f"Unable to resolve destination for {name}: too many copies")
 
 
+# Filesystem name-length limits. NTFS allows a single path component of up to
+# 255 UTF-16 code units; the classic MAX_PATH limit caps the whole path at 260
+# (259 usable). We stay just under both so an over-long name is trimmed instead
+# of failing with WinError 123 (ERROR_INVALID_NAME), matching how Explorer
+# silently clips names that do not fit.
+MAX_NAME_COMPONENT_UNITS = 255
+MAX_PATH_UNITS = 259
+
+
+def _utf16_units(text: str) -> int:
+    """Length of text in UTF-16 code units (how Windows measures names)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _clip_to_units(text: str, max_units: int) -> str:
+    """Trim text to at most max_units UTF-16 units without splitting a char."""
+    if _utf16_units(text) <= max_units:
+        return text
+    units = 0
+    kept: list[str] = []
+    for char in text:
+        char_units = _utf16_units(char)
+        if units + char_units > max_units:
+            break
+        kept.append(char)
+        units += char_units
+    return "".join(kept)
+
+
+def clip_child_name(parent: Path, name: str, *, keep_extension: bool = True) -> str:
+    """Clip an over-long child name so the rename stays within OS path limits.
+
+    The extension is preserved and only the stem is trimmed (Explorer-like).
+    Names that already fit are returned unchanged.
+    """
+    parent_units = _utf16_units(str(parent)) + 1  # +1 for the path separator
+    limit = min(MAX_NAME_COMPONENT_UNITS, max(1, MAX_PATH_UNITS - parent_units))
+    if _utf16_units(name) <= limit:
+        return name
+    suffix = Path(name).suffix if keep_extension else ""
+    stem = name[: len(name) - len(suffix)] if suffix else name
+    stem_budget = max(1, limit - _utf16_units(suffix))
+    clipped_stem = _clip_to_units(stem, stem_budget).rstrip(" .")
+    if not clipped_stem:
+        clipped_stem = _clip_to_units(stem, stem_budget)
+    return clipped_stem + suffix
+
+
 def rename_path(original: Path, new_name: str) -> tuple[Path | None, str | None]:
     """Rename a path within its parent directory."""
     if not new_name or new_name == original.name:
@@ -270,6 +318,9 @@ def rename_path(original: Path, new_name: str) -> tuple[Path | None, str | None]
     if not is_plain_child_name(new_name):
         logger.warning("Rejected invalid rename target %r for %s", new_name, original)
         return None, "Name must not contain path separators."
+    new_name = clip_child_name(original.parent, new_name, keep_extension=not original.is_dir())
+    if new_name == original.name:
+        return None, None
     target = original.with_name(new_name)
     if target.exists():
         return None, f"{target} already exists."

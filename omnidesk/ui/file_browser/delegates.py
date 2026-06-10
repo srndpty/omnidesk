@@ -131,6 +131,7 @@ class _InlineRenameTextEdit(QTextEdit):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setAcceptRichText(False)
+        self.setTabChangesFocus(True)
         self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -138,15 +139,24 @@ class _InlineRenameTextEdit(QTextEdit):
         self._anchor_rect: QRect | None = None
         self._viewport_rect = QRect()
         self._fixed_top: int | None = None
+        self._composing = False
         self.document().contentsChanged.connect(self._auto_resize)
 
     # -- shared in-place rename editor interface --------------------------
     def rename_value(self) -> str:
-        return self.toPlainText()
+        # Filenames are single-line; defend against any stray newline reaching
+        # the committed value (the editor only ever displays one logical line).
+        return self.toPlainText().replace("\r", "").replace("\n", "")
 
     def set_rename_value(self, name: str) -> None:
         self.setPlainText(name)
         self.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+    def insertFromMimeData(self, source) -> None:  # noqa: N802
+        # Pasting multi-line text must not embed newlines in the filename;
+        # collapse them to spaces so the paste stays useful.
+        text = source.text().replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        self.insertPlainText(text)
 
     def select_basename(self, length: int) -> None:
         cursor = self.textCursor()
@@ -167,8 +177,17 @@ class _InlineRenameTextEdit(QTextEdit):
         self._fixed_top = text_top
         self._auto_resize()
 
+    def inputMethodEvent(self, event) -> None:  # noqa: N802
+        super().inputMethodEvent(event)
+        # Avoid resizing while an IME pre-edit is in flight; the half-composed
+        # text causes the box to jump around and can disturb the candidate
+        # window. Resize once on commit (empty pre-edit string).
+        self._composing = bool(event.preeditString())
+        if not self._composing:
+            self._auto_resize()
+
     def _auto_resize(self) -> None:
-        if self._fixed_top is None or self._anchor_rect is None:
+        if self._fixed_top is None or self._anchor_rect is None or self._composing:
             return
         frame = 2 * self.frameWidth()
         width = self._ideal_width(frame)
@@ -209,11 +228,9 @@ class _InlineRenameTextEdit(QTextEdit):
         return int(document.size().height()) + frame + self.EXTRA_HEIGHT
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
-            event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-        ):
-            # Filenames are single-line; Enter commits instead of inserting a
-            # newline (QTextEdit would otherwise keep it for multi-line text).
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Filenames are single-line, so every Enter (including Shift+Enter)
+            # commits instead of inserting a newline.
             self.committed.emit()
             event.accept()
             return
