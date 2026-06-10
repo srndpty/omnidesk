@@ -30,6 +30,16 @@ from ..file_operations import (
 logger = logging.getLogger(__name__)
 
 
+def _ellipsize_for_dialog(text: str, limit: int = 300) -> str:
+    """Middle-ellipsize text so a pasted multi-thousand-char name cannot blow
+    up the confirmation dialog. Only affects display, not the applied name."""
+    if len(text) <= limit:
+        return text
+    head = limit // 2
+    tail = limit - head
+    return f"{text[:head]}\n…\n{text[-tail:]}"
+
+
 class FileBrowserOperationsMixin:
     def _rename_selected(self) -> None:
         paths = self._selected_paths()
@@ -62,15 +72,17 @@ class FileBrowserOperationsMixin:
         return opened
 
     def _consume_rename_seed(self, path: Path) -> str | None:
-        """Return and clear any pending editor seed text for ``path``."""
+        """Return any pending editor seed text for ``path``.
+
+        The seed is one-shot: it is cleared on every consume attempt so a stale
+        value can never resurface in a later, unrelated rename.
+        """
         seed = getattr(self, "_inline_rename_seed", None)
         if seed is None:
             return None
-        seed_path, text = seed
-        if seed_path != path:
-            return None
         self._inline_rename_seed = None
-        return text
+        seed_path, text = seed
+        return text if seed_path == path else None
 
     def _apply_rename(self, original: Path, new_name: str) -> None:
         """Rename ``original`` to ``new_name`` and refresh the selection.
@@ -106,8 +118,8 @@ class FileBrowserOperationsMixin:
             self,
             "Name too long",
             "The name is too long for the filesystem and will be shortened.\n\n"
-            f"Entered:\n{requested}\n\n"
-            f"Shortened:\n{clipped}\n\n"
+            f"Entered:\n{_ellipsize_for_dialog(requested)}\n\n"
+            f"Shortened:\n{_ellipsize_for_dialog(clipped)}\n\n"
             "Rename using the shortened name?",
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Ok,

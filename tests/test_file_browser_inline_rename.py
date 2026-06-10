@@ -190,6 +190,21 @@ def test_text_editor_skips_resize_during_ime_composition(qtbot) -> None:
     assert editor.height() >= geometry_before.height()
 
 
+def test_rename_seed_is_one_shot_even_on_path_mismatch(qtbot, tmp_path: Path) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    original = tmp_path / "a.txt"
+    other = tmp_path / "b.txt"
+
+    tab._inline_rename_seed = (original, "too long name")
+
+    # Consuming for a different path returns nothing and still clears the seed,
+    # so it cannot resurface later for the matching path.
+    assert tab._consume_rename_seed(other) is None
+    assert tab._inline_rename_seed is None
+    assert tab._consume_rename_seed(original) is None
+
+
 def test_rename_selected_opens_inline_editor(qtbot, tmp_path: Path) -> None:
     (tmp_path / "file.txt").write_text("x", encoding="utf-8")
     tab = FileBrowserTab()
