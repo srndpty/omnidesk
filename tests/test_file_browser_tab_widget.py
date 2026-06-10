@@ -23,6 +23,7 @@ from PyQt6.QtGui import (
     QKeyEvent,
     QPainter,
     QPixmap,
+    QResizeEvent,
     QShortcut,
     QStandardItem,
     QStandardItemModel,
@@ -1161,6 +1162,23 @@ def test_file_browser_tab_execute_command_starts_direct_and_batch(monkeypatch, q
     )
 
 
+def test_file_browser_tab_execute_command_strips_argument_quotes(monkeypatch, qtbot) -> None:
+    starts: list[tuple[str, list[str], str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.command_runner.QProcess.startDetached",
+        lambda program, args, cwd: starts.append((program, list(args), cwd)) or True,
+    )
+    monkeypatch.setattr(
+        tab, "_resolve_program_for_windows", lambda program: ("C:/bin/tool.exe", False)
+    )
+
+    tab._execute_address_command('tool "a b.txt" plain.txt')
+
+    assert starts == [("C:/bin/tool.exe", ["a b.txt", "plain.txt"], str(tab.current_path()))]
+
+
 def test_file_browser_tab_execute_command_starts_cmd_special_case(monkeypatch, qtbot) -> None:
     starts: list[tuple[str, list[str], str]] = []
     tab = FileBrowserTab()
@@ -1189,6 +1207,21 @@ def test_file_browser_tab_activate_deactivate_thumbnail_state(qtbot) -> None:
     assert not tab._thumbnail_request_timer.isActive()
     assert not tab._thumbnail_scroll_settle_timer.isActive()
     assert not tab._thumbnail_idle_batch_timer.isActive()
+
+
+def test_file_browser_tab_resize_event_restarts_thumbnails_when_active(
+    monkeypatch,
+    qtbot,
+) -> None:
+    restarted: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._is_active = True
+    monkeypatch.setattr(tab, "_restart_thumbnail_requests", lambda: restarted.append(True))
+
+    tab.resizeEvent(QResizeEvent(QSize(640, 480), QSize(320, 240)))
+
+    assert restarted == [True]
 
 
 def test_file_browser_tab_deactivate_does_not_cancel_file_operation_jobs(qtbot) -> None:

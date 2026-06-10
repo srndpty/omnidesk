@@ -16,6 +16,19 @@ from ..file_browser_navigation import resolve_address_path
 logger = logging.getLogger(__name__)
 
 
+def parse_address_command(cmdline: str) -> list[str]:
+    """Parse an address-bar command and remove surrounding argument quotes."""
+    return [_strip_surrounding_quotes(part) for part in shlex.split(cmdline, posix=False)]
+
+
+def _strip_surrounding_quotes(value: str) -> str:
+    if len(value) < 2:
+        return value
+    if value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
 class FileBrowserCommandRunnerMixin:
     def _handle_path_entered(self) -> None:
         text = self._path_edit.text().strip()
@@ -37,7 +50,7 @@ class FileBrowserCommandRunnerMixin:
     def _execute_address_command(self, cmdline: str) -> None:
         # 例: 'zapall -f' / 'cmd' / 'powershell -NoExit'
         try:
-            parts = shlex.split(cmdline, posix=False)
+            parts = parse_address_command(cmdline)
         except ValueError:
             logger.exception("Cannot parse address bar command: %s", cmdline)
             QMessageBox.warning(self, "Command", f"Cannot parse command line:\n{cmdline}")
