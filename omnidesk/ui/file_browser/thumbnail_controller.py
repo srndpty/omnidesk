@@ -65,11 +65,10 @@ class FileBrowserThumbnailMixin:
         """ウィンドウサイズが変更されたときに呼び出される"""
         # 親クラスの元のリサイズ処理を必ず呼び出す
         # スクロール時と同じタイマーを開始し、可視範囲のサムネイル要求をスケジュールする
+        super().resizeEvent(event)
         if self._is_active:  # アクティブなタブだけがリサイズに応答
             self._restart_thumbnail_requests()
             logger.debug("Resize event restarted thumbnail requests")
-            return
-        super().resizeEvent(event)
 
     def _on_layout_changed(self) -> None:
         """Restart visible thumbnail requests after model layout changes."""

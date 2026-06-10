@@ -289,3 +289,6 @@ class FileBrowserOperationsMixin:
             path.parent == self._current_path and not path.exists() for path in removed_paths
         ):
             return
+        self._pending_selection_path = replacement
+        self.refresh()
+        self._select_pending_path_if_ready()

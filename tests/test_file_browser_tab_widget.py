@@ -1240,6 +1240,33 @@ def test_file_browser_tab_cancelled_file_operation_result_does_not_update_ui(
     assert changed_dirs == []
 
 
+def test_file_browser_tab_restore_selection_after_removed_paths_refreshes_current_dir(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    removed = tmp_path / "removed.txt"
+    replacement = tmp_path / "next.txt"
+    replacement.write_text("next", encoding="utf-8")
+    refreshed: list[bool] = []
+    selected: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(
+        tab,
+        "_select_pending_path_if_ready",
+        lambda: selected.append(True) or True,
+    )
+
+    tab.restore_selection_after_removed_paths([removed], replacement)
+
+    assert tab._pending_selection_path == replacement
+    assert refreshed == [True]
+    assert selected == [True]
+
+
 def test_file_browser_tab_external_drop_warns_for_missing_destination(
     monkeypatch,
     qtbot,
