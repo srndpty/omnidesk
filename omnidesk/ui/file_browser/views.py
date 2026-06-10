@@ -100,6 +100,10 @@ class _BaseFileViewMixin:
         view.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         view.setDefaultDropAction(Qt.DropAction.MoveAction)
         view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        # F2 starts a rename explicitly; SelectedClicked also starts one when an
+        # already-selected item is clicked again after the double-click interval
+        # (Windows-like). DoubleClicked stays off so double-clicks navigate.
+        view.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         view.customContextMenuRequested.connect(partial(tab._show_context_menu, view))
 

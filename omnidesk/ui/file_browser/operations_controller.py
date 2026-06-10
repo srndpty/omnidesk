@@ -33,9 +33,25 @@ class FileBrowserOperationsMixin:
         paths = self._selected_paths()
         if len(paths) != 1:
             return
-        original = paths[0]
-        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=original.name)
-        if not ok or not new_name or new_name == original.name:
+        view = self._active_view()
+        selection_model = view.selectionModel()
+        index = view.currentIndex()
+        if not index.isValid() or selection_model is None or not selection_model.isSelected(index):
+            index = self._model.index(str(paths[0]))
+        if not index.isValid():
+            return
+        index = index.siblingAtColumn(0)
+        view.setCurrentIndex(index)
+        view.scrollTo(index)
+        view.edit(index)
+
+    def _apply_rename(self, original: Path, new_name: str) -> None:
+        """Rename ``original`` to ``new_name`` and refresh the selection.
+
+        Shared by the in-place rename editor; keeps the conflict reporting and
+        directory-change bookkeeping in one place.
+        """
+        if not new_name or new_name == original.name:
             return
         target, error = rename_path(original, new_name)
         if error:
