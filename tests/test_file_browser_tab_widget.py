@@ -1535,6 +1535,38 @@ def test_file_browser_tab_apply_rename_clips_after_confirmation(
     assert not original.exists()
 
 
+def test_file_browser_tab_apply_rename_rejects_overlong_path_separator_name(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    # An over-long name whose separator is outside the clip range must be
+    # rejected as a path-separator name, not silently clipped into a new name.
+    original = tmp_path / "src.txt"
+    original.write_text("data", encoding="utf-8")
+    bad_name = "a" * 500 + "/other.txt"
+    warnings: list[tuple[str, str]] = []
+    questions: list[object] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
+        lambda *args: questions.append(args) or QMessageBox.StandardButton.Ok,
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._apply_rename(original, bad_name)
+
+    # No clip confirmation was shown, and the rename was rejected.
+    assert questions == []
+    assert warnings == [("Rename failed", "Name must not contain path separators.")]
+    assert original.exists()
+    assert list(tmp_path.iterdir()) == [original]
+
+
 def test_file_browser_tab_apply_rename_cancel_returns_to_edit(
     monkeypatch,
     qtbot,

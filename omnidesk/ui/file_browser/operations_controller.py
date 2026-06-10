@@ -20,6 +20,7 @@ from ..file_operations import (
     create_file,
     create_folder,
     delete_paths,
+    is_plain_child_name,
     name_exceeds_limits,
     perform_copy_or_move,
     perform_copy_or_move_with_result,
@@ -92,7 +93,11 @@ class FileBrowserOperationsMixin:
         """
         if not new_name or new_name == original.name:
             return
-        if name_exceeds_limits(original.parent, new_name):
+        # Validate the raw input before clipping: a too-long name that also
+        # contains a path separator (e.g. a mis-pasted path) must be rejected as
+        # such, not silently turned into a different name by the clip. Skipping
+        # the clip lets rename_path() report the separator error.
+        if is_plain_child_name(new_name) and name_exceeds_limits(original.parent, new_name):
             clipped = clip_child_name(
                 original.parent, new_name, keep_extension=not original.is_dir()
             )
