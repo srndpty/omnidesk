@@ -35,7 +35,10 @@ from PyQt6.QtWidgets import (
     QStyleOptionViewItem,
 )
 
-import omnidesk.ui.file_browser_tab as file_browser_tab_module
+import omnidesk.ui.file_browser.delegates as file_browser_delegates_module
+import omnidesk.ui.file_browser.navigation_controller as file_browser_navigation_controller_module
+import omnidesk.ui.file_browser.operations_controller as file_browser_operations_controller_module
+import omnidesk.ui.file_browser.status_controller as file_browser_status_controller_module
 from omnidesk.ui.file_browser_status import BrowserStatus
 from omnidesk.ui.file_browser_tab import (
     FileBrowserTab,
@@ -138,7 +141,7 @@ def test_file_browser_tab_navigate_to_file_uses_parent(qtbot, tmp_path: Path) ->
 def test_file_browser_tab_warns_for_missing_navigation(monkeypatch, qtbot, tmp_path: Path) -> None:
     warnings: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.navigation_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
     tab = FileBrowserTab()
@@ -193,7 +196,7 @@ def test_file_browser_tab_go_up_invalidates_folder_preview(
         invalidated.append,
     )
     monkeypatch.setattr(
-        file_browser_tab_module,
+        file_browser_navigation_controller_module,
         "directory_fingerprint_changed",
         lambda path, previous: path == child and previous is not None,
     )
@@ -221,7 +224,7 @@ def test_file_browser_tab_go_up_keeps_folder_preview_when_directory_unchanged(
         invalidated.append,
     )
     monkeypatch.setattr(
-        file_browser_tab_module,
+        file_browser_navigation_controller_module,
         "directory_fingerprint_changed",
         lambda path, previous: False,
     )
@@ -339,7 +342,7 @@ def test_file_browser_tab_go_back_to_parent_invalidates_folder_preview(
         invalidated.append,
     )
     monkeypatch.setattr(
-        file_browser_tab_module,
+        file_browser_navigation_controller_module,
         "directory_fingerprint_changed",
         lambda path, previous: path == child and previous is not None,
     )
@@ -390,7 +393,7 @@ def test_file_browser_tab_leaving_changed_directory_invalidates_preview(
     tab._mark_current_directory_changed()
     monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
     monkeypatch.setattr(
-        file_browser_tab_module,
+        file_browser_navigation_controller_module,
         "directory_fingerprint_changed",
         lambda path, previous: False,
     )
@@ -417,7 +420,7 @@ def test_file_browser_tab_leaving_changed_directory_for_sibling_invalidates_prev
     tab._mark_current_directory_changed()
     monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
     monkeypatch.setattr(
-        file_browser_tab_module,
+        file_browser_navigation_controller_module,
         "directory_fingerprint_changed",
         lambda path, previous: False,
     )
@@ -461,7 +464,7 @@ def test_file_browser_tab_failed_history_navigation_keeps_stacks(
     tab.navigate_to(second)
     first.rmdir()
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.navigation_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
@@ -781,7 +784,9 @@ def test_file_browser_tab_tile_view_uses_single_pass_fixed_grid(qtbot) -> None:
 def test_file_browser_tab_tile_view_wraps_long_names_by_character(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     name = "(C56) [ART THEATER] M.F.H.H. M&D (宇宙海賊ミトの大冒険、おジャ魔女どれみ)"
 
     wrapped = delegate._two_line_text(name, tab._tile_view.fontMetrics(), 120)
@@ -795,7 +800,9 @@ def test_file_browser_tab_tile_view_wraps_long_names_by_character(qtbot) -> None
 def test_file_browser_tab_tile_delegate_places_two_line_label_below_icon(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     option = QStyleOptionViewItem()
     option.rect = QRect(0, 0, 184, 222)
     option.decorationSize = QSize(160, 160)
@@ -812,7 +819,9 @@ def test_file_browser_tab_tile_delegate_places_two_line_label_below_icon(qtbot) 
 def test_file_browser_tab_tile_delegate_keeps_generated_thumbnail_height(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     thumbnail = QPixmap(160, 160)
     thumbnail.fill()
     option = QStyleOptionViewItem()
@@ -834,7 +843,9 @@ def test_file_browser_tab_tile_delegate_keeps_generated_thumbnail_height_when_se
 ) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     thumbnail = QPixmap(160, 160)
     thumbnail.fill()
     option = QStyleOptionViewItem()
@@ -851,7 +862,9 @@ def test_file_browser_tab_tile_delegate_keeps_generated_thumbnail_height_when_se
 def test_file_browser_tab_tile_delegate_keeps_default_folder_icon_clipped(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     option = QStyleOptionViewItem()
     option.rect = QRect(0, 0, 166, 110)
     option.decorationSize = QSize(160, 160)
@@ -868,7 +881,9 @@ def test_file_browser_tab_tile_delegate_keeps_default_folder_icon_clipped(qtbot)
 def test_file_browser_tab_tile_delegate_does_not_fill_selected_tile_background(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     option = QStyleOptionViewItem()
     option.rect = QRect(0, 0, 20, 20)
     option.palette = tab._tile_view.palette()
@@ -887,7 +902,9 @@ def test_file_browser_tab_tile_delegate_does_not_fill_selected_tile_background(q
 def test_file_browser_tab_tile_delegate_clears_stale_label_highlight(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     model = QStandardItemModel()
     model.appendRow(QStandardItem("AdwCleaner[C00].txt"))
     index = model.index(0, 0)
@@ -923,7 +940,9 @@ def test_file_browser_tab_tile_delegate_clears_stale_label_highlight(qtbot) -> N
 def test_file_browser_tab_tile_delegate_clips_icon_to_icon_rect(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     pixmap = QPixmap(80, 80)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
@@ -952,7 +971,9 @@ def test_file_browser_tab_tile_delegate_clips_icon_to_icon_rect(qtbot) -> None:
 def test_file_browser_tab_tile_delegate_marks_copy_clipboard_target(monkeypatch, qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     model = QStandardItemModel()
     model.appendRow(QStandardItem("copy-target.txt"))
     index = model.index(0, 0)
@@ -979,7 +1000,9 @@ def test_file_browser_tab_tile_delegate_marks_copy_clipboard_target(monkeypatch,
 def test_file_browser_tab_tree_delegate_marks_copy_clipboard_target(monkeypatch, qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._DropTargetItemDelegate, tab._tree_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._DropTargetItemDelegate, tab._tree_view.itemDelegate()
+    )
     model = QStandardItemModel()
     model.appendRow(QStandardItem("copy-target.txt"))
     index = model.index(0, 0)
@@ -1002,7 +1025,9 @@ def test_file_browser_tab_tree_delegate_marks_copy_clipboard_target(monkeypatch,
 def test_file_browser_tab_tree_delegate_marks_copy_only_on_first_column(monkeypatch, qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._DropTargetItemDelegate, tab._tree_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._DropTargetItemDelegate, tab._tree_view.itemDelegate()
+    )
     model = QStandardItemModel()
     model.appendRow([QStandardItem("copy-target.txt"), QStandardItem("detail")])
     index = model.index(0, 1)
@@ -1066,7 +1091,7 @@ def test_file_browser_tab_delete_cancel_does_not_refresh(
     monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: None)
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.question",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
         lambda *args, **kwargs: QMessageBox.StandardButton.No,
     )
 
@@ -1081,7 +1106,7 @@ def test_file_browser_tab_execute_command_handles_parse_error(monkeypatch, qtbot
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.command_runner.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
@@ -1097,7 +1122,7 @@ def test_file_browser_tab_execute_command_warns_when_missing(monkeypatch, qtbot)
     qtbot.addWidget(tab)
     monkeypatch.setattr(tab, "_resolve_program_for_windows", lambda program: (None, False))
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.command_runner.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
@@ -1113,7 +1138,7 @@ def test_file_browser_tab_execute_command_starts_direct_and_batch(monkeypatch, q
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QProcess.startDetached",
+        "omnidesk.ui.file_browser.command_runner.QProcess.startDetached",
         lambda program, args, cwd: starts.append((program, list(args), cwd)) or True,
     )
 
@@ -1142,7 +1167,7 @@ def test_file_browser_tab_execute_command_starts_cmd_special_case(monkeypatch, q
     qtbot.addWidget(tab)
     monkeypatch.setenv("COMSPEC", "C:/Windows/System32/cmd.exe")
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QProcess.startDetached",
+        "omnidesk.ui.file_browser.command_runner.QProcess.startDetached",
         lambda program, args, cwd: starts.append((program, list(args), cwd)) or True,
     )
 
@@ -1202,7 +1227,7 @@ def test_file_browser_tab_cancelled_file_operation_result_does_not_update_ui(
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
     monkeypatch.setattr(tab, "_mark_changed_directories", lambda dirs: changed_dirs.append(dirs))
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
@@ -1225,7 +1250,7 @@ def test_file_browser_tab_external_drop_warns_for_missing_destination(
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
     monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: copied.append(True))
@@ -1249,7 +1274,7 @@ def test_file_browser_tab_external_drop_blocks_moving_folder_into_itself(
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
     monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: copied.append(True))
@@ -1347,7 +1372,7 @@ def test_file_browser_tab_rename_selected_success(monkeypatch, qtbot, tmp_path: 
     qtbot.addWidget(tab)
     monkeypatch.setattr(tab, "_selected_paths", lambda: [original])
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QInputDialog.getText",
+        "omnidesk.ui.file_browser.operations_controller.QInputDialog.getText",
         lambda *args, **kwargs: ("new.txt", True),
     )
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
@@ -1375,11 +1400,11 @@ def test_file_browser_tab_rename_selected_warns_for_conflict(
     qtbot.addWidget(tab)
     monkeypatch.setattr(tab, "_selected_paths", lambda: [original])
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QInputDialog.getText",
+        "omnidesk.ui.file_browser.operations_controller.QInputDialog.getText",
         lambda *args, **kwargs: ("target.txt", True),
     )
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
@@ -1403,7 +1428,7 @@ def test_file_browser_tab_create_new_file_and_folder_success(
     monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
     names = iter([("created.txt", True), ("created-folder", True)])
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QInputDialog.getText",
+        "omnidesk.ui.file_browser.operations_controller.QInputDialog.getText",
         lambda *args, **kwargs: next(names),
     )
 
@@ -1478,11 +1503,11 @@ def test_file_browser_tab_perform_copy_or_move_warns_on_errors(monkeypatch, qtbo
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.perform_copy_or_move",
+        "omnidesk.ui.file_browser.operations_controller.perform_copy_or_move",
         lambda sources, dest_dir, move: ["copy failed"],
     )
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
@@ -1499,11 +1524,11 @@ def test_file_browser_tab_perform_copy_or_move_with_result_warns_on_errors(
     qtbot.addWidget(tab)
     result = FileOperationResult(["copy failed"], [Path("dest")])
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.perform_copy_or_move_with_result",
+        "omnidesk.ui.file_browser.operations_controller.perform_copy_or_move_with_result",
         lambda sources, dest_dir, move: result,
     )
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
@@ -1863,7 +1888,9 @@ def test_file_view_drop_target_highlight_ignores_initial_file_index(
 def test_file_browser_tab_tree_delegate_marks_only_drop_target_selected(monkeypatch, qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._DropTargetItemDelegate, tab._tree_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._DropTargetItemDelegate, tab._tree_view.itemDelegate()
+    )
     model = QStandardItemModel()
     model.appendRow([QStandardItem("folder"), QStandardItem("detail")])
     model.appendRow([QStandardItem("other"), QStandardItem("detail")])
@@ -1882,7 +1909,7 @@ def test_file_browser_tab_tree_delegate_marks_only_drop_target_selected(monkeypa
     def capture_paint(_self, _painter, painted_option, _index) -> None:
         states.append(painted_option.state)
 
-    monkeypatch.setattr(file_browser_tab_module.QStyledItemDelegate, "paint", capture_paint)
+    monkeypatch.setattr(file_browser_delegates_module.QStyledItemDelegate, "paint", capture_paint)
 
     delegate.paint(painter, option, target)
     delegate.paint(painter, option, other)
@@ -1895,7 +1922,9 @@ def test_file_browser_tab_tree_delegate_marks_only_drop_target_selected(monkeypa
 def test_file_browser_tab_tile_delegate_uses_highlight_for_drop_target(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    delegate = cast(file_browser_tab_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate())
+    delegate = cast(
+        file_browser_delegates_module._TwoLineTileNameDelegate, tab._tile_view.itemDelegate()
+    )
     model = QStandardItemModel()
     model.appendRow(QStandardItem("folder"))
     index = model.index(0, 0)
@@ -2091,7 +2120,7 @@ def test_file_browser_tab_delete_selected_confirms_deletes_and_refreshes(
     monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: tmp_path)
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.question",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
         lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
     )
 
@@ -2120,12 +2149,12 @@ def test_file_browser_tab_delete_then_go_up_invalidates_folder_preview(
     monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: None)
     monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
     monkeypatch.setattr(
-        file_browser_tab_module,
+        file_browser_navigation_controller_module,
         "directory_fingerprint_changed",
         lambda path, previous: False,
     )
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.question",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
         lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
     )
 
@@ -2145,12 +2174,14 @@ def test_file_browser_tab_delete_selected_warns_when_delete_reports_errors(
     monkeypatch.setattr(tab, "_selected_paths", lambda: [Path("missing.txt")])
     monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: None)
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.question",
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
         lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
     )
-    monkeypatch.setattr(file_browser_tab_module, "delete_paths", lambda paths: ["delete failed"])
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        file_browser_operations_controller_module, "delete_paths", lambda paths: ["delete failed"]
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
@@ -2169,11 +2200,11 @@ def test_file_browser_tab_execute_command_warns_when_start_fails(monkeypatch, qt
         lambda program: ("C:/bin/tool.exe", False),
     )
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QProcess.startDetached",
+        "omnidesk.ui.file_browser.command_runner.QProcess.startDetached",
         lambda *args, **kwargs: False,
     )
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser_tab.QMessageBox.warning",
+        "omnidesk.ui.file_browser.command_runner.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
@@ -2250,7 +2281,7 @@ def test_file_browser_tab_selection_status_uses_cached_item_counts(
     monkeypatch.setattr(tab, "_request_status_item_counts", lambda _path: None)
     monkeypatch.setattr(tab, "_selected_paths", lambda: [selected])
     monkeypatch.setattr(
-        file_browser_tab_module,
+        file_browser_status_controller_module,
         "directory_item_counts",
         lambda _path: (_ for _ in ()).throw(AssertionError("must not scan")),
     )
@@ -2272,7 +2303,9 @@ def test_file_browser_tab_directory_loaded_updates_status_item_counts(
 ) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    monkeypatch.setattr(file_browser_tab_module, "directory_item_counts", lambda _path: (2, 3))
+    monkeypatch.setattr(
+        file_browser_status_controller_module, "directory_item_counts", lambda _path: (2, 3)
+    )
     monkeypatch.setattr(tab, "_selected_paths", lambda: [])
     statuses: list[BrowserStatus] = []
     tab.statusChanged.connect(lambda status: statuses.append(cast(BrowserStatus, status)))
@@ -2329,7 +2362,9 @@ def test_file_browser_tab_activate_restarts_cancelled_status_count_job(
     qtbot.addWidget(tab)
     tab._current_path = tmp_path
     tab._is_active = True
-    tab._status_count_jobs[1] = cast(file_browser_tab_module._DirectoryCountJob, object())
+    tab._status_count_jobs[1] = cast(
+        file_browser_status_controller_module._DirectoryCountJob, object()
+    )
     monkeypatch.setattr(tab, "_request_status_item_counts", requested.append)
 
     tab.deactivate()

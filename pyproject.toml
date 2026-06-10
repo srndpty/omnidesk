@@ -76,6 +76,16 @@ fail_under = 70
 
 [tool.pyright]
 include = [
+    "omnidesk/ui/file_browser/actions.py",
+    "omnidesk/ui/file_browser/clipboard.py",
+    "omnidesk/ui/file_browser/command_runner.py",
+    "omnidesk/ui/file_browser/delegates.py",
+    "omnidesk/ui/file_browser/navigation_controller.py",
+    "omnidesk/ui/file_browser/operations_controller.py",
+    "omnidesk/ui/file_browser/status_controller.py",
+    "omnidesk/ui/file_browser/thumbnail_controller.py",
+    "omnidesk/ui/file_browser/toolbar.py",
+    "omnidesk/ui/file_browser/views.py",
     "omnidesk/ui/file_browser_actions.py",
     "omnidesk/ui/file_browser_background.py",
     "omnidesk/ui/file_browser_drop.py",
@@ -83,6 +93,7 @@ include = [
     "omnidesk/ui/file_browser_media_mode.py",
     "omnidesk/ui/file_browser_navigation.py",
     "omnidesk/ui/file_browser_selection.py",
+    "omnidesk/ui/file_browser_tab.py",
     "omnidesk/ui/file_browser_visible.py",
     "omnidesk/ui/file_operation_jobs.py",
     "omnidesk/ui/media_icon_provider.py",
