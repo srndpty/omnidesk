@@ -1283,6 +1283,7 @@ def test_file_browser_tab_restore_selection_after_removed_paths_refreshes_curren
     replacement.write_text("next", encoding="utf-8")
     refreshed: list[bool] = []
     selected: list[bool] = []
+    focused: list[bool] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab._current_path = tmp_path
@@ -1292,12 +1293,14 @@ def test_file_browser_tab_restore_selection_after_removed_paths_refreshes_curren
         "_select_pending_path_if_ready",
         lambda: selected.append(True) or True,
     )
+    monkeypatch.setattr(tab, "focus_view", lambda: focused.append(True))
 
     tab.restore_selection_after_removed_paths([removed], replacement)
 
     assert tab._pending_selection_path == replacement
     assert refreshed == [True]
     assert selected == [True]
+    assert focused == [True]
 
 
 def test_file_browser_tab_external_drop_warns_for_missing_destination(

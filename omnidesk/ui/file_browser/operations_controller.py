@@ -292,3 +292,4 @@ class FileBrowserOperationsMixin:
         self._pending_selection_path = replacement
         self.refresh()
         self._select_pending_path_if_ready()
+        self.focus_view()
