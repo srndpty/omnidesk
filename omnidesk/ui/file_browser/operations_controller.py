@@ -16,9 +16,12 @@ from ..file_operation_jobs import FileOperationJob
 from ..file_operations import (
     FileOperationRequest,
     FileOperationResult,
+    clip_child_name,
     create_file,
     create_folder,
     delete_paths,
+    is_plain_child_name,
+    name_exceeds_limits,
     perform_copy_or_move,
     perform_copy_or_move_with_result,
     rename_path,
@@ -28,15 +31,83 @@ from ..file_operations import (
 logger = logging.getLogger(__name__)
 
 
+def _ellipsize_for_dialog(text: str, limit: int = 300) -> str:
+    """Middle-ellipsize text so a pasted multi-thousand-char name cannot blow
+    up the confirmation dialog. Only affects display, not the applied name."""
+    if len(text) <= limit:
+        return text
+    head = limit // 2
+    tail = limit - head
+    return f"{text[:head]}\n…\n{text[-tail:]}"
+
+
 class FileBrowserOperationsMixin:
     def _rename_selected(self) -> None:
         paths = self._selected_paths()
         if len(paths) != 1:
             return
-        original = paths[0]
-        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=original.name)
-        if not ok or not new_name or new_name == original.name:
+        self._begin_inline_edit(paths[0])
+
+    def _begin_inline_edit(self, path: Path, *, seed_text: str | None = None) -> bool:
+        """Open the in-place rename editor on ``path``.
+
+        ``seed_text`` pre-fills the editor (used when returning to edit state
+        after the user declined a name that had to be shortened).
+        """
+        view = self._active_view()
+        selection_model = view.selectionModel()
+        index = view.currentIndex()
+        if not index.isValid() or selection_model is None or not selection_model.isSelected(index):
+            index = self._model.index(str(path))
+        if not index.isValid():
+            return False
+        index = index.siblingAtColumn(0)
+        view.setCurrentIndex(index)
+        view.scrollTo(index)
+        self._inline_rename_seed = (path, seed_text) if seed_text is not None else None
+        opened = view.edit(index)
+        if not opened:
+            # Editor never opened, so the seed would otherwise leak into a later
+            # unrelated rename of the same path.
+            self._inline_rename_seed = None
+        return opened
+
+    def _consume_rename_seed(self, path: Path) -> str | None:
+        """Return any pending editor seed text for ``path``.
+
+        The seed is one-shot: it is cleared on every consume attempt so a stale
+        value can never resurface in a later, unrelated rename.
+        """
+        seed = getattr(self, "_inline_rename_seed", None)
+        if seed is None:
+            return None
+        self._inline_rename_seed = None
+        seed_path, text = seed
+        return text if seed_path == path else None
+
+    def _apply_rename(self, original: Path, new_name: str) -> None:
+        """Rename ``original`` to ``new_name`` and refresh the selection.
+
+        Shared by the in-place rename editor; keeps the conflict reporting and
+        directory-change bookkeeping in one place.
+        """
+        if not new_name or new_name == original.name:
             return
+        # Validate the raw input before clipping: a too-long name that also
+        # contains a path separator (e.g. a mis-pasted path) must be rejected as
+        # such, not silently turned into a different name by the clip. Skipping
+        # the clip lets rename_path() report the separator error.
+        if is_plain_child_name(new_name) and name_exceeds_limits(original.parent, new_name):
+            clipped = clip_child_name(
+                original.parent, new_name, keep_extension=not original.is_dir()
+            )
+            if not self._confirm_name_clip(new_name, clipped):
+                # User declined the shortened name: reopen the editor with their
+                # text so they can adjust it instead of losing the rename.
+                self._begin_inline_edit(original, seed_text=new_name)
+                return
+            logger.info("Clipped rename target from %r to %r", new_name, clipped)
+            new_name = clipped
         target, error = rename_path(original, new_name)
         if error:
             QMessageBox.warning(self, "Rename failed", error)
@@ -45,6 +116,20 @@ class FileBrowserOperationsMixin:
             return
         self._mark_changed_directories([original.parent, target.parent])
         self._refresh_and_select(target)
+
+    def _confirm_name_clip(self, requested: str, clipped: str) -> bool:
+        """Ask whether to rename using the shortened name. True == proceed."""
+        answer = QMessageBox.question(
+            self,
+            "Name too long",
+            "The name is too long for the filesystem and will be shortened.\n\n"
+            f"Entered:\n{_ellipsize_for_dialog(requested)}\n\n"
+            f"Shortened:\n{_ellipsize_for_dialog(clipped)}\n\n"
+            "Rename using the shortened name?",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Ok,
+        )
+        return answer == QMessageBox.StandardButton.Ok
 
     def _create_new_file(self) -> None:
         if not self._current_path.exists():

@@ -263,8 +263,76 @@ def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:
     raise ValueError(f"Unable to resolve destination for {name}: too many copies")
 
 
+# Filesystem name-length limits used to keep renames within bounds. These are
+# Windows/NTFS oriented (single component <= 255 UTF-16 code units, classic
+# MAX_PATH caps the whole path at 260, 259 usable) and OmniDesk applies them on
+# every platform so behaviour matches the Explorer-compatible UX it targets.
+# Clipping itself is advisory: callers decide whether to apply it (the file
+# browser confirms with the user first), so this stays a pure helper.
+MAX_NAME_COMPONENT_UNITS = 255
+MAX_PATH_UNITS = 259
+_CLIP_FALLBACK_STEM = "renamed"
+
+
+def _utf16_units(text: str) -> int:
+    """Length of text in UTF-16 code units (how Windows measures names)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _clip_to_units(text: str, max_units: int) -> str:
+    """Trim text to at most max_units UTF-16 units without splitting a char."""
+    if _utf16_units(text) <= max_units:
+        return text
+    units = 0
+    kept: list[str] = []
+    for char in text:
+        char_units = _utf16_units(char)
+        if units + char_units > max_units:
+            break
+        kept.append(char)
+        units += char_units
+    return "".join(kept)
+
+
+def name_exceeds_limits(parent: Path, name: str) -> bool:
+    """Return whether name is too long for parent under the path/name limits."""
+    return _utf16_units(name) > _name_limit(parent)
+
+
+def _name_limit(parent: Path) -> int:
+    parent_units = _utf16_units(str(parent)) + 1  # +1 for the path separator
+    return min(MAX_NAME_COMPONENT_UNITS, max(1, MAX_PATH_UNITS - parent_units))
+
+
+def clip_child_name(parent: Path, name: str, *, keep_extension: bool = True) -> str:
+    """Clip an over-long child name so the rename stays within the limits.
+
+    The extension is preserved and only the stem is trimmed (Explorer-like),
+    unless the extension alone already exceeds the budget, in which case it is
+    dropped. Names that already fit are returned unchanged.
+    """
+    limit = _name_limit(parent)
+    if _utf16_units(name) <= limit:
+        return name
+    suffix = Path(name).suffix if keep_extension else ""
+    if suffix and _utf16_units(suffix) >= limit:
+        suffix = ""  # the extension itself is too long to keep
+    stem = name[: len(name) - len(suffix)] if suffix else name
+    stem_budget = max(1, limit - _utf16_units(suffix))
+    clipped_stem = _clip_to_units(stem, stem_budget).rstrip(" .")
+    if not clipped_stem:
+        # Stem was only spaces/dots (invalid trailing chars on Windows); use a
+        # safe placeholder rather than resurrecting an invalid name.
+        clipped_stem = _clip_to_units(_CLIP_FALLBACK_STEM, stem_budget) or _CLIP_FALLBACK_STEM
+    return clipped_stem + suffix
+
+
 def rename_path(original: Path, new_name: str) -> tuple[Path | None, str | None]:
-    """Rename a path within its parent directory."""
+    """Rename a path within its parent directory.
+
+    The name is used as-is; callers are responsible for length handling (see
+    clip_child_name / name_exceeds_limits) so renames stay predictable.
+    """
     if not new_name or new_name == original.name:
         return None, None
     if not is_plain_child_name(new_name):

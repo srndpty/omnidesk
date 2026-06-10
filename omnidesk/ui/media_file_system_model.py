@@ -577,6 +577,12 @@ class MediaFileSystemModel(QFileSystemModel):
         # すべてのアイテムをドラッグ可能にする
         default_flags |= Qt.ItemFlag.ItemIsDragEnabled
 
+        # 名前列はインプレースリネーム（F2）のため編集可能にする。
+        # モデルは読み取り専用のままで、実際のリネームはデリゲート経由で
+        # タブ側のロジックが行う。
+        if index.column() == 0:
+            default_flags |= Qt.ItemFlag.ItemIsEditable
+
         # もしアイテムがディレクトリであれば、ドロップ先として有効にする
         if self.isDir(index):
             default_flags |= Qt.ItemFlag.ItemIsDropEnabled

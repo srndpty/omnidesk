@@ -1426,22 +1426,17 @@ def test_file_browser_tab_external_move_invalidates_source_and_target_previews(
     assert invalidated == [dest, source_parent]
 
 
-def test_file_browser_tab_rename_selected_success(monkeypatch, qtbot, tmp_path: Path) -> None:
+def test_file_browser_tab_apply_rename_success(monkeypatch, qtbot, tmp_path: Path) -> None:
     original = tmp_path / "old.txt"
     original.write_text("old", encoding="utf-8")
     refreshed: list[bool] = []
     selected: list[Path] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    monkeypatch.setattr(tab, "_selected_paths", lambda: [original])
-    monkeypatch.setattr(
-        "omnidesk.ui.file_browser.operations_controller.QInputDialog.getText",
-        lambda *args, **kwargs: ("new.txt", True),
-    )
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
     monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
 
-    tab._rename_selected()
+    tab._apply_rename(original, "new.txt")
 
     assert not original.exists()
     assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "old"
@@ -1449,7 +1444,20 @@ def test_file_browser_tab_rename_selected_success(monkeypatch, qtbot, tmp_path: 
     assert selected == [tmp_path / "new.txt"]
 
 
-def test_file_browser_tab_rename_selected_warns_for_conflict(
+def test_file_browser_tab_apply_rename_ignores_unchanged_name(qtbot, tmp_path: Path) -> None:
+    original = tmp_path / "old.txt"
+    original.write_text("old", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+
+    # An empty or unchanged name (e.g. the user pressed Escape) is a no-op.
+    tab._apply_rename(original, "")
+    tab._apply_rename(original, "old.txt")
+
+    assert original.read_text(encoding="utf-8") == "old"
+
+
+def test_file_browser_tab_apply_rename_warns_for_conflict(
     monkeypatch,
     qtbot,
     tmp_path: Path,
@@ -1461,19 +1469,160 @@ def test_file_browser_tab_rename_selected_warns_for_conflict(
     warnings: list[tuple[str, str]] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    monkeypatch.setattr(tab, "_selected_paths", lambda: [original])
     monkeypatch.setattr(
-        "omnidesk.ui.file_browser.operations_controller.QInputDialog.getText",
-        lambda *args, **kwargs: ("target.txt", True),
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._apply_rename(original, "target.txt")
+
+    assert warnings == [("Rename failed", f"{target} already exists.")]
+    assert original.exists()
+
+
+def test_file_browser_tab_apply_rename_warns_when_original_missing(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    # The editor captures the path eagerly, so a rename can be committed after
+    # the file disappeared underneath us; the failure must surface as a warning.
+    original = tmp_path / "gone.txt"
+    warnings: list[tuple[str, str]] = []
+    refreshed: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._apply_rename(original, "renamed.txt")
+
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Rename failed"
+    assert not (tmp_path / "renamed.txt").exists()
+    assert refreshed == []
+
+
+def test_file_browser_tab_apply_rename_clips_after_confirmation(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    from omnidesk.ui.file_operations import clip_child_name
+
+    original = tmp_path / "src.txt"
+    original.write_text("data", encoding="utf-8")
+    long_name = "あ" * 500 + ".txt"
+    expected = clip_child_name(tmp_path, long_name)
+    questions: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "refresh", lambda: None)
+    monkeypatch.setattr(tab, "_select_path", lambda path: True)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
+        lambda _parent, title, text, *args: questions.append((title, text))
+        or QMessageBox.StandardButton.Ok,
+    )
+
+    tab._apply_rename(original, long_name)
+
+    assert len(questions) == 1
+    assert (tmp_path / expected).exists()
+    assert not original.exists()
+
+
+def test_file_browser_tab_apply_rename_rejects_overlong_path_separator_name(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    # An over-long name whose separator is outside the clip range must be
+    # rejected as a path-separator name, not silently clipped into a new name.
+    original = tmp_path / "src.txt"
+    original.write_text("data", encoding="utf-8")
+    bad_name = "a" * 500 + "/other.txt"
+    warnings: list[tuple[str, str]] = []
+    questions: list[object] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
+        lambda *args: questions.append(args) or QMessageBox.StandardButton.Ok,
     )
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
-    tab._rename_selected()
+    tab._apply_rename(original, bad_name)
 
-    assert warnings == [("Rename failed", f"{target} already exists.")]
+    # No clip confirmation was shown, and the rename was rejected.
+    assert questions == []
+    assert warnings == [("Rename failed", "Name must not contain path separators.")]
+    assert original.exists()
+    assert list(tmp_path.iterdir()) == [original]
+
+
+def test_file_browser_tab_apply_rename_cancel_returns_to_edit(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "src.txt"
+    original.write_text("data", encoding="utf-8")
+    long_name = "あ" * 500 + ".txt"
+    reopened: list[tuple[Path, str | None]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        tab,
+        "_begin_inline_edit",
+        lambda path, *, seed_text=None: reopened.append((path, seed_text)) or True,
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
+        lambda *args: QMessageBox.StandardButton.Cancel,
+    )
+
+    tab._apply_rename(original, long_name)
+
+    # Nothing renamed; editor reopened seeded with the user's original input.
+    assert original.exists()
+    assert reopened == [(original, long_name)]
+
+
+def test_file_browser_tab_apply_rename_warns_on_conflict_after_clip(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    from omnidesk.ui.file_operations import clip_child_name
+
+    original = tmp_path / "src.txt"
+    original.write_text("data", encoding="utf-8")
+    long_name = "あ" * 500 + ".txt"
+    existing = tmp_path / clip_child_name(tmp_path, long_name)
+    existing.write_text("existing", encoding="utf-8")
+    warnings: list[tuple[str, str]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
+        lambda *args: QMessageBox.StandardButton.Ok,
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    tab._apply_rename(original, long_name)
+
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Rename failed"
     assert original.exists()
 
 

@@ -3,16 +3,278 @@
 # pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
-from PyQt6.QtCore import QModelIndex, QRect, QSize, Qt
-from PyQt6.QtGui import QColor, QIcon, QPainter
-from PyQt6.QtWidgets import QApplication, QStyle, QStyledItemDelegate, QStyleOptionViewItem
+from PyQt6.QtCore import QModelIndex, QRect, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QPainter, QTextCursor, QTextOption
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLineEdit,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QTextEdit,
+)
 
 _ClipboardVisualMode = Literal["copy", "move"]
 
 
-class _DropTargetItemDelegate(QStyledItemDelegate):
+def _basename_selection_length(name: str, is_dir: bool) -> int:
+    """Return how many leading characters to preselect for an in-place rename.
+
+    Mirrors Windows Explorer: files preselect the stem (everything before the
+    final extension), while folders and extension-less names select everything.
+    """
+    if is_dir:
+        return len(name)
+    stem_length = len(name) - len(Path(name).suffix)
+    if 0 < stem_length < len(name):
+        return stem_length
+    return len(name)
+
+
+class _InlineRenameLineEdit(QLineEdit):
+    """Line edit used for in-place renames with word-wise double-click drag.
+
+    A plain ``QLineEdit`` extends a double-click selection one character at a
+    time while dragging. Windows Explorer (and ``Ctrl+Shift+Arrow``) instead
+    grows the selection a whole word at a time, which this widget reproduces.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._word_drag = False
+        self._word_anchor_start = 0
+        self._word_anchor_end = 0
+
+    # -- shared in-place rename editor interface --------------------------
+    def rename_value(self) -> str:
+        return self.text()
+
+    def set_rename_value(self, name: str) -> None:
+        self.setText(name)
+
+    def select_basename(self, length: int) -> None:
+        self.setSelection(0, length)
+
+    # --------------------------------------------------------------------
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        # A fresh press starts a character-wise gesture until a double-click
+        # promotes it to word-wise dragging.
+        self._word_drag = False
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        super().mouseDoubleClickEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._begin_word_drag()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._word_drag and event.buttons() & Qt.MouseButton.LeftButton:
+            self._extend_word_selection(self.cursorPositionAt(event.position().toPoint()))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        super().mouseReleaseEvent(event)
+        self._word_drag = False
+
+    def _begin_word_drag(self) -> None:
+        if not self.hasSelectedText():
+            return
+        self._word_drag = True
+        self._word_anchor_start = self.selectionStart()
+        self._word_anchor_end = self._word_anchor_start + len(self.selectedText())
+
+    def _extend_word_selection(self, cursor_pos: int) -> None:
+        text_length = len(self.text())
+        cursor_pos = max(0, min(cursor_pos, text_length))
+        if cursor_pos >= self._word_anchor_end:
+            end = self._word_edge(cursor_pos, forward=True)
+            self.setSelection(self._word_anchor_start, end - self._word_anchor_start)
+        elif cursor_pos <= self._word_anchor_start:
+            start = self._word_edge(cursor_pos, forward=False)
+            self.setSelection(self._word_anchor_end, start - self._word_anchor_end)
+        else:
+            self.setSelection(
+                self._word_anchor_start, self._word_anchor_end - self._word_anchor_start
+            )
+
+    def _word_edge(self, pos: int, *, forward: bool) -> int:
+        """Snap ``pos`` to the nearest word boundary using Qt's word semantics."""
+        self.setCursorPosition(pos)
+        if forward:
+            self.cursorWordForward(False)
+        else:
+            self.cursorWordBackward(False)
+        return self.cursorPosition()
+
+
+class _InlineRenameTextEdit(QTextEdit):
+    """Multi-line in-place rename editor that grows to fit the whole name.
+
+    Used by the icon/tile view. Like Windows Explorer, the box is not confined
+    to a single tile: it widens (centred on the item) and grows downwards,
+    overflowing neighbouring tiles, so the whole name stays readable and
+    editable. Only the viewport bounds clamp it. Word-wise double-click dragging
+    is provided natively by ``QTextEdit``.
+    """
+
+    committed = pyqtSignal()
+
+    EXTRA_HEIGHT = 2
+    HORIZONTAL_PADDING = 8
+    VIEWPORT_MARGIN = 4
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setAcceptRichText(False)
+        self.setTabChangesFocus(True)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._anchor_rect: QRect | None = None
+        self._viewport_rect = QRect()
+        self._fixed_top: int | None = None
+        self._composing = False
+        self.document().contentsChanged.connect(self._auto_resize)
+
+    # -- shared in-place rename editor interface --------------------------
+    def rename_value(self) -> str:
+        # Filenames are single-line; defend against any stray newline reaching
+        # the committed value (the editor only ever displays one logical line).
+        return self.toPlainText().replace("\r", "").replace("\n", "")
+
+    def set_rename_value(self, name: str) -> None:
+        self.setPlainText(name)
+        self.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+    def insertFromMimeData(self, source) -> None:  # noqa: N802
+        # Pasting multi-line text must not embed newlines in the filename;
+        # collapse them to spaces so the paste stays useful.
+        text = source.text().replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        self.insertPlainText(text)
+
+    def select_basename(self, length: int) -> None:
+        cursor = self.textCursor()
+        cursor.setPosition(0)
+        cursor.setPosition(length, QTextCursor.MoveMode.KeepAnchor)
+        self.setTextCursor(cursor)
+
+    # --------------------------------------------------------------------
+    def configure_geometry(self, anchor_rect: QRect, viewport_rect: QRect, text_top: int) -> None:
+        """Anchor the editor on ``anchor_rect`` and size it within the viewport.
+
+        ``anchor_rect`` is the tile rect (viewport coordinates); the editor is
+        centred horizontally on it but allowed to grow wider and taller, capped
+        only by ``viewport_rect``.
+        """
+        self._anchor_rect = anchor_rect
+        self._viewport_rect = viewport_rect
+        self._fixed_top = text_top
+        self._auto_resize()
+
+    def inputMethodEvent(self, event) -> None:  # noqa: N802
+        super().inputMethodEvent(event)
+        # Avoid resizing while an IME pre-edit is in flight; the half-composed
+        # text causes the box to jump around and can disturb the candidate
+        # window. Resize once on commit (empty pre-edit string).
+        self._composing = bool(event.preeditString())
+        if not self._composing:
+            self._auto_resize()
+
+    def _auto_resize(self) -> None:
+        if self._fixed_top is None or self._anchor_rect is None or self._composing:
+            return
+        frame = 2 * self.frameWidth()
+        width = self._ideal_width(frame)
+        height = self._content_height(width, frame)
+
+        max_bottom = self._viewport_rect.bottom() - self.VIEWPORT_MARGIN
+        available = max_bottom - self._fixed_top
+        if available > 0 and height > available:
+            height = available
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        else:
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        x = self._centered_left(width)
+        self.setGeometry(x, self._fixed_top, width, height)
+
+    def _ideal_width(self, frame: int) -> int:
+        """Width that fits the longest line, capped to the viewport."""
+        document = self.document()
+        document.setTextWidth(-1)
+        natural = int(document.idealWidth()) + frame + self.HORIZONTAL_PADDING
+        max_width = self._viewport_rect.width() - 2 * self.VIEWPORT_MARGIN
+        floor = self._anchor_rect.width()
+        return max(floor, min(natural, max(floor, max_width)))
+
+    def _centered_left(self, width: int) -> int:
+        center_x = self._anchor_rect.center().x()
+        left = center_x - width // 2
+        min_left = self._viewport_rect.left() + self.VIEWPORT_MARGIN
+        max_left = self._viewport_rect.right() - self.VIEWPORT_MARGIN - width + 1
+        if max_left < min_left:
+            return min_left
+        return max(min_left, min(left, max_left))
+
+    def _content_height(self, width: int, frame: int) -> int:
+        document = self.document()
+        document.setTextWidth(max(1, width - frame))
+        return int(document.size().height()) + frame + self.EXTRA_HEIGHT
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Filenames are single-line, so every Enter (including Shift+Enter)
+            # commits instead of inserting a newline.
+            self.committed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class _InlineRenameDelegateMixin:
+    """Adds an in-place rename editor that commits through the file browser tab."""
+
+    def createEditor(self, parent, option, index):  # noqa: N802
+        editor = _InlineRenameLineEdit(parent)
+        editor.setAlignment(self._inline_editor_alignment())
+        return editor
+
+    def _inline_editor_alignment(self) -> Qt.AlignmentFlag:
+        return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+
+    def setEditorData(self, editor, index):  # noqa: N802
+        model = index.model()
+        name_index = index.siblingAtColumn(0)
+        name = model.fileName(name_index) if hasattr(model, "fileName") else name_index.data()
+        name = name or ""
+        is_dir = bool(getattr(model, "isDir", None)) and model.isDir(name_index)
+        tab = getattr(self.parent(), "_tab", None)
+        seed = None
+        if tab is not None and hasattr(tab, "_consume_rename_seed"):
+            seed = tab._consume_rename_seed(Path(model.filePath(name_index)))
+        text = seed if seed is not None else name
+        editor.set_rename_value(text)
+        editor.select_basename(_basename_selection_length(text, is_dir))
+
+    def setModelData(self, editor, model, index):  # noqa: N802
+        tab = getattr(self.parent(), "_tab", None)
+        if tab is None or not index.isValid():
+            return
+        original = Path(model.filePath(index.siblingAtColumn(0)))
+        new_name = editor.rename_value()
+        # Defer the rename so it runs after the view finishes tearing down the
+        # editor; the subsequent refresh would otherwise re-enter the view while
+        # it is still committing.
+        QTimer.singleShot(0, lambda: tab._apply_rename(original, new_name))
+
+
+class _DropTargetItemDelegate(_InlineRenameDelegateMixin, QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         view_option = QStyleOptionViewItem(option)
         is_drop_target = self._is_drop_target(view_option, index)
@@ -54,11 +316,60 @@ class _DropTargetItemDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class _TwoLineTileNameDelegate(QStyledItemDelegate):
+class _TwoLineTileNameDelegate(_InlineRenameDelegateMixin, QStyledItemDelegate):
     LABEL_LINES = 2
     HORIZONTAL_PADDING = 12
     ICON_TOP_PADDING = 4
     LABEL_TOP_PADDING = 8
+
+    def createEditor(self, parent, option, index):  # noqa: N802
+        editor = _InlineRenameTextEdit(parent)
+        editor.committed.connect(lambda: self._commit_inline_editor(editor))
+        return editor
+
+    def _commit_inline_editor(self, editor) -> None:
+        self.commitData.emit(editor)
+        self.closeEditor.emit(editor)
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
+        # The painted layout (icon + two text lines) must match the item's hit
+        # rect, otherwise clicking the second name line falls into dead space
+        # between items and fails to select. The tile view drives sizing through
+        # its grid size, so honour it directly when available.
+        widget = option.widget
+        grid = widget.gridSize() if widget is not None else QSize()
+        if grid.isValid() and not grid.isEmpty():
+            return grid
+        view_option = QStyleOptionViewItem(option)
+        self.initStyleOption(view_option, index)
+        line_height = view_option.fontMetrics.lineSpacing()
+        decoration = view_option.decorationSize
+        height = (
+            self.ICON_TOP_PADDING
+            + decoration.height()
+            + 1
+            + self.LABEL_TOP_PADDING
+            + line_height * self.LABEL_LINES
+            + self.LABEL_TOP_PADDING
+        )
+        return QSize(decoration.width() + self.HORIZONTAL_PADDING, height)
+
+    def updateEditorGeometry(self, editor, option, index):  # noqa: N802
+        view_option = QStyleOptionViewItem(option)
+        self.initStyleOption(view_option, index)
+        _, text_rect = self._tile_rects(view_option)
+        viewport = option.widget.viewport() if option.widget is not None else None
+        if hasattr(editor, "configure_geometry") and viewport is not None:
+            editor.configure_geometry(view_option.rect, viewport.rect(), text_rect.y())
+        else:
+            editor.setGeometry(
+                QRect(
+                    view_option.rect.x(),
+                    text_rect.y(),
+                    view_option.rect.width(),
+                    text_rect.height(),
+                )
+            )
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         view_option = QStyleOptionViewItem(option)
