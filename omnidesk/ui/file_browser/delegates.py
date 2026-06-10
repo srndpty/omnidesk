@@ -254,8 +254,13 @@ class _InlineRenameDelegateMixin:
         name = model.fileName(name_index) if hasattr(model, "fileName") else name_index.data()
         name = name or ""
         is_dir = bool(getattr(model, "isDir", None)) and model.isDir(name_index)
-        editor.set_rename_value(name)
-        editor.select_basename(_basename_selection_length(name, is_dir))
+        tab = getattr(self.parent(), "_tab", None)
+        seed = None
+        if tab is not None and hasattr(tab, "_consume_rename_seed"):
+            seed = tab._consume_rename_seed(Path(model.filePath(name_index)))
+        text = seed if seed is not None else name
+        editor.set_rename_value(text)
+        editor.select_basename(_basename_selection_length(text, is_dir))
 
     def setModelData(self, editor, model, index):  # noqa: N802
         tab = getattr(self.parent(), "_tab", None)

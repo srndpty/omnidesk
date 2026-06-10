@@ -174,19 +174,20 @@ def test_text_editor_skips_resize_during_ime_composition(qtbot) -> None:
     editor.show()
     editor.set_rename_value("name.txt")
     editor.configure_geometry(QRect(0, 0, 160, 200), QRect(0, 0, 1000, 600), text_top=180)
-    stable_height = editor.height()
+    geometry_before = editor.geometry()
 
     # A pre-edit (composition in progress) must not trigger a resize.
     composing = QInputMethodEvent("あ", [])
     editor.inputMethodEvent(composing)
     assert editor._composing is True
+    assert editor.geometry() == geometry_before
 
     # Committing the composition clears the flag and resizes again.
     commit = QInputMethodEvent("", [])
     commit.setCommitString("あ")
     editor.inputMethodEvent(commit)
     assert editor._composing is False
-    assert editor.height() >= stable_height
+    assert editor.height() >= geometry_before.height()
 
 
 def test_rename_selected_opens_inline_editor(qtbot, tmp_path: Path) -> None:

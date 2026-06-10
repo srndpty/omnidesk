@@ -19,6 +19,7 @@ from omnidesk.ui.file_operations import (
     execute_file_operation,
     is_dangerous_operation_path,
     is_plain_child_name,
+    name_exceeds_limits,
     perform_copy_or_move,
     perform_copy_or_move_with_result,
     rename_path,
@@ -98,19 +99,32 @@ def test_clip_child_name_folder_does_not_treat_dot_as_extension() -> None:
     assert _utf16_units(clipped) <= MAX_NAME_COMPONENT_UNITS
 
 
-def test_rename_path_clips_overlong_target_instead_of_failing(tmp_path: Path) -> None:
-    original = tmp_path / "src.txt"
-    original.write_text("data", encoding="utf-8")
-    long_name = "あ" * 500 + ".txt"
+def test_clip_child_name_when_extension_exceeds_budget() -> None:
+    parent = Path("C:/data")
+    name = "a." + "x" * 500  # the "extension" alone blows the budget
 
-    renamed, error = rename_path(original, long_name)
+    clipped = clip_child_name(parent, name)
 
-    assert error is None
-    assert renamed is not None
-    assert renamed.exists()
-    assert renamed.suffix == ".txt"
-    assert renamed.read_text(encoding="utf-8") == "data"
-    assert not original.exists()
+    assert _utf16_units(clipped) <= MAX_NAME_COMPONENT_UNITS
+    assert _utf16_units(str(parent)) + 1 + _utf16_units(clipped) <= MAX_PATH_UNITS
+
+
+def test_clip_child_name_uses_placeholder_when_stem_is_only_dots_and_spaces() -> None:
+    parent = Path("C:/data")
+    name = (" . " * 200) + ".png"
+
+    clipped = clip_child_name(parent, name)
+
+    stem = clipped[: -len(".png")]
+    assert stem  # not empty
+    assert not stem.endswith((" ", "."))
+    assert _utf16_units(clipped) <= MAX_NAME_COMPONENT_UNITS
+
+
+def test_name_exceeds_limits() -> None:
+    parent = Path("C:/data")
+    assert not name_exceeds_limits(parent, "photo.png")
+    assert name_exceeds_limits(parent, "あ" * 500 + ".png")
 
 
 def test_create_file_and_folder_use_copy_names_for_conflicts(tmp_path: Path) -> None:

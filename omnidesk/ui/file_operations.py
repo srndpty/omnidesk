@@ -263,13 +263,15 @@ def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:
     raise ValueError(f"Unable to resolve destination for {name}: too many copies")
 
 
-# Filesystem name-length limits. NTFS allows a single path component of up to
-# 255 UTF-16 code units; the classic MAX_PATH limit caps the whole path at 260
-# (259 usable). We stay just under both so an over-long name is trimmed instead
-# of failing with WinError 123 (ERROR_INVALID_NAME), matching how Explorer
-# silently clips names that do not fit.
+# Filesystem name-length limits used to keep renames within bounds. These are
+# Windows/NTFS oriented (single component <= 255 UTF-16 code units, classic
+# MAX_PATH caps the whole path at 260, 259 usable) and OmniDesk applies them on
+# every platform so behaviour matches the Explorer-compatible UX it targets.
+# Clipping itself is advisory: callers decide whether to apply it (the file
+# browser confirms with the user first), so this stays a pure helper.
 MAX_NAME_COMPONENT_UNITS = 255
 MAX_PATH_UNITS = 259
+_CLIP_FALLBACK_STEM = "renamed"
 
 
 def _utf16_units(text: str) -> int:
@@ -292,35 +294,50 @@ def _clip_to_units(text: str, max_units: int) -> str:
     return "".join(kept)
 
 
-def clip_child_name(parent: Path, name: str, *, keep_extension: bool = True) -> str:
-    """Clip an over-long child name so the rename stays within OS path limits.
+def name_exceeds_limits(parent: Path, name: str) -> bool:
+    """Return whether name is too long for parent under the path/name limits."""
+    return _utf16_units(name) > _name_limit(parent)
 
-    The extension is preserved and only the stem is trimmed (Explorer-like).
-    Names that already fit are returned unchanged.
-    """
+
+def _name_limit(parent: Path) -> int:
     parent_units = _utf16_units(str(parent)) + 1  # +1 for the path separator
-    limit = min(MAX_NAME_COMPONENT_UNITS, max(1, MAX_PATH_UNITS - parent_units))
+    return min(MAX_NAME_COMPONENT_UNITS, max(1, MAX_PATH_UNITS - parent_units))
+
+
+def clip_child_name(parent: Path, name: str, *, keep_extension: bool = True) -> str:
+    """Clip an over-long child name so the rename stays within the limits.
+
+    The extension is preserved and only the stem is trimmed (Explorer-like),
+    unless the extension alone already exceeds the budget, in which case it is
+    dropped. Names that already fit are returned unchanged.
+    """
+    limit = _name_limit(parent)
     if _utf16_units(name) <= limit:
         return name
     suffix = Path(name).suffix if keep_extension else ""
+    if suffix and _utf16_units(suffix) >= limit:
+        suffix = ""  # the extension itself is too long to keep
     stem = name[: len(name) - len(suffix)] if suffix else name
     stem_budget = max(1, limit - _utf16_units(suffix))
     clipped_stem = _clip_to_units(stem, stem_budget).rstrip(" .")
     if not clipped_stem:
-        clipped_stem = _clip_to_units(stem, stem_budget)
+        # Stem was only spaces/dots (invalid trailing chars on Windows); use a
+        # safe placeholder rather than resurrecting an invalid name.
+        clipped_stem = _clip_to_units(_CLIP_FALLBACK_STEM, stem_budget) or _CLIP_FALLBACK_STEM
     return clipped_stem + suffix
 
 
 def rename_path(original: Path, new_name: str) -> tuple[Path | None, str | None]:
-    """Rename a path within its parent directory."""
+    """Rename a path within its parent directory.
+
+    The name is used as-is; callers are responsible for length handling (see
+    clip_child_name / name_exceeds_limits) so renames stay predictable.
+    """
     if not new_name or new_name == original.name:
         return None, None
     if not is_plain_child_name(new_name):
         logger.warning("Rejected invalid rename target %r for %s", new_name, original)
         return None, "Name must not contain path separators."
-    new_name = clip_child_name(original.parent, new_name, keep_extension=not original.is_dir())
-    if new_name == original.name:
-        return None, None
     target = original.with_name(new_name)
     if target.exists():
         return None, f"{target} already exists."
