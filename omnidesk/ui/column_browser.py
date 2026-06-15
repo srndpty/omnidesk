@@ -130,11 +130,10 @@ class _ColumnFileSystemModel(QFileSystemModel):
     """
 
     def hasChildren(self, parent: QModelIndex | None = None) -> bool:  # noqa: N802
-        if parent is None:
-            parent = QModelIndex()
-        if not parent.isValid():
-            return super().hasChildren(parent)
-        return self.isDir(parent)
+        effective_parent = parent if parent is not None else QModelIndex()
+        if not effective_parent.isValid():
+            return super().hasChildren(effective_parent)
+        return self.isDir(effective_parent)
 
 
 class _ColumnListView(QListView):
@@ -241,9 +240,7 @@ class _DarkColumnView(QColumnView):
             return
         if model.isDir(target):
             return
-        for view in self.findChildren(QAbstractItemView):
-            if isinstance(view, _ColumnListView):
-                continue
+        for view in self._preview_artifact_views():
             view.hide()
             view.setFixedWidth(0)
             view.viewport().hide()
@@ -252,14 +249,16 @@ class _DarkColumnView(QColumnView):
 
     def restore_preview_artifact_constraints(self) -> None:
         """ファイル preview 抑止で 0 幅にした Qt 内部 view を再利用可能に戻す。"""
-        for view in self.findChildren(QAbstractItemView):
-            if isinstance(view, _ColumnListView):
-                continue
+        for view in self._preview_artifact_views():
             view.setMinimumWidth(0)
             view.setMaximumWidth(16777215)
             view.show()
             view.viewport().show()
             view.updateGeometry()
+
+    def _preview_artifact_views(self) -> list[QAbstractItemView]:
+        views = cast("list[QAbstractItemView]", self.findChildren(QAbstractItemView))
+        return [view for view in views if not isinstance(view, _ColumnListView)]
 
     # -- アクティブ列 --------------------------------------------------
     def active_directory(self) -> Path | None:
@@ -456,9 +455,10 @@ class ColumnBrowser(QWidget):
         self._path_edit.returnPressed.connect(self._handle_path_entered)
         self._up_shortcut: QShortcut | None = None
         if enable_local_shortcuts:
-            self._up_shortcut = QShortcut(QKeySequence("Alt+Up"), self)
-            self._up_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            self._up_shortcut.activated.connect(self.go_up)
+            shortcut = QShortcut(QKeySequence("Alt+Up"), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self.go_up)
+            self._up_shortcut = shortcut
 
         self._up_button = QToolButton(self)
         self._up_button.setText("Up")
