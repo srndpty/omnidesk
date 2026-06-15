@@ -106,6 +106,11 @@ class MainWindow(QMainWindow):
         self._refresh_action.setShortcut(QKeySequence(Qt.Key.Key_F5))
         self._refresh_action.triggered.connect(self._handle_refresh)
 
+        self._go_up_action = QAction("Go Up", self)
+        self._go_up_action.setShortcut(QKeySequence("Alt+Up"))
+        self._go_up_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._go_up_action.triggered.connect(self._handle_go_up)
+
         self._toggle_view_action = QAction("Switch to Column View", self)
         self._toggle_view_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
         self._toggle_view_action.triggered.connect(self._handle_toggle_view)
@@ -128,6 +133,7 @@ class MainWindow(QMainWindow):
             self._reopen_closed_tab_action,
             self._open_folder_action,
             self._refresh_action,
+            self._go_up_action,
             self._toggle_view_action,
             self._next_tab_action,
             self._previous_tab_action,
@@ -234,6 +240,7 @@ class MainWindow(QMainWindow):
         self._view_mode = "columns"
         self._column_browser.set_root_path(target)
         self._stack.setCurrentWidget(self._column_browser)
+        self._column_browser.focus_view()
         self._toggle_view_action.setText("Switch to Tab View")
         self._update_action_state()
 

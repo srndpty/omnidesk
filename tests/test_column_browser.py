@@ -2,10 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QModelIndex, QUrl
+from PyQt6.QtCore import QModelIndex, QPoint, QPointF, Qt, QUrl
+from PyQt6.QtGui import QKeyEvent, QKeySequence, QWheelEvent
+from PyQt6.QtWidgets import QWidget
 
 import omnidesk.ui.column_browser as column_browser_module
-from omnidesk.ui.column_browser import ColumnBrowser
+from omnidesk.ui.column_browser import (
+    EMPTY_PLACEHOLDER,
+    LOADING_PLACEHOLDER,
+    ColumnBrowser,
+    clamp_scroll_maximum,
+    column_placeholder_text,
+    normalize_directory_key,
+    paste_destination,
+    viewport_right_to_content_right,
+)
 
 
 def test_set_root_path_accepts_directory_and_file(qtbot, tmp_path: Path) -> None:
@@ -59,6 +70,25 @@ def test_go_up_and_path_entry_delegate_to_set_root_path(qtbot, tmp_path: Path) -
     browser._handle_path_entered()
 
     assert browser.current_path() == child
+
+
+def test_go_up_moves_from_displayed_root_not_selection(qtbot, tmp_path: Path) -> None:
+    base = tmp_path / "base"
+    sub = base / "sub"
+    sub.mkdir(parents=True)
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(base)
+
+    # Selecting a subfolder updates current_path to the selection...
+    browser._handle_selection_changed(browser._model.index(str(sub)), QModelIndex())
+    assert browser.current_path() == sub
+
+    # ...but go_up must move up from the displayed base (base -> tmp_path),
+    # not from the selection (which would re-root to the already-shown base).
+    browser.go_up()
+
+    assert browser.current_path() == tmp_path
 
 
 def test_handle_selection_changed_ignores_invalid_index(qtbot) -> None:
@@ -197,3 +227,419 @@ def test_handle_selection_changed_updates_file_without_emitting(
         browser._handle_selection_changed(browser._model.index(str(tmp_path)), QModelIndex())
 
     assert browser.current_path() == target
+
+
+def test_deeper_directory_selection_waits_for_column_range_change(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    base = tmp_path / "base"
+    child = base / "child"
+    child.mkdir(parents=True)
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(base)
+    scheduled: list[object] = []
+    monkeypatch.setattr(browser, "_schedule_settle", lambda: scheduled.append(object()))
+    monkeypatch.setattr(
+        browser._model,
+        "fileInfo",
+        lambda _index: _FakeFileInfo(child, is_dir=True),
+    )
+
+    browser._handle_selection_changed(browser._model.index(str(child)), QModelIndex())
+
+    assert scheduled == []
+    assert browser._pending_reveal is True
+    assert browser._last_depth == len(child.parts)
+
+
+def test_shallower_directory_selection_schedules_dead_space_settle(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    base = tmp_path / "base"
+    child = base / "child"
+    child.mkdir(parents=True)
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(base)
+    browser._last_depth = len(child.parts)
+    scheduled: list[object] = []
+    monkeypatch.setattr(browser, "_schedule_settle", lambda: scheduled.append(object()))
+    monkeypatch.setattr(
+        browser._model,
+        "fileInfo",
+        lambda _index: _FakeFileInfo(base, is_dir=True),
+    )
+
+    browser._handle_selection_changed(browser._model.index(str(base)), QModelIndex())
+
+    assert len(scheduled) == 1
+    assert browser._last_depth == len(base.parts)
+
+
+def test_column_placeholder_text_distinguishes_empty_from_loading() -> None:
+    assert column_placeholder_text(row_count=3, loaded=True) is None
+    assert column_placeholder_text(row_count=3, loaded=False) is None
+    assert column_placeholder_text(row_count=0, loaded=True) == EMPTY_PLACEHOLDER
+    assert column_placeholder_text(row_count=0, loaded=False) == LOADING_PLACEHOLDER
+
+
+def test_clamp_scroll_maximum_only_covers_visible_columns() -> None:
+    # Content narrower than the viewport leaves nothing to scroll.
+    assert clamp_scroll_maximum(content_right=600, viewport_width=900) == 0
+    # Wider content stays scrollable by exactly the overflow.
+    assert clamp_scroll_maximum(content_right=1280, viewport_width=900) == 380
+
+
+def test_viewport_right_to_content_right_preserves_horizontal_offset() -> None:
+    assert viewport_right_to_content_right(scroll_value=0, viewport_right=900) == 900
+    assert viewport_right_to_content_right(scroll_value=640, viewport_right=900) == 1540
+
+
+def test_settle_columns_keeps_existing_offset_for_viewport_relative_columns(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    class _VisibleColumn:
+        def __init__(self, width: int) -> None:
+            self._width = width
+
+        def isVisible(self) -> bool:  # noqa: N802
+            return True
+
+        def x(self) -> int:
+            return 0
+
+        def width(self) -> int:
+            return self._width
+
+        def viewport(self):
+            return self
+
+        def update(self) -> None:
+            return None
+
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    hbar = browser._view.horizontalScrollBar()
+    browser._settling = True
+    hbar.setRange(0, 1000)
+    hbar.setValue(640)
+    browser._settling = False
+    viewport_width = browser._view.viewport().width()
+    monkeypatch.setattr(
+        browser._view,
+        "column_views",
+        lambda: [_VisibleColumn(viewport_width)],
+    )
+
+    browser._settle_columns(reveal=False)
+
+    assert hbar.maximum() == 640
+    assert hbar.value() == 640
+
+
+def test_normalize_directory_key_is_case_and_separator_insensitive() -> None:
+    assert normalize_directory_key("C:/Foo/Bar") == normalize_directory_key("C:\\foo\\bar")
+    assert normalize_directory_key("/a/b/../b") == normalize_directory_key("/a/b")
+
+
+def test_model_reports_directories_as_expandable_and_files_as_leaves(qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    a_file = tmp_path / "file.txt"
+    a_file.write_text("x", encoding="utf-8")
+    browser.set_root_path(tmp_path)
+
+    dir_index = browser._model.index(str(empty_dir))
+    file_index = browser._model.index(str(a_file))
+
+    assert browser._model.hasChildren(dir_index) is True
+    assert browser._model.hasChildren(file_index) is False
+
+
+def test_alt_up_shortcut_navigates_to_parent(qtbot, tmp_path: Path) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(child)
+
+    # Bound on the whole widget (children context) so it also fires while the
+    # address bar holds focus, not only when the column view does.
+    assert browser._up_shortcut is not None
+    assert browser._up_shortcut.key() == QKeySequence("Alt+Up")
+    assert browser._up_shortcut.context() == Qt.ShortcutContext.WidgetWithChildrenShortcut
+
+    browser._up_shortcut.activated.emit()
+
+    assert browser.current_path() == parent
+
+
+def test_parented_column_browser_defers_alt_up_shortcut_to_main_window(qtbot) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    browser = ColumnBrowser(parent)
+
+    assert browser._up_shortcut is None
+
+
+def test_delete_key_emits_delete_request(qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+
+    with qtbot.waitSignal(browser._view.deleteRequested, timeout=1000):
+        event = QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_Delete,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        browser._view.keyPressEvent(event)
+    assert event.isAccepted()
+
+
+def test_delete_selected_confirms_then_trashes(monkeypatch, qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("bye", encoding="utf-8")
+    browser.set_root_path(tmp_path)
+    monkeypatch.setattr(browser, "_selected_paths", lambda: [victim])
+    monkeypatch.setattr(
+        column_browser_module.QMessageBox,
+        "question",
+        lambda *args, **kwargs: column_browser_module.QMessageBox.StandardButton.Yes,
+    )
+    trashed: list[list[Path]] = []
+    monkeypatch.setattr(
+        column_browser_module, "delete_paths", lambda paths: trashed.append(paths) or []
+    )
+
+    browser._delete_selected()
+
+    assert trashed == [[victim]]
+
+
+def test_delete_selected_aborts_when_declined(monkeypatch, qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("stay", encoding="utf-8")
+    browser.set_root_path(tmp_path)
+    monkeypatch.setattr(browser, "_selected_paths", lambda: [victim])
+    monkeypatch.setattr(
+        column_browser_module.QMessageBox,
+        "question",
+        lambda *args, **kwargs: column_browser_module.QMessageBox.StandardButton.No,
+    )
+    called: list[object] = []
+    monkeypatch.setattr(
+        column_browser_module, "delete_paths", lambda paths: called.append(paths) or []
+    )
+
+    browser._delete_selected()
+
+    assert called == []
+
+
+def test_directory_loaded_marks_path_loaded(qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    index = browser._model.index(str(tmp_path))
+
+    assert browser._is_directory_loaded(index) is False
+    browser._handle_directory_loaded(str(tmp_path))
+    assert browser._is_directory_loaded(index) is True
+
+
+def test_paste_destination_resolves_dir_and_file(tmp_path: Path) -> None:
+    a_dir = tmp_path / "dir"
+    a_dir.mkdir()
+    a_file = tmp_path / "file.txt"
+    a_file.write_text("x", encoding="utf-8")
+
+    assert paste_destination(a_dir) == a_dir
+    assert paste_destination(a_file) == tmp_path
+
+
+def test_ctrl_keys_emit_clipboard_requests(qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    cases = {
+        Qt.Key.Key_C: browser._view.copyRequested,
+        Qt.Key.Key_X: browser._view.cutRequested,
+        Qt.Key.Key_V: browser._view.pasteRequested,
+    }
+    for key, signal in cases.items():
+        with qtbot.waitSignal(signal, timeout=1000):
+            event = QKeyEvent(QKeyEvent.Type.KeyPress, key, Qt.KeyboardModifier.ControlModifier)
+            assert browser._view.handle_shortcut_key(event) is True
+
+
+def test_copy_then_paste_into_selected_directory(monkeypatch, qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    source = tmp_path / "src.txt"
+    source.write_text("payload", encoding="utf-8")
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+    browser.set_root_path(tmp_path)
+    monkeypatch.setattr(browser, "_selected_paths", lambda: [source])
+
+    browser._copy_selected()
+    assert browser._clipboard == {"paths": [source], "mode": "copy"}
+
+    browser._current_path = dest_dir
+    browser._paste_into_selection()
+
+    assert (dest_dir / "src.txt").read_text(encoding="utf-8") == "payload"
+    assert source.exists()  # copy keeps the original
+    assert browser._clipboard is not None  # copy clipboard survives for re-paste
+
+
+def test_cut_then_paste_moves_and_clears_clipboard(qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    source = tmp_path / "movable.txt"
+    source.write_text("payload", encoding="utf-8")
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+    browser.set_root_path(tmp_path)
+
+    browser._clipboard = {"paths": [source], "mode": "move"}
+    browser._current_path = dest_dir
+    browser._paste_into_selection()
+
+    assert (dest_dir / "movable.txt").read_text(encoding="utf-8") == "payload"
+    assert not source.exists()  # move removes the original
+    assert browser._clipboard is None  # move clipboard is consumed
+
+
+def test_paste_without_clipboard_is_noop(qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+
+    browser._paste_into_selection()  # must not raise
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_active_directory_is_parent_of_selection(qtbot, tmp_path: Path) -> None:
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+
+    browser._view.setCurrentIndex(browser._model.index(str(sub)))
+
+    # The active column is the one holding the selection, i.e. its parent dir.
+    assert browser._view.active_directory() == tmp_path
+
+
+def test_copy_folder_pastes_sibling_instead_of_into_itself(qtbot, tmp_path: Path) -> None:
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    (folder / "inside.txt").write_text("x", encoding="utf-8")
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    browser._view.setCurrentIndex(browser._model.index(str(folder)))
+
+    browser._clipboard = {"paths": [folder], "mode": "copy"}
+    browser._paste_into_selection()
+
+    # Windows-style auto-rename into the same (parent) folder, not recursion.
+    assert (tmp_path / "folder - Copy 1").is_dir()
+    assert not (folder / "folder").exists()
+
+
+def test_active_column_highlight_follows_selection(qtbot, tmp_path: Path) -> None:
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.show()  # columns must be visible for the active-column match
+    qtbot.waitExposed(browser)
+    browser.set_root_path(tmp_path)
+
+    browser._view.update_active_column(browser._model.index(str(sub)))
+
+    active = [
+        column for column in browser._view.column_views() if column.property("activeColumn") is True
+    ]
+    # Exactly the column that displays the selection's parent is marked active.
+    assert len(active) == 1
+    assert Path(browser._model.filePath(active[0].rootIndex())) == tmp_path
+
+
+def test_active_column_survives_root_rebuild(qtbot, tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    (first / "child").mkdir(parents=True)
+    second = tmp_path / "second"
+    (second / "child").mkdir(parents=True)
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.show()
+    qtbot.waitExposed(browser)
+
+    browser.set_root_path(first)
+    browser._view.update_active_column(browser._model.index(str(first / "child")))
+    assert browser._view._active_column is not None
+
+    # Navigating to a new root tears the old columns down; the next selection
+    # must not touch the now-deleted previous active column.
+    browser.set_root_path(second)
+    qtbot.wait(10)  # let the deleteLater on the old columns run
+    browser._view.update_active_column(browser._model.index(str(second / "child")))
+
+
+def test_shift_wheel_scrolls_horizontally(qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    # Hold the settle pass off so it does not collapse this synthetic range
+    # (with no real overflow it would otherwise clamp the maximum to 0).
+    browser._settling = True
+    hbar = browser._view.horizontalScrollBar()
+    hbar.setRange(0, 500)
+    hbar.setValue(200)
+
+    event = QWheelEvent(
+        QPointF(10, 10),
+        QPointF(10, 10),
+        QPoint(0, 0),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.ShiftModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+    assert browser._view.handle_shift_wheel(event) is True
+    assert hbar.value() == 320  # 200 - (-120)
+
+
+def test_plain_wheel_is_not_consumed_as_horizontal(qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+
+    event = QWheelEvent(
+        QPointF(10, 10),
+        QPointF(10, 10),
+        QPoint(0, 0),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+    assert browser._view.handle_shift_wheel(event) is False

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtWidgets import QWidget
 
@@ -218,11 +218,30 @@ def test_main_window_handlers_delegate_by_mode(monkeypatch, qtbot, tmp_path: Pat
     column_browser = cast(FakeColumnBrowser, window._column_browser)
     assert "refresh" in column_browser.calls
     assert "go_up" in column_browser.calls
+    assert "focus" in column_browser.calls
     assert not window._new_tab_action.isEnabled()
 
     window._switch_to_tabs()
     assert window._is_tab_mode()
     assert window._toggle_view_action.text() == "Switch to Column View"
+
+
+def test_main_window_alt_up_action_delegates_after_switching_to_columns(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window._go_up_action.shortcut() == QKeySequence("Alt+Up")
+    assert window._go_up_action.shortcutContext() == Qt.ShortcutContext.ApplicationShortcut
+
+    window._switch_to_columns()
+    window._go_up_action.trigger()
+
+    column_browser = cast(FakeColumnBrowser, window._column_browser)
+    assert "go_up" in column_browser.calls
 
 
 def test_main_window_f1_shows_shortcuts_dialog(monkeypatch, qtbot, tmp_path: Path) -> None:
