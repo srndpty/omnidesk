@@ -15,6 +15,7 @@ from omnidesk.ui.column_browser import (
     ColumnBrowser,
     clamp_scroll_maximum,
     column_placeholder_text,
+    is_same_or_ancestor_path,
     normalize_directory_key,
     paste_destination,
     viewport_right_to_content_right,
@@ -331,6 +332,13 @@ def test_viewport_right_to_content_right_preserves_horizontal_offset() -> None:
     assert viewport_right_to_content_right(scroll_value=640, viewport_right=900) == 1540
 
 
+def test_is_same_or_ancestor_path() -> None:
+    assert is_same_or_ancestor_path("/tmp/root", "/tmp/root")
+    assert is_same_or_ancestor_path("/tmp/root", "/tmp/root/child")
+    assert not is_same_or_ancestor_path("/tmp/root", "/tmp/root-sibling")
+    assert not is_same_or_ancestor_path("", "/tmp/root")
+
+
 def test_settle_columns_keeps_existing_offset_for_viewport_relative_columns(
     monkeypatch, qtbot, tmp_path: Path
 ) -> None:
@@ -384,13 +392,14 @@ def test_settle_columns_keeps_existing_offset_for_viewport_relative_columns(
 
 def test_reveal_settle_can_use_pending_hidden_columns(monkeypatch, qtbot, tmp_path: Path) -> None:
     class _Column:
-        def __init__(self, *, x: int, width: int, visible: bool) -> None:
+        def __init__(self, *, root: Path, x: int, width: int, visible: bool) -> None:
+            self._root = root
             self._x = x
             self._width = width
             self._visible = visible
 
         def rootIndex(self) -> QModelIndex:  # noqa: N802
-            return browser._model.index(str(tmp_path))
+            return browser._model.index(str(self._root))
 
         def isVisible(self) -> bool:  # noqa: N802
             return self._visible
@@ -409,7 +418,12 @@ def test_reveal_settle_can_use_pending_hidden_columns(monkeypatch, qtbot, tmp_pa
 
     browser = ColumnBrowser()
     qtbot.addWidget(browser)
+    selected = tmp_path / "selected"
+    stale = tmp_path / "stale"
+    selected.mkdir()
+    stale.mkdir()
     browser.set_root_path(tmp_path)
+    browser._current_path = selected
     browser.resize(420, 300)
     hbar = browser._view.horizontalScrollBar()
     browser._settling = True
@@ -420,8 +434,9 @@ def test_reveal_settle_can_use_pending_hidden_columns(monkeypatch, qtbot, tmp_pa
         browser._view,
         "column_views",
         lambda: [
-            _Column(x=0, width=viewport_width, visible=True),
-            _Column(x=viewport_width, width=viewport_width, visible=False),
+            _Column(root=tmp_path, x=0, width=viewport_width, visible=True),
+            _Column(root=selected, x=viewport_width, width=viewport_width, visible=False),
+            _Column(root=stale, x=viewport_width * 4, width=viewport_width, visible=False),
         ],
     )
 
@@ -558,6 +573,32 @@ def test_leaf_preview_artifact_suppression_uses_given_index(qtbot, tmp_path: Pat
 
     assert artifact.isHidden()
     assert artifact.width() == 0
+
+
+def test_delayed_leaf_preview_suppression_requires_current_path(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    first = tmp_path / "first.jpg"
+    second = tmp_path / "second.jpg"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    browser._view.setCurrentIndex(browser._model.index(str(second)))
+    calls: list[QModelIndex] = []
+    monkeypatch.setattr(browser._view, "suppress_leaf_preview_artifacts", calls.append)
+
+    browser._suppress_leaf_preview_if_current(str(first))
+
+    assert calls == []
+
+    browser._suppress_leaf_preview_if_current(str(second))
+
+    assert len(calls) == 1
+    assert normalize_directory_key(browser._model.filePath(calls[0])) == normalize_directory_key(
+        str(second)
+    )
 
 
 def test_restore_preview_artifact_constraints_shows_suppressed_view(qtbot, tmp_path: Path) -> None:

@@ -100,6 +100,18 @@ def normalize_directory_key(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
 
 
+def is_same_or_ancestor_path(ancestor: str, child: str) -> bool:
+    """``ancestor`` が ``child`` と同一、または親ディレクトリなら True。"""
+    if not ancestor or not child:
+        return False
+    ancestor_key = normalize_directory_key(ancestor)
+    child_key = normalize_directory_key(child)
+    try:
+        return os.path.commonpath([ancestor_key, child_key]) == ancestor_key
+    except ValueError:
+        return False
+
+
 def paste_destination(selected: Path) -> Path:
     """選択中アイテムに対して貼り付け先となるディレクトリを返す。
 
@@ -553,8 +565,9 @@ class ColumnBrowser(QWidget):
         else:
             self._cancel_pending_reveal()
             leaf_index = QModelIndex(current)
+            leaf_path = self._model.filePath(current)
             self._view.suppress_leaf_preview_artifacts(leaf_index)
-            self._single_shot(0, lambda: self._view.suppress_leaf_preview_artifacts(leaf_index))
+            self._single_shot(0, lambda: self._suppress_leaf_preview_if_current(leaf_path))
         # 浅い階層へ戻った時だけ余白（デッドスペース）を詰める。深い階層へ進む時に
         # 詰めようとすると、まだ新しい列が配置されていない古いジオメトリを基に
         # スクロール最大値を縮めてしまい、左端へ強制スクロールされる不具合になる。
@@ -646,6 +659,13 @@ class ColumnBrowser(QWidget):
                 refresh(index)
 
     # ------------------------------------------------------------------
+    def _suppress_leaf_preview_if_current(self, leaf_path: str) -> None:
+        current = self._view.currentIndex()
+        if current.isValid() and normalize_directory_key(
+            self._model.filePath(current)
+        ) == normalize_directory_key(leaf_path):
+            self._view.suppress_leaf_preview_artifacts(current)
+
     def _is_directory_loaded(self, index: QModelIndex) -> bool:
         if not index.isValid():
             return True
@@ -713,7 +733,9 @@ class ColumnBrowser(QWidget):
                 reveal_columns = [
                     column
                     for column in self._view.column_views()
-                    if column.rootIndex().isValid() and column.width() > 0
+                    if column.rootIndex().isValid()
+                    and column.width() > 0
+                    and self._is_reveal_relevant_column(column)
                 ]
                 columns = reveal_columns or visible_columns
             hbar = self._view.horizontalScrollBar()
@@ -726,6 +748,10 @@ class ColumnBrowser(QWidget):
                 hbar.setValue(desired)
         finally:
             self._settling = False
+
+    def _is_reveal_relevant_column(self, column: _ColumnListView) -> bool:
+        root_path = self._model.filePath(column.rootIndex())
+        return is_same_or_ancestor_path(root_path, str(self._current_path))
 
     def _connect_selection_signals(self) -> None:
         selection_model = self._view.selectionModel()
