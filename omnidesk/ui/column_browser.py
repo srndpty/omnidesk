@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from collections.abc import Callable
 from contextlib import suppress
@@ -23,8 +22,10 @@ from PyQt6.QtGui import (
     QColor,
     QDesktopServices,
     QFileSystemModel,
+    QFocusEvent,
     QKeyEvent,
     QKeySequence,
+    QMouseEvent,
     QPainter,
     QPen,
     QShortcut,
@@ -43,8 +44,6 @@ from PyQt6.QtWidgets import (
 )
 
 from .file_operations import delete_paths, perform_copy_or_move
-
-logger = logging.getLogger(__name__)
 
 
 class _ClipboardPayload(TypedDict):
@@ -142,9 +141,18 @@ class _ColumnListView(QListView):
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         # フォーカスは内側の列にあるため、共有ショートカット（Delete, Ctrl+C/X/V）は
         # 列本来のナビゲーションより先にここで消費する必要がある。
+        self._column_view.set_focused_column_root(self.rootIndex())
         if self._column_view.handle_shortcut_key(event):
             return
         super().keyPressEvent(event)
+
+    def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        self._column_view.set_focused_column_root(self.rootIndex())
+        super().focusInEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        self._column_view.set_focused_column_root(self.rootIndex())
+        super().mousePressEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -180,11 +188,13 @@ class _DarkColumnView(QColumnView):
         self.setStyleSheet(_COLUMN_VIEW_STYLESHEET)
         self._is_directory_loaded: Callable[[QModelIndex], bool] = lambda _index: True
         self._active_column: _ColumnListView | None = None
+        self._focused_column_root = QModelIndex()
 
     def set_directory_loaded_predicate(self, predicate: Callable[[QModelIndex], bool]) -> None:
         self._is_directory_loaded = predicate
 
     def createColumn(self, index: QModelIndex) -> QAbstractItemView:  # noqa: N802
+        self.restore_preview_artifact_constraints()
         view = _ColumnListView(self.viewport(), self._is_directory_loaded, self)
         self.initializeColumn(view)
         view.setRootIndex(index)
@@ -197,6 +207,45 @@ class _DarkColumnView(QColumnView):
         if model is not None and model.canFetchMore(index):
             model.fetchMore(index)
         return view
+
+    def updatePreviewWidget(self, index: QModelIndex) -> None:  # noqa: N802
+        """Leaf item 用の空 preview 領域を表示しない。
+
+        QColumnView は子を持たない current index に preview widget 用の右側領域を
+        用意する。OmniDesk の column view ではファイル選択時に右側へ空カラムを
+        出したくないため、既存 preview を隠して標準実装は呼ばない。
+        """
+        widget = self.previewWidget()
+        if widget is not None:
+            widget.hide()
+            widget.setFixedWidth(0)
+        self.suppress_leaf_preview_artifacts()
+
+    def suppress_leaf_preview_artifacts(self) -> None:
+        """ファイル選択時に QColumnView が残す空 preview/item view を畳む。"""
+        current = self.currentIndex()
+        model = self.model()
+        if not current.isValid() or not isinstance(model, QFileSystemModel):
+            return
+        if model.isDir(current):
+            return
+        for view in self.findChildren(QAbstractItemView):
+            if isinstance(view, _ColumnListView):
+                continue
+            view.hide()
+            view.setFixedWidth(0)
+            view.viewport().hide()
+            view.verticalScrollBar().hide()
+            view.horizontalScrollBar().hide()
+
+    def restore_preview_artifact_constraints(self) -> None:
+        """ファイル preview 抑止で 0 幅にした Qt 内部 view を再利用可能に戻す。"""
+        for view in self.findChildren(QAbstractItemView):
+            if isinstance(view, _ColumnListView):
+                continue
+            view.setMinimumWidth(0)
+            view.setMaximumWidth(16777215)
+            view.viewport().show()
 
     # -- アクティブ列 --------------------------------------------------
     def active_directory(self) -> Path | None:
@@ -213,6 +262,24 @@ class _DarkColumnView(QColumnView):
             return None
         path = cast(QFileSystemModel, model).filePath(index.parent())
         return Path(path) if path else None
+
+    def set_focused_column_root(self, index: QModelIndex) -> None:
+        """最後にフォーカスまたはクリックされた列の root index を記録する。"""
+        self._focused_column_root = QModelIndex(index) if index.isValid() else QModelIndex()
+
+    def paste_directory(self) -> Path | None:
+        """貼り付け先として使うディレクトリを返す。
+
+        空フォルダ列では選択 item がないため currentIndex() だけでは貼り付け先を
+        表せない。最後に操作された列の root を優先し、未記録なら選択中 item の親へ
+        フォールバックする。
+        """
+        model = self.model()
+        if model is not None and self._focused_column_root.isValid():
+            path = cast(QFileSystemModel, model).filePath(self._focused_column_root)
+            if path:
+                return Path(path)
+        return self.active_directory()
 
     def column_views(self) -> list[_ColumnListView]:
         """内側のディレクトリごとの列を、作成順で返す。"""
@@ -236,6 +303,7 @@ class _DarkColumnView(QColumnView):
         （これから）削除されるので、スタイルを当てようとするとクラッシュする。
         """
         self._active_column = None
+        self._focused_column_root = QModelIndex()
 
     def _set_active_column(self, column: _ColumnListView | None) -> None:
         if column is self._active_column:
@@ -277,16 +345,18 @@ class _DarkColumnView(QColumnView):
             self.deleteRequested.emit()
             event.accept()
             return True
-        if modifiers == Qt.KeyboardModifier.ControlModifier:
-            signal = {
-                Qt.Key.Key_C: self.copyRequested,
-                Qt.Key.Key_X: self.cutRequested,
-                Qt.Key.Key_V: self.pasteRequested,
-            }.get(Qt.Key(key))
-            if signal is not None:
-                signal.emit()
-                event.accept()
-                return True
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self.copyRequested.emit()
+            event.accept()
+            return True
+        if event.matches(QKeySequence.StandardKey.Cut):
+            self.cutRequested.emit()
+            event.accept()
+            return True
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self.pasteRequested.emit()
+            event.accept()
+            return True
         return False
 
     def eventFilter(self, a0, a1) -> bool:  # noqa: N802
@@ -314,7 +384,12 @@ class ColumnBrowser(QWidget):
 
     currentPathChanged = pyqtSignal(Path)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        enable_local_shortcuts: bool = True,
+    ) -> None:
         super().__init__(parent)
         self._model = _ColumnFileSystemModel(self)
         self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
@@ -325,6 +400,7 @@ class ColumnBrowser(QWidget):
         # フォルダを開いた直後の1回だけ、新しい列が見えるようにスクロールするための
         # ワンショットフラグ。貼り付けや再読み込みでは立てないので視点が飛ばない。
         self._pending_reveal = False
+        self._reveal_token: object | None = None
         self._settling = False
         # 直前の選択の階層の深さ。浅い方へ移動した時だけ余白を詰める判断に使う。
         self._last_depth = 0
@@ -350,9 +426,7 @@ class ColumnBrowser(QWidget):
         self._path_edit.setClearButtonEnabled(True)
         self._path_edit.returnPressed.connect(self._handle_path_entered)
         self._up_shortcut: QShortcut | None = None
-        if parent is None:
-            # MainWindow 配下では同じ Alt+Up を ApplicationShortcut の QAction で
-            # 扱う。単体利用時だけローカルショートカットを作り、二重登録を避ける。
+        if enable_local_shortcuts:
             self._up_shortcut = QShortcut(QKeySequence("Alt+Up"), self)
             self._up_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             self._up_shortcut.activated.connect(self.go_up)
@@ -398,7 +472,9 @@ class ColumnBrowser(QWidget):
         index = self._model.setRootPath(str(target))
         self._view.setRootIndex(index)
         self._connect_selection_signals()
-        self._pending_reveal = True
+        self._cancel_pending_reveal()
+        self._view.horizontalScrollBar().setValue(0)
+        QTimer.singleShot(0, lambda: self._view.horizontalScrollBar().setValue(0))
         self._last_depth = len(target.parts)
         self.currentPathChanged.emit(target)
 
@@ -438,13 +514,19 @@ class ColumnBrowser(QWidget):
     def _handle_selection_changed(self, current: QModelIndex, _: QModelIndex) -> None:
         self._view.update_active_column(current)
         if not current.isValid():
-            self._pending_reveal = False
+            self._cancel_pending_reveal()
             return
         file_info = self._model.fileInfo(current)
         self._current_path = Path(file_info.absoluteFilePath())
         # フォルダを開くと右端に新しい列が出るので、それが見えるようにする。
         # ファイル選択では列が増えないのでスクロール位置は動かさない。
-        self._pending_reveal = file_info.isDir()
+        if file_info.isDir():
+            self._view.restore_preview_artifact_constraints()
+            self._schedule_reveal()
+        else:
+            self._cancel_pending_reveal()
+            self._view.suppress_leaf_preview_artifacts()
+            QTimer.singleShot(0, self._view.suppress_leaf_preview_artifacts)
         # 浅い階層へ戻った時だけ余白（デッドスペース）を詰める。深い階層へ進む時に
         # 詰めようとすると、まだ新しい列が配置されていない古いジオメトリを基に
         # スクロール最大値を縮めてしまい、左端へ強制スクロールされる不具合になる。
@@ -491,7 +573,7 @@ class ColumnBrowser(QWidget):
         if errors:
             QMessageBox.warning(self, "Move to Trash failed", "\n".join(errors))
         # 削除でスクロール位置が飛ばないように reveal を抑止する。
-        self._pending_reveal = False
+        self._cancel_pending_reveal()
         self._refresh_directories({path.parent for path in paths})
         self.focus_view()
 
@@ -515,14 +597,14 @@ class ColumnBrowser(QWidget):
         # 貼り付け先はアクティブ列のディレクトリ（選択中アイテムの親）。これにより
         # フォルダのコピーは自分自身の中ではなく兄弟として「- Copy」が作られ、別の
         # 列をクリックしてからの貼り付けはその列のフォルダに入る。
-        dest = self._view.active_directory() or paste_destination(self._current_path)
+        dest = self._view.paste_directory() or paste_destination(self._current_path)
         errors = perform_copy_or_move(paths, dest, move=move)
         if errors:
             QMessageBox.warning(self, "Operation issues", "\n".join(errors))
         # 貼り付けでスクロール位置が飛ばないように reveal を抑止する。
-        self._pending_reveal = False
+        self._cancel_pending_reveal()
         self._refresh_directories({dest} | {path.parent for path in paths})
-        if move:
+        if move and not errors:
             self._clipboard = None
         self.focus_view()
 
@@ -555,12 +637,29 @@ class ColumnBrowser(QWidget):
         # 戻った時だけ呼ぶことで、縮める方向が常に正しく左への誤スクロールを防ぐ。
         QTimer.singleShot(0, lambda: self._settle_columns(reveal=False))
 
+    def _schedule_reveal(self) -> None:
+        self._pending_reveal = True
+        token = object()
+        self._reveal_token = token
+        # QColumnView の列配置は遅延するため、rangeChanged が来ないケースでも少し
+        # 待ってから reveal する。rangeChanged が先に消費したら no-op になる。
+        QTimer.singleShot(0, lambda: QTimer.singleShot(0, lambda: self._reveal_if_pending(token)))
+
+    def _cancel_pending_reveal(self) -> None:
+        self._pending_reveal = False
+        self._reveal_token = None
+
+    def _reveal_if_pending(self, token: object) -> None:
+        if self._reveal_token is not token or not self._pending_reveal:
+            return
+        self._cancel_pending_reveal()
+        self._settle_columns(reveal=True)
+
     def _handle_scroll_range_changed(self, _minimum: int, _maximum: int) -> None:
         # QColumnView が列の配置を終えてスクロール範囲を更新した時点で発火する。
-        # ここでのジオメトリは正確なので、新しく開いた列の表示はここで1回だけ行う。
-        reveal = self._pending_reveal
-        self._pending_reveal = False
-        self._settle_columns(reveal=reveal)
+        # ここで一度 reveal する。ただし QColumnView がこの後さらに値を戻すことが
+        # あるため、予約済みの遅延 reveal はキャンセルせず最後にもう一度合わせる。
+        self._settle_columns(reveal=self._pending_reveal)
 
     def _settle_columns(self, *, reveal: bool) -> None:
         """余分なスクロール領域を詰め、必要なら開いた列を画面内に表示する。
@@ -576,12 +675,16 @@ class ColumnBrowser(QWidget):
             return
         self._settling = True
         try:
-            columns = [column for column in self._view.column_views() if column.isVisible()]
+            columns = [
+                column
+                for column in self._view.column_views()
+                if column.rootIndex().isValid() and column.width() > 0
+            ]
             hbar = self._view.horizontalScrollBar()
             viewport_right = max((column.x() + column.width() for column in columns), default=0)
             content_right = viewport_right_to_content_right(hbar.value(), viewport_right)
             desired = clamp_scroll_maximum(content_right, self._view.viewport().width())
-            if hbar.maximum() > desired:
+            if hbar.maximum() > desired or (reveal and hbar.maximum() < desired):
                 hbar.setMaximum(desired)
             if reveal:
                 hbar.setValue(desired)

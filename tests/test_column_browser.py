@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
 from PyQt6.QtCore import QModelIndex, QPoint, QPointF, Qt, QUrl
 from PyQt6.QtGui import QKeyEvent, QKeySequence, QWheelEvent
 from PyQt6.QtWidgets import QWidget
@@ -253,6 +255,20 @@ def test_deeper_directory_selection_waits_for_column_range_change(
     assert browser._last_depth == len(child.parts)
 
 
+def test_pending_reveal_is_consumed_even_without_range_change(monkeypatch, qtbot) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    settled: list[bool] = []
+    monkeypatch.setattr(browser, "_settle_columns", lambda *, reveal: settled.append(reveal))
+
+    browser._schedule_reveal()
+    qtbot.wait(20)
+
+    assert settled == [True]
+    assert browser._pending_reveal is False
+    assert browser._reveal_token is None
+
+
 def test_shallower_directory_selection_schedules_dead_space_settle(
     monkeypatch, qtbot, tmp_path: Path
 ) -> None:
@@ -303,6 +319,9 @@ def test_settle_columns_keeps_existing_offset_for_viewport_relative_columns(
         def __init__(self, width: int) -> None:
             self._width = width
 
+        def rootIndex(self) -> QModelIndex:  # noqa: N802
+            return browser._model.index(str(tmp_path))
+
         def isVisible(self) -> bool:  # noqa: N802
             return True
 
@@ -339,6 +358,62 @@ def test_settle_columns_keeps_existing_offset_for_viewport_relative_columns(
     assert hbar.value() == 640
 
 
+def test_deep_folder_selection_reveals_new_column(qtbot, tmp_path: Path) -> None:
+    current = tmp_path
+    chain: list[Path] = []
+    for depth in range(5):
+        current = current / f"level-{depth}"
+        current.mkdir()
+        chain.append(current)
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.resize(420, 300)
+    browser.show()
+    qtbot.waitExposed(browser)
+    browser.set_root_path(tmp_path)
+    qtbot.waitUntil(lambda: browser._model.index(str(chain[0])).isValid(), timeout=1000)
+
+    previous_max = browser._view.horizontalScrollBar().maximum()
+    for path in chain:
+        qtbot.waitUntil(lambda path=path: browser._model.index(str(path)).isValid(), timeout=1000)
+        browser._view.setCurrentIndex(browser._model.index(str(path)))
+        qtbot.waitUntil(
+            lambda: browser._view.horizontalScrollBar().value()
+            == browser._view.horizontalScrollBar().maximum(),
+            timeout=1000,
+        )
+        hbar = browser._view.horizontalScrollBar()
+        assert hbar.maximum() >= previous_max
+        assert hbar.value() == hbar.maximum()
+        previous_max = hbar.maximum()
+
+
+def test_set_root_path_keeps_initial_column_left_aligned(qtbot, tmp_path: Path) -> None:
+    for index in range(5):
+        (tmp_path / f"image-{index}.jpg").write_text("image", encoding="utf-8")
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.resize(120, 120)
+    browser.show()
+    qtbot.waitExposed(browser)
+
+    browser.set_root_path(tmp_path)
+    qtbot.wait(20)
+    browser.resize(740, 300)
+    qtbot.wait(20)
+
+    hbar = browser._view.horizontalScrollBar()
+    visible_columns = [
+        column
+        for column in browser._view.column_views()
+        if column.isVisible() and column.rootIndex().isValid()
+    ]
+    assert hbar.value() == 0
+    assert visible_columns
+    assert visible_columns[0].x() == 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path normalization semantics")
 def test_normalize_directory_key_is_case_and_separator_insensitive() -> None:
     assert normalize_directory_key("C:/Foo/Bar") == normalize_directory_key("C:\\foo\\bar")
     assert normalize_directory_key("/a/b/../b") == normalize_directory_key("/a/b")
@@ -360,6 +435,39 @@ def test_model_reports_directories_as_expandable_and_files_as_leaves(qtbot, tmp_
     assert browser._model.hasChildren(file_index) is False
 
 
+def test_file_selection_does_not_show_empty_preview_column(qtbot, tmp_path: Path) -> None:
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    image = folder / "image.jpg"
+    image.write_text("image", encoding="utf-8")
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.resize(900, 400)
+    browser.show()
+    qtbot.waitExposed(browser)
+    browser.set_root_path(tmp_path)
+
+    browser._view.setCurrentIndex(browser._model.index(str(folder)))
+    qtbot.wait(10)
+    browser._view.setCurrentIndex(browser._model.index(str(image)))
+    qtbot.wait(10)
+
+    visible_roots = {
+        Path(browser._model.filePath(column.rootIndex()))
+        for column in browser._view.column_views()
+        if column.isVisible() and column.rootIndex().isValid()
+    }
+    preview = browser._view.previewWidget()
+    leaf_artifacts = [
+        view
+        for view in browser._view.findChildren(column_browser_module.QAbstractItemView)
+        if type(view).__name__ != "_ColumnListView"
+    ]
+    assert image not in visible_roots
+    assert preview is None or not preview.isVisible()
+    assert all(not view.isVisible() and view.width() == 0 for view in leaf_artifacts)
+
+
 def test_alt_up_shortcut_navigates_to_parent(qtbot, tmp_path: Path) -> None:
     parent = tmp_path / "parent"
     child = parent / "child"
@@ -379,10 +487,18 @@ def test_alt_up_shortcut_navigates_to_parent(qtbot, tmp_path: Path) -> None:
     assert browser.current_path() == parent
 
 
-def test_parented_column_browser_defers_alt_up_shortcut_to_main_window(qtbot) -> None:
+def test_parented_column_browser_can_keep_local_alt_up_shortcut(qtbot) -> None:
     parent = QWidget()
     qtbot.addWidget(parent)
     browser = ColumnBrowser(parent)
+
+    assert browser._up_shortcut is not None
+
+
+def test_column_browser_can_disable_local_alt_up_shortcut(qtbot) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    browser = ColumnBrowser(parent, enable_local_shortcuts=False)
 
     assert browser._up_shortcut is None
 
@@ -500,6 +616,44 @@ def test_copy_then_paste_into_selected_directory(monkeypatch, qtbot, tmp_path: P
     assert (dest_dir / "src.txt").read_text(encoding="utf-8") == "payload"
     assert source.exists()  # copy keeps the original
     assert browser._clipboard is not None  # copy clipboard survives for re-paste
+
+
+def test_paste_uses_focused_empty_column_root(monkeypatch, qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    source = tmp_path / "src.txt"
+    source.write_text("payload", encoding="utf-8")
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+    browser.set_root_path(tmp_path)
+    monkeypatch.setattr(browser, "_selected_paths", lambda: [source])
+
+    browser._copy_selected()
+    browser._view.set_focused_column_root(browser._model.index(str(dest_dir)))
+    assert browser._view.paste_directory() == dest_dir
+    browser._paste_into_selection()
+
+    assert (dest_dir / "src.txt").read_text(encoding="utf-8") == "payload"
+    assert not (tmp_path / "src - Copy 1.txt").exists()
+
+
+def test_move_paste_keeps_clipboard_when_errors(monkeypatch, qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    source = tmp_path / "src.txt"
+    source.write_text("payload", encoding="utf-8")
+    browser.set_root_path(tmp_path)
+    browser._clipboard = {"paths": [source], "mode": "move"}
+    monkeypatch.setattr(
+        column_browser_module,
+        "perform_copy_or_move",
+        lambda _paths, _dest, *, move: ["failed"],
+    )
+    monkeypatch.setattr(column_browser_module.QMessageBox, "warning", lambda *args: None)
+
+    browser._paste_into_selection()
+
+    assert browser._clipboard == {"paths": [source], "mode": "move"}
 
 
 def test_cut_then_paste_moves_and_clears_clipboard(qtbot, tmp_path: Path) -> None:

@@ -41,7 +41,7 @@ class MainWindow(QMainWindow):
         self._tab_container.tabCountChanged.connect(self._update_action_state)
         self._tab_container.nameColumnWidthChanged.connect(self._handle_name_column_width_changed)
 
-        self._column_browser = ColumnBrowser(self)
+        self._column_browser = ColumnBrowser(self, enable_local_shortcuts=False)
         self._column_browser.currentPathChanged.connect(self._update_status_path)
 
         self._stack = QStackedWidget(self)

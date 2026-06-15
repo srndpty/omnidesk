@@ -115,8 +115,9 @@ class FakeTabContainer(QWidget):
 class FakeColumnBrowser(QWidget):
     currentPathChanged = pyqtSignal(Path)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, enable_local_shortcuts=True):
         super().__init__(parent)
+        self.enable_local_shortcuts = enable_local_shortcuts
         self._path = Path.cwd()
         self.calls: list[str] = []
 
@@ -181,6 +182,7 @@ def test_main_window_restores_column_session(monkeypatch, qtbot, tmp_path: Path)
 
     assert not window._is_tab_mode()
     assert window._tab_container.name_column_width == 222
+    assert window._column_browser.enable_local_shortcuts is False
     assert window._tab_container.tab_paths() == [first, second]
     assert window._tab_container.tab_pinned_states() == [True, False]
     assert window._column_browser.current_path() == second
