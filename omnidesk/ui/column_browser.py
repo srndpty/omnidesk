@@ -219,15 +219,15 @@ class _DarkColumnView(QColumnView):
         if widget is not None:
             widget.hide()
             widget.setFixedWidth(0)
-        self.suppress_leaf_preview_artifacts()
+        self.suppress_leaf_preview_artifacts(index)
 
-    def suppress_leaf_preview_artifacts(self) -> None:
+    def suppress_leaf_preview_artifacts(self, current: QModelIndex | None = None) -> None:
         """ファイル選択時に QColumnView が残す空 preview/item view を畳む。"""
-        current = self.currentIndex()
+        target = current if current is not None else self.currentIndex()
         model = self.model()
-        if not current.isValid() or not isinstance(model, QFileSystemModel):
+        if not target.isValid() or not isinstance(model, QFileSystemModel):
             return
-        if model.isDir(current):
+        if model.isDir(target):
             return
         for view in self.findChildren(QAbstractItemView):
             if isinstance(view, _ColumnListView):
@@ -245,7 +245,9 @@ class _DarkColumnView(QColumnView):
                 continue
             view.setMinimumWidth(0)
             view.setMaximumWidth(16777215)
+            view.show()
             view.viewport().show()
+            view.updateGeometry()
 
     # -- アクティブ列 --------------------------------------------------
     def active_directory(self) -> Path | None:
@@ -304,6 +306,21 @@ class _DarkColumnView(QColumnView):
         """
         self._active_column = None
         self._focused_column_root = QModelIndex()
+
+    def clear_navigation_state(self) -> None:
+        """ルート変更前に古い current/selection を破棄する。"""
+        self.clear_active_column()
+        selection_model = self.selectionModel()
+        if selection_model is not None:
+            selection_model.clear()
+        self.setCurrentIndex(QModelIndex())
+        for column in self.column_views():
+            if sip.isdeleted(column):
+                continue
+            column_selection_model = column.selectionModel()
+            if column_selection_model is not None:
+                column_selection_model.clear()
+            column.setCurrentIndex(QModelIndex())
 
     def _set_active_column(self, column: _ColumnListView | None) -> None:
         if column is self._active_column:
@@ -467,14 +484,14 @@ class ColumnBrowser(QWidget):
         self._current_path = target
         self._path_edit.setText(str(target))
         # ルートを変えると列が作り直されて既存の列は破棄される。ぶら下がる前に
-        # アクティブ列の参照を捨てておく。
-        self._view.clear_active_column()
+        # 古い current/selection とアクティブ列の参照を捨てておく。
+        self._view.clear_navigation_state()
         index = self._model.setRootPath(str(target))
         self._view.setRootIndex(index)
         self._connect_selection_signals()
         self._cancel_pending_reveal()
         self._view.horizontalScrollBar().setValue(0)
-        QTimer.singleShot(0, lambda: self._view.horizontalScrollBar().setValue(0))
+        self._single_shot(0, lambda: self._view.horizontalScrollBar().setValue(0))
         self._last_depth = len(target.parts)
         self.currentPathChanged.emit(target)
 
@@ -502,6 +519,16 @@ class ColumnBrowser(QWidget):
     def focus_view(self) -> None:
         self._view.setFocus(Qt.FocusReason.OtherFocusReason)
 
+    def _is_alive(self) -> bool:
+        return not sip.isdeleted(self) and not sip.isdeleted(self._view)
+
+    def _single_shot(self, msec: int, callback: Callable[[], None]) -> None:
+        def run_if_alive() -> None:
+            if self._is_alive():
+                callback()
+
+        QTimer.singleShot(msec, run_if_alive)
+
     # ------------------------------------------------------------------
     def _handle_activated(self, index: QModelIndex) -> None:
         file_info = self._model.fileInfo(index)
@@ -525,8 +552,9 @@ class ColumnBrowser(QWidget):
             self._schedule_reveal()
         else:
             self._cancel_pending_reveal()
-            self._view.suppress_leaf_preview_artifacts()
-            QTimer.singleShot(0, self._view.suppress_leaf_preview_artifacts)
+            leaf_index = QModelIndex(current)
+            self._view.suppress_leaf_preview_artifacts(leaf_index)
+            self._single_shot(0, lambda: self._view.suppress_leaf_preview_artifacts(leaf_index))
         # 浅い階層へ戻った時だけ余白（デッドスペース）を詰める。深い階層へ進む時に
         # 詰めようとすると、まだ新しい列が配置されていない古いジオメトリを基に
         # スクロール最大値を縮めてしまい、左端へ強制スクロールされる不具合になる。
@@ -594,9 +622,9 @@ class ColumnBrowser(QWidget):
         if not paths:
             return
         move = self._clipboard["mode"] == "move"
-        # 貼り付け先はアクティブ列のディレクトリ（選択中アイテムの親）。これにより
-        # フォルダのコピーは自分自身の中ではなく兄弟として「- Copy」が作られ、別の
-        # 列をクリックしてからの貼り付けはその列のフォルダに入る。
+        # 貼り付け先は最後にフォーカス/クリックされた列のディレクトリを優先する。
+        # 空フォルダ列では選択 item がないため root を使い、未記録なら選択中 item
+        # の親へフォールバックする。
         dest = self._view.paste_directory() or paste_destination(self._current_path)
         errors = perform_copy_or_move(paths, dest, move=move)
         if errors:
@@ -635,7 +663,7 @@ class ColumnBrowser(QWidget):
     def _schedule_settle(self) -> None:
         # 余白（デッドスペース）を詰めるだけの settle。reveal はしない。浅い階層へ
         # 戻った時だけ呼ぶことで、縮める方向が常に正しく左への誤スクロールを防ぐ。
-        QTimer.singleShot(0, lambda: self._settle_columns(reveal=False))
+        self._single_shot(0, lambda: self._settle_columns(reveal=False))
 
     def _schedule_reveal(self) -> None:
         self._pending_reveal = True
@@ -643,7 +671,7 @@ class ColumnBrowser(QWidget):
         self._reveal_token = token
         # QColumnView の列配置は遅延するため、rangeChanged が来ないケースでも少し
         # 待ってから reveal する。rangeChanged が先に消費したら no-op になる。
-        QTimer.singleShot(0, lambda: QTimer.singleShot(0, lambda: self._reveal_if_pending(token)))
+        self._single_shot(0, lambda: self._single_shot(0, lambda: self._reveal_if_pending(token)))
 
     def _cancel_pending_reveal(self) -> None:
         self._pending_reveal = False
@@ -675,11 +703,19 @@ class ColumnBrowser(QWidget):
             return
         self._settling = True
         try:
-            columns = [
+            visible_columns = [
                 column
                 for column in self._view.column_views()
-                if column.rootIndex().isValid() and column.width() > 0
+                if column.isVisible() and column.rootIndex().isValid() and column.width() > 0
             ]
+            columns = visible_columns
+            if reveal:
+                reveal_columns = [
+                    column
+                    for column in self._view.column_views()
+                    if column.rootIndex().isValid() and column.width() > 0
+                ]
+                columns = reveal_columns or visible_columns
             hbar = self._view.horizontalScrollBar()
             viewport_right = max((column.x() + column.width() for column in columns), default=0)
             content_right = viewport_right_to_content_right(hbar.value(), viewport_right)

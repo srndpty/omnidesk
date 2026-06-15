@@ -93,6 +93,25 @@ def test_go_up_moves_from_displayed_root_not_selection(qtbot, tmp_path: Path) ->
     assert browser.current_path() == tmp_path
 
 
+def test_set_root_path_clears_stale_navigation_state(qtbot, tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    child = first / "child"
+    child.mkdir(parents=True)
+    second.mkdir()
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(first)
+    child_index = browser._model.index(str(child))
+    browser._view.setCurrentIndex(child_index)
+    browser._view.set_focused_column_root(child_index)
+
+    browser.set_root_path(second)
+
+    assert not browser._view.currentIndex().isValid()
+    assert browser._view.paste_directory() is None
+
+
 def test_handle_selection_changed_ignores_invalid_index(qtbot) -> None:
     browser = ColumnBrowser()
     qtbot.addWidget(browser)
@@ -315,18 +334,20 @@ def test_viewport_right_to_content_right_preserves_horizontal_offset() -> None:
 def test_settle_columns_keeps_existing_offset_for_viewport_relative_columns(
     monkeypatch, qtbot, tmp_path: Path
 ) -> None:
-    class _VisibleColumn:
-        def __init__(self, width: int) -> None:
+    class _Column:
+        def __init__(self, *, x: int, width: int, visible: bool) -> None:
+            self._x = x
             self._width = width
+            self._visible = visible
 
         def rootIndex(self) -> QModelIndex:  # noqa: N802
             return browser._model.index(str(tmp_path))
 
         def isVisible(self) -> bool:  # noqa: N802
-            return True
+            return self._visible
 
         def x(self) -> int:
-            return 0
+            return self._x
 
         def width(self) -> int:
             return self._width
@@ -349,13 +370,65 @@ def test_settle_columns_keeps_existing_offset_for_viewport_relative_columns(
     monkeypatch.setattr(
         browser._view,
         "column_views",
-        lambda: [_VisibleColumn(viewport_width)],
+        lambda: [
+            _Column(x=0, width=viewport_width, visible=True),
+            _Column(x=1600, width=viewport_width, visible=False),
+        ],
     )
 
     browser._settle_columns(reveal=False)
 
     assert hbar.maximum() == 640
     assert hbar.value() == 640
+
+
+def test_reveal_settle_can_use_pending_hidden_columns(monkeypatch, qtbot, tmp_path: Path) -> None:
+    class _Column:
+        def __init__(self, *, x: int, width: int, visible: bool) -> None:
+            self._x = x
+            self._width = width
+            self._visible = visible
+
+        def rootIndex(self) -> QModelIndex:  # noqa: N802
+            return browser._model.index(str(tmp_path))
+
+        def isVisible(self) -> bool:  # noqa: N802
+            return self._visible
+
+        def x(self) -> int:
+            return self._x
+
+        def width(self) -> int:
+            return self._width
+
+        def viewport(self):
+            return self
+
+        def update(self) -> None:
+            return None
+
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    browser.resize(420, 300)
+    hbar = browser._view.horizontalScrollBar()
+    browser._settling = True
+    hbar.setRange(0, 0)
+    browser._settling = False
+    viewport_width = browser._view.viewport().width()
+    monkeypatch.setattr(
+        browser._view,
+        "column_views",
+        lambda: [
+            _Column(x=0, width=viewport_width, visible=True),
+            _Column(x=viewport_width, width=viewport_width, visible=False),
+        ],
+    )
+
+    browser._settle_columns(reveal=True)
+
+    assert hbar.maximum() == viewport_width
+    assert hbar.value() == viewport_width
 
 
 def test_deep_folder_selection_reveals_new_column(qtbot, tmp_path: Path) -> None:
@@ -466,6 +539,42 @@ def test_file_selection_does_not_show_empty_preview_column(qtbot, tmp_path: Path
     assert image not in visible_roots
     assert preview is None or not preview.isVisible()
     assert all(not view.isVisible() and view.width() == 0 for view in leaf_artifacts)
+
+
+def test_leaf_preview_artifact_suppression_uses_given_index(qtbot, tmp_path: Path) -> None:
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    image = tmp_path / "image.jpg"
+    image.write_text("image", encoding="utf-8")
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    artifact = column_browser_module.QListView(browser._view)
+    artifact.show()
+    artifact.viewport().show()
+
+    browser._view.setCurrentIndex(browser._model.index(str(folder)))
+    browser._view.suppress_leaf_preview_artifacts(browser._model.index(str(image)))
+
+    assert artifact.isHidden()
+    assert artifact.width() == 0
+
+
+def test_restore_preview_artifact_constraints_shows_suppressed_view(qtbot, tmp_path: Path) -> None:
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    artifact = column_browser_module.QListView(browser._view)
+    artifact.setFixedWidth(0)
+    artifact.hide()
+    artifact.viewport().hide()
+
+    browser._view.restore_preview_artifact_constraints()
+
+    assert artifact.minimumWidth() == 0
+    assert artifact.maximumWidth() == 16777215
+    assert not artifact.isHidden()
+    assert not artifact.viewport().isHidden()
 
 
 def test_alt_up_shortcut_navigates_to_parent(qtbot, tmp_path: Path) -> None:
@@ -597,7 +706,9 @@ def test_ctrl_keys_emit_clipboard_requests(qtbot, tmp_path: Path) -> None:
             assert browser._view.handle_shortcut_key(event) is True
 
 
-def test_copy_then_paste_into_selected_directory(monkeypatch, qtbot, tmp_path: Path) -> None:
+def test_paste_falls_back_to_current_path_when_no_column_context(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
     browser = ColumnBrowser()
     qtbot.addWidget(browser)
     source = tmp_path / "src.txt"
