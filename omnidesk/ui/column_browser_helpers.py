@@ -7,16 +7,22 @@ from pathlib import Path
 
 LOADING_PLACEHOLDER = "読み込み中…"
 EMPTY_PLACEHOLDER = "（空のフォルダ）"
+ERROR_PLACEHOLDER = "読み込みできません"
 
 
-def column_placeholder_text(*, row_count: int, loaded: bool) -> str | None:
+def column_placeholder_text(
+    *, row_count: int, loaded: bool, error: str | None = None
+) -> str | None:
     """空の列に重ねて表示する文言を返す。
 
-    読み込み中のディレクトリと、読み込みが終わって中身が無いディレクトリを
-    区別し、両者が見た目で見分けられるようにする。
+    読み込み中のディレクトリ・読み込み済みで空のディレクトリ・読み込みに失敗した
+    ディレクトリ（アクセス拒否や壊れたリンクなど）を区別し、見た目で見分けられる
+    ようにする。
     """
     if row_count > 0:
         return None
+    if error is not None:
+        return ERROR_PLACEHOLDER
     return EMPTY_PLACEHOLDER if loaded else LOADING_PLACEHOLDER
 
 

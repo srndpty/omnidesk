@@ -13,7 +13,8 @@ from .file_operations import delete_paths, perform_copy_or_move
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
 
-    from .column_browser_views import _ColumnFileSystemModel, _DarkColumnView
+    from .column_browser_model import _ColumnFileSystemModel
+    from .column_browser_views import _DarkColumnView
 
     # 実体は ``ColumnBrowser(ColumnBrowserOperationsMixin, QWidget)`` で混入される。
     # 型チェック時だけ QWidget を基底に見せ、QMessageBox の parent 引数などに

@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
+from typing import cast
 
 from PyQt6 import sip
 from PyQt6.QtCore import (
+    QAbstractAnimation,
+    QByteArray,
     QDir,
+    QEasingCurve,
     QModelIndex,
+    QPropertyAnimation,
     Qt,
     QTimer,
     QUrl,
@@ -41,12 +47,14 @@ from .column_browser_helpers import (
     paste_destination,
     viewport_right_to_content_right,
 )
+from .column_browser_model import _ColumnFileSystemModel
 from .column_browser_operations import ColumnBrowserOperationsMixin, _ClipboardPayload
 from .column_browser_views import (
-    _ColumnFileSystemModel,
     _ColumnListView,
     _DarkColumnView,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "EMPTY_PLACEHOLDER",
@@ -78,13 +86,18 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
         self._model.setResolveSymlinks(True)
         self._model.setReadOnly(True)
-        self._loaded_dirs: set[str] = set()
         self._clipboard: _ClipboardPayload | None = None
         # フォルダを開いた直後の1回だけ、新しい列が見えるようにスクロールするための
         # ワンショットフラグ。貼り付けや再読み込みでは立てないので視点が飛ばない。
         self._pending_reveal = False
         self._reveal_token: object | None = None
         self._settling = False
+        self._horizontal_scroll_animation: QPropertyAnimation | None = None
+        self._pending_scroll_maximum: int | None = None
+        self._previous_horizontal_scroll_value = 0
+        self._last_horizontal_scroll_value = 0
+        self._previous_horizontal_scroll_maximum = 0
+        self._last_horizontal_scroll_maximum = 0
         # 直前の選択の階層の深さ。浅い方へ移動した時だけ余白を詰める判断に使う。
         self._last_depth = 0
         # 表示中のベースディレクトリ（左端の列）。選択中アイテムとは区別して保持する。
@@ -93,6 +106,7 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
 
         self._view = _DarkColumnView(self)
         self._view.set_directory_loaded_predicate(self._is_directory_loaded)
+        self._view.set_directory_error_provider(self._directory_error)
         self._view.setModel(self._model)
         self._view.setAlternatingRowColors(True)
         self._view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
@@ -103,7 +117,9 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         self._view.pasteRequested.connect(self._paste_into_selection)
         # QColumnView は列を遅延配置するため、スクロール範囲が確定するのは
         # スクロールバーの range が変わった時点。新しい列の表示はその時に行う。
-        self._view.horizontalScrollBar().rangeChanged.connect(self._handle_scroll_range_changed)
+        hbar = self._view.horizontalScrollBar()
+        hbar.valueChanged.connect(self._handle_horizontal_scroll_value_changed)
+        hbar.rangeChanged.connect(self._handle_scroll_range_changed)
 
         self._path_edit = QLineEdit(self)
         self._path_edit.setClearButtonEnabled(True)
@@ -154,11 +170,19 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         # 古い current/selection とアクティブ列の参照を捨てておく。
         self._view.clear_navigation_state()
         index = self._model.setRootPath(str(target))
+        assert self._model._is_attached_index(index)
+        self._model.rescan_if_loaded(index)
+        # 別ツリーへ移る前に、旧ツリーで走っている（または待機中の）スキャンを止める。
+        # スキャンプールはスレッド数が限られるため、巨大フォルダのスキャンが居座ると
+        # 新ルートのスキャンが順番待ちになり、列が「読み込み中…」のまま展開されない。
+        self._cancel_stale_directory_scans(target)
         self._view.setRootIndex(index)
         self._connect_selection_signals()
         self._cancel_pending_reveal()
+        self._stop_horizontal_scroll_animation()
         self._view.horizontalScrollBar().setValue(0)
         self._single_shot(0, lambda: self._view.horizontalScrollBar().setValue(0))
+        self._reset_horizontal_scroll_history()
         self._last_depth = len(target.parts)
         self.currentPathChanged.emit(target)
 
@@ -212,23 +236,25 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
             return
         file_info = self._model.fileInfo(current)
         self._current_path = Path(file_info.absoluteFilePath())
+        depth = len(self._current_path.parts)
         # フォルダを開くと右端に新しい列が出るので、それが見えるようにする。
         # ファイル選択では列が増えないのでスクロール位置は動かさない。
         if file_info.isDir():
+            self._cancel_stale_directory_scans(self._current_path)
+            self._model.rescan_if_loaded(current)
             self._view.restore_preview_artifact_constraints()
-            self._schedule_reveal()
+            if depth < self._last_depth:
+                self._cancel_pending_reveal()
+                self._restore_horizontal_scroll_before_shallow_animation()
+                self._schedule_settle()
+            else:
+                self._schedule_reveal()
         else:
             self._cancel_pending_reveal()
             leaf_index = QModelIndex(current)
             leaf_path = self._model.filePath(current)
             self._view.suppress_leaf_preview_artifacts(leaf_index)
             self._single_shot(0, lambda: self._suppress_leaf_preview_if_current(leaf_path))
-        # 浅い階層へ戻った時だけ余白（デッドスペース）を詰める。深い階層へ進む時に
-        # 詰めようとすると、まだ新しい列が配置されていない古いジオメトリを基に
-        # スクロール最大値を縮めてしまい、左端へ強制スクロールされる不具合になる。
-        depth = len(self._current_path.parts)
-        if depth < self._last_depth:
-            self._schedule_settle()
         self._last_depth = depth
         if file_info.isDir():
             self.currentPathChanged.emit(self._current_path)
@@ -250,16 +276,35 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
     def _is_directory_loaded(self, index: QModelIndex) -> bool:
         if not index.isValid():
             return True
-        return normalize_directory_key(self._model.filePath(index)) in self._loaded_dirs
+        # 正の状態源は model の node.loaded のみ。古い _loaded_dirs を OR していると、
+        # refresh 中の再スキャン時に「読み込み中…」ではなく「空のフォルダ」と誤表示する。
+        return self._model.is_directory_loaded(index)
 
-    def _handle_directory_loaded(self, path: str) -> None:
-        self._loaded_dirs.add(normalize_directory_key(path))
+    def _directory_error(self, index: QModelIndex) -> str | None:
+        if not index.isValid():
+            return None
+        return self._model.directory_error(index)
+
+    def _handle_directory_loaded(self, _path: str) -> None:
         # 読み込みが終わったディレクトリは空になった（プレースホルダが変わる）かも
         # しれないので、列を再描画して「読み込み中…」を「（空のフォルダ）」へ更新する。
         # ここではスクロールには触れない（reveal は range 変化時のみ）。読み込みは
         # レイアウト確定前にも届きうるため、ここで詰めると左へ飛ぶ恐れがある。
         for column in self._view.column_views():
             column.viewport().update()
+
+    def _cancel_stale_directory_scans(self, current: Path) -> None:
+        cancel_scans_except = getattr(self._model, "cancel_scans_except", None)
+        if not callable(cancel_scans_except):
+            return
+        allowed = {self._root_path}
+        current_path = current
+        while current_path != current_path.parent:
+            allowed.add(current_path)
+            if current_path == self._root_path:
+                break
+            current_path = current_path.parent
+        cancel_scans_except(allowed)
 
     def _schedule_settle(self) -> None:
         # 余白（デッドスペース）を詰めるだけの settle。reveal はしない。浅い階層へ
@@ -278,13 +323,80 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         self._pending_reveal = False
         self._reveal_token = None
 
+    def _handle_horizontal_scroll_value_changed(self, value: int) -> None:
+        if self._horizontal_scroll_animation is not None:
+            return
+        self._previous_horizontal_scroll_value = self._last_horizontal_scroll_value
+        self._last_horizontal_scroll_value = value
+
+    def _stop_horizontal_scroll_animation(self) -> None:
+        animation = self._horizontal_scroll_animation
+        if animation is None:
+            return
+        self._horizontal_scroll_animation = None
+        self._pending_scroll_maximum = None
+        animation.stop()
+        animation.deleteLater()
+
+    def _reset_horizontal_scroll_history(self) -> None:
+        hbar = self._view.horizontalScrollBar()
+        value = hbar.value()
+        maximum = hbar.maximum()
+        self._previous_horizontal_scroll_value = value
+        self._last_horizontal_scroll_value = value
+        self._previous_horizontal_scroll_maximum = maximum
+        self._last_horizontal_scroll_maximum = maximum
+
+    def _restore_horizontal_scroll_before_shallow_animation(self) -> None:
+        hbar = self._view.horizontalScrollBar()
+        current = hbar.value()
+        start_value = max(
+            self._previous_horizontal_scroll_value,
+            self._last_horizontal_scroll_value,
+            current,
+        )
+        if start_value <= current:
+            logger.debug(
+                "Column shallow scroll restore skipped current=%d previous=%d last=%d maximum=%d",
+                current,
+                self._previous_horizontal_scroll_value,
+                self._last_horizontal_scroll_value,
+                hbar.maximum(),
+            )
+            return
+        maximum = max(
+            self._previous_horizontal_scroll_maximum,
+            self._last_horizontal_scroll_maximum,
+            hbar.maximum(),
+            start_value,
+        )
+        logger.debug(
+            "Column shallow scroll restore current=%d start=%d max=%d previous_max=%d last_max=%d",
+            current,
+            start_value,
+            maximum,
+            self._previous_horizontal_scroll_maximum,
+            self._last_horizontal_scroll_maximum,
+        )
+        self._settling = True
+        try:
+            if hbar.maximum() < maximum:
+                hbar.setMaximum(maximum)
+            hbar.setValue(start_value)
+        finally:
+            self._settling = False
+        self._previous_horizontal_scroll_value = current
+        self._last_horizontal_scroll_value = start_value
+
     def _reveal_if_pending(self, token: object) -> None:
         if self._reveal_token is not token or not self._pending_reveal:
             return
         self._cancel_pending_reveal()
         self._settle_columns(reveal=True)
 
-    def _handle_scroll_range_changed(self, _minimum: int, _maximum: int) -> None:
+    def _handle_scroll_range_changed(self, _minimum: int, maximum: int) -> None:
+        self._previous_horizontal_scroll_maximum = self._last_horizontal_scroll_maximum
+        self._last_horizontal_scroll_maximum = maximum
         # QColumnView が列の配置を終えてスクロール範囲を更新した時点で発火する。
         # ここで一度 reveal する。ただし QColumnView がこの後さらに値を戻すことが
         # あるため、予約済みの遅延 reveal はキャンセルせず最後にもう一度合わせる。
@@ -323,16 +435,86 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
             viewport_right = max((column.x() + column.width() for column in columns), default=0)
             content_right = viewport_right_to_content_right(hbar.value(), viewport_right)
             desired = clamp_scroll_maximum(content_right, self._view.viewport().width())
+            if not reveal and hbar.value() > desired:
+                logger.debug(
+                    "Column shallow scroll animate start=%d target=%d maximum=%d",
+                    hbar.value(),
+                    desired,
+                    hbar.maximum(),
+                )
+                self._animate_horizontal_scroll_left(desired)
+                return
+            self._stop_horizontal_scroll_animation()
             if hbar.maximum() > desired or (reveal and hbar.maximum() < desired):
                 hbar.setMaximum(desired)
             if reveal:
                 hbar.setValue(desired)
         finally:
+            # 列の表示漏れ対策は _settling=True のうちに行う。show() が誘発する
+            # rangeChanged は再入ガードで無視され、無限ループにならない。
+            self._ensure_relevant_columns_visible()
+            self._settling = False
+
+    def _animate_horizontal_scroll_left(self, target_value: int) -> None:
+        hbar = self._view.horizontalScrollBar()
+        start_value = hbar.value()
+        if start_value <= target_value:
+            if hbar.maximum() > target_value:
+                hbar.setMaximum(target_value)
+            return
+        self._stop_horizontal_scroll_animation()
+        self._pending_scroll_maximum = target_value
+        # PyQt6 は実行時に bytes を受け付けるが、QByteArray の型スタブに bytes 受け取りの
+        # コンストラクタが無いため、cast で QByteArray として渡す。
+        animation = QPropertyAnimation(hbar, cast(QByteArray, b"value"), self)
+        animation.setStartValue(start_value)
+        animation.setEndValue(target_value)
+        animation.setDuration(180)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(self._finish_horizontal_scroll_left)
+        self._horizontal_scroll_animation = animation
+        animation.start(QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
+
+    def _finish_horizontal_scroll_left(self) -> None:
+        animation = self._horizontal_scroll_animation
+        self._horizontal_scroll_animation = None
+        target_value = self._pending_scroll_maximum
+        self._pending_scroll_maximum = None
+        if animation is not None:
+            animation.deleteLater()
+        if target_value is None or not self._is_alive():
+            return
+        hbar = self._view.horizontalScrollBar()
+        self._settling = True
+        try:
+            hbar.setValue(target_value)
+            if hbar.maximum() > target_value:
+                hbar.setMaximum(target_value)
+        finally:
+            self._ensure_relevant_columns_visible()
             self._settling = False
 
     def _is_reveal_relevant_column(self, column: _ColumnListView) -> bool:
         root_path = self._model.filePath(column.rootIndex())
         return is_same_or_ancestor_path(root_path, str(self._current_path))
+
+    def _ensure_relevant_columns_visible(self) -> None:
+        """現在パス上の列で、配置済みなのに非表示のままの列を明示的に表示する。
+
+        QColumnView は深い階層から浅い別ツリーへジャンプして複数列を一度に作り直す
+        とき、新しい列を正しい位置・幅に配置しながら show() し損ねることがある
+        （visible=False のまま中身が見えない）。現在パスの祖先・自身に当たり、幅を
+        持つ列は必ず可視化することで、列の表示漏れを補う。
+        """
+        current = str(self._current_path)
+        for column in self._view.column_views():
+            root = column.rootIndex()
+            if not root.isValid() or column.width() <= 0:
+                continue
+            if not is_same_or_ancestor_path(self._model.filePath(root), current):
+                continue
+            if not column.isVisible():
+                column.show()
 
     def _connect_selection_signals(self) -> None:
         selection_model = self._view.selectionModel()

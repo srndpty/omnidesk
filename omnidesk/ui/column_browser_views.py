@@ -15,7 +15,6 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QColor,
-    QFileSystemModel,
     QFocusEvent,
     QKeyEvent,
     QKeySequence,
@@ -32,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .column_browser_helpers import column_placeholder_text
+from .column_browser_model import _ColumnFileSystemModel
 
 _COLUMN_VIEW_STYLESHEET = """
 QColumnView,
@@ -50,22 +50,6 @@ _PLACEHOLDER_COLOR = "#9aa0a6"
 _ACTIVE_COLUMN_BORDER_COLOR = "#3d6fb4"
 
 
-class _ColumnFileSystemModel(QFileSystemModel):
-    """ディレクトリを常に「子を持つ」と報告するファイルシステムモデル。
-
-    ``QColumnView`` は現在の index が子を持つ場合だけ子の列を作る。すべての
-    ディレクトリに子があると報告させることで、空のディレクトリでも列を必ず作り
-    （「空のフォルダ」表示を出せる）、一方ファイルは子なしのままにして、ファイル
-    選択では列が増えないようにする。
-    """
-
-    def hasChildren(self, parent: QModelIndex | None = None) -> bool:  # noqa: N802
-        effective_parent = parent if parent is not None else QModelIndex()
-        if not effective_parent.isValid():
-            return super().hasChildren(effective_parent)
-        return self.isDir(effective_parent)
-
-
 class _ColumnListView(QListView):
     """中身が無いときに「読み込み中／空」プレースホルダを重ねて描く1列分のビュー。"""
 
@@ -73,11 +57,19 @@ class _ColumnListView(QListView):
         self,
         parent: QWidget | None,
         is_directory_loaded: Callable[[QModelIndex], bool],
+        directory_error: Callable[[QModelIndex], str | None],
         column_view: _DarkColumnView,
     ) -> None:
         super().__init__(parent)
         self._is_directory_loaded = is_directory_loaded
+        self._directory_error = directory_error
         self._column_view = column_view
+        # 項目数の多いフォルダ（数万件）でフリーズしないよう、リスト列を仮想化する。
+        # ファイル列はアイテム高さが一定なので uniform item sizes が安全に効き、
+        # 全件の sizeHint 計算を避けられる。さらに Batched レイアウトで初回配置を
+        # 分割し、イベントループをブロックしないようにする。
+        self.setUniformItemSizes(True)
+        self.setLayoutMode(QListView.LayoutMode.Batched)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         # フォーカスは内側の列にあるため、共有ショートカット（Delete, Ctrl+C/X/V）は
@@ -105,6 +97,7 @@ class _ColumnListView(QListView):
                 text = column_placeholder_text(
                     row_count=model.rowCount(root),
                     loaded=self._is_directory_loaded(root),
+                    error=self._directory_error(root),
                 )
                 if text:
                     painter.setPen(QColor(_PLACEHOLDER_COLOR))
@@ -128,15 +121,21 @@ class _DarkColumnView(QColumnView):
         super().__init__(parent)
         self.setStyleSheet(_COLUMN_VIEW_STYLESHEET)
         self._is_directory_loaded: Callable[[QModelIndex], bool] = lambda _index: True
+        self._directory_error: Callable[[QModelIndex], str | None] = lambda _index: None
         self._active_column: _ColumnListView | None = None
         self._focused_column_root = QModelIndex()
 
     def set_directory_loaded_predicate(self, predicate: Callable[[QModelIndex], bool]) -> None:
         self._is_directory_loaded = predicate
 
+    def set_directory_error_provider(self, provider: Callable[[QModelIndex], str | None]) -> None:
+        self._directory_error = provider
+
     def createColumn(self, index: QModelIndex) -> QAbstractItemView:  # noqa: N802
         self.restore_preview_artifact_constraints()
-        view = _ColumnListView(self.viewport(), self._is_directory_loaded, self)
+        view = _ColumnListView(
+            self.viewport(), self._is_directory_loaded, self._directory_error, self
+        )
         self.initializeColumn(view)
         view.setRootIndex(index)
         # ホイールイベントはカーソル直下のウィジェットに届くため、内側の列のリスト
@@ -144,9 +143,6 @@ class _DarkColumnView(QColumnView):
         view.installEventFilter(self)
         view.viewport().installEventFilter(self)
         view.verticalScrollBar().installEventFilter(self)
-        model = self.model()
-        if model is not None and model.canFetchMore(index):
-            model.fetchMore(index)
         return view
 
     def updatePreviewWidget(self, index: QModelIndex) -> None:  # noqa: N802
@@ -166,7 +162,7 @@ class _DarkColumnView(QColumnView):
         """ファイル選択時に QColumnView が残す空 preview/item view を畳む。"""
         target = current if current is not None else self.currentIndex()
         model = self.model()
-        if not target.isValid() or not isinstance(model, QFileSystemModel):
+        if not target.isValid() or not isinstance(model, _ColumnFileSystemModel):
             return
         if model.isDir(target):
             return
@@ -203,7 +199,7 @@ class _DarkColumnView(QColumnView):
         model = self.model()
         if model is None:
             return None
-        path = cast(QFileSystemModel, model).filePath(index.parent())
+        path = cast(_ColumnFileSystemModel, model).filePath(index.parent())
         return Path(path) if path else None
 
     def set_focused_column_root(self, index: QModelIndex) -> None:
@@ -219,7 +215,7 @@ class _DarkColumnView(QColumnView):
         """
         model = self.model()
         if model is not None and self._focused_column_root.isValid():
-            path = cast(QFileSystemModel, model).filePath(self._focused_column_root)
+            path = cast(_ColumnFileSystemModel, model).filePath(self._focused_column_root)
             if path:
                 return Path(path)
         return self.active_directory()
