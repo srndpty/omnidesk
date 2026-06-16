@@ -251,6 +251,11 @@ def _filter_value(filters: Any) -> int:
     return int(value)
 
 
+def _role_value(role: Any) -> int:
+    value = getattr(role, "value", role)
+    return int(value)
+
+
 def _has_filter(filters: int, flag: QDir.Filter) -> bool:
     return bool(filters & int(flag.value))
 
@@ -366,15 +371,16 @@ class _ColumnFileSystemModel(QAbstractItemModel):
             return QModelIndex()
         return self.createIndex(node.parent.row, 0, node.parent)
 
-    def data(self, index: QModelIndex, role: int = int(Qt.ItemDataRole.DisplayRole)) -> object:
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole.value) -> object:
         node = self._node_from_index(index)
         if node is None:
             return None
-        if role == int(Qt.ItemDataRole.DisplayRole):
+        role_value = _role_value(role)
+        if role_value == Qt.ItemDataRole.DisplayRole.value:
             return node.name
-        if role == int(Qt.ItemDataRole.DecorationRole):
+        if role_value == Qt.ItemDataRole.DecorationRole.value:
             return self._icon_for_node(node)
-        if role == int(Qt.ItemDataRole.ToolTipRole):
+        if role_value == Qt.ItemDataRole.ToolTipRole.value:
             return str(node.path)
         return None
 
