@@ -9,6 +9,7 @@ from PyQt6.QtGui import QKeyEvent, QKeySequence, QWheelEvent
 from PyQt6.QtWidgets import QWidget
 
 import omnidesk.ui.column_browser as column_browser_module
+import omnidesk.ui.column_browser_operations as column_browser_operations_module
 from omnidesk.ui.column_browser import (
     EMPTY_PLACEHOLDER,
     LOADING_PLACEHOLDER,
@@ -682,7 +683,7 @@ def test_delete_selected_confirms_then_trashes(monkeypatch, qtbot, tmp_path: Pat
     )
     trashed: list[list[Path]] = []
     monkeypatch.setattr(
-        column_browser_module, "delete_paths", lambda paths: trashed.append(paths) or []
+        column_browser_operations_module, "delete_paths", lambda paths: trashed.append(paths) or []
     )
 
     browser._delete_selected()
@@ -704,7 +705,7 @@ def test_delete_selected_aborts_when_declined(monkeypatch, qtbot, tmp_path: Path
     )
     called: list[object] = []
     monkeypatch.setattr(
-        column_browser_module, "delete_paths", lambda paths: called.append(paths) or []
+        column_browser_operations_module, "delete_paths", lambda paths: called.append(paths) or []
     )
 
     browser._delete_selected()
@@ -797,7 +798,7 @@ def test_move_paste_keeps_clipboard_when_errors(monkeypatch, qtbot, tmp_path: Pa
     browser.set_root_path(tmp_path)
     browser._clipboard = {"paths": [source], "mode": "move"}
     monkeypatch.setattr(
-        column_browser_module,
+        column_browser_operations_module,
         "perform_copy_or_move",
         lambda _paths, _dest, *, move: ["failed"],
     )
