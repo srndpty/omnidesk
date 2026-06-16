@@ -171,6 +171,7 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         self._view.clear_navigation_state()
         index = self._model.setRootPath(str(target))
         assert self._model._is_attached_index(index)
+        self._model.rescan_if_loaded(index)
         # 別ツリーへ移る前に、旧ツリーで走っている（または待機中の）スキャンを止める。
         # スキャンプールはスレッド数が限られるため、巨大フォルダのスキャンが居座ると
         # 新ルートのスキャンが順番待ちになり、列が「読み込み中…」のまま展開されない。
@@ -240,6 +241,7 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         # ファイル選択では列が増えないのでスクロール位置は動かさない。
         if file_info.isDir():
             self._cancel_stale_directory_scans(self._current_path)
+            self._model.rescan_if_loaded(current)
             self._view.restore_preview_artifact_constraints()
             if depth < self._last_depth:
                 self._cancel_pending_reveal()

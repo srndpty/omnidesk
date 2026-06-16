@@ -429,6 +429,14 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         node.error = None
         self._start_scan(node)
 
+    def rescan_if_loaded(self, index: QModelIndex) -> None:
+        """Re-scan a directory when navigation returns to an already loaded node."""
+        node = self._node_from_index(index)
+        if node is None or not node.is_dir or node.loading or not node.loaded:
+            return
+        self._invalidate_node_cache(node, clear_children=True)
+        self._start_scan(node)
+
     def cancel_scans_except(self, allowed_paths: set[Path]) -> None:
         allowed_keys = {normalize_directory_key(str(path)) for path in allowed_paths}
         for key, node in list(self._nodes_by_key.items()):

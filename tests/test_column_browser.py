@@ -1387,6 +1387,44 @@ def test_refresh_does_not_use_stale_loaded_dirs(qtbot, tmp_path: Path) -> None:
     assert browser._is_directory_loaded(index) is False
 
 
+def test_model_rescans_loaded_directory_on_revisit(qtbot, tmp_path, monkeypatch) -> None:
+    target = tmp_path / "dir"
+    child = target / "old.txt"
+    target.mkdir()
+    child.write_text("old", encoding="utf-8")
+    model = _ColumnFileSystemModel()
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    index = model.setRootPath(str(target))
+    node = model._node_from_index(index)
+    assert node is not None
+    old_child = _DirectoryNode(child, parent=node, is_dir=False)
+    node.children.append(old_child)
+    node.child_keys.add(normalize_directory_key(str(child)))
+    node.loaded = True
+    node.error = None
+
+    model.rescan_if_loaded(index)
+
+    assert node.children == []
+    assert node.child_keys == set()
+    assert node.loaded is False
+    assert node.loading is True
+    assert node.scan_token in model._jobs
+
+
+def test_model_revisit_does_not_restart_unloaded_directory(qtbot, tmp_path, monkeypatch) -> None:
+    target = tmp_path / "dir"
+    target.mkdir()
+    model = _ColumnFileSystemModel()
+    started: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", started.append)
+    index = model.setRootPath(str(target))
+
+    model.rescan_if_loaded(index)
+
+    assert started == []
+
+
 def test_paste_destination_resolves_dir_and_file(tmp_path: Path) -> None:
     a_dir = tmp_path / "dir"
     a_dir.mkdir()
