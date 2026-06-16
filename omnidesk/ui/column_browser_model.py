@@ -15,6 +15,7 @@ from typing import Any, cast
 from PyQt6 import sip
 from PyQt6.QtCore import (
     QAbstractItemModel,
+    QDir,
     QFileInfo,
     QModelIndex,
     QObject,
@@ -105,6 +106,7 @@ class _DirectoryScanJob(QRunnable):
         generation: int,
         token: _ScanToken,
         *,
+        filters: int,
         follow_symlinks: bool,
     ) -> None:
         super().__init__()
@@ -112,6 +114,7 @@ class _DirectoryScanJob(QRunnable):
         self._key = key
         self._generation = generation
         self._token = token
+        self._filters = filters
         self._follow_symlinks = follow_symlinks
         self.signals = _DirectoryScanSignals()
 
@@ -140,6 +143,8 @@ class _DirectoryScanJob(QRunnable):
                         is_dir = entry.is_dir(follow_symlinks=self._follow_symlinks)
                     except OSError:
                         is_dir = False
+                    if not _entry_matches_filters(entry.name, entry.path, is_dir, self._filters):
+                        continue
                     scanned.append(
                         _DirectoryEntry(
                             path=entry.path,
@@ -241,6 +246,51 @@ def _fallback_natural_sort_key(name: str) -> tuple[tuple[int, int | str], ...]:
     )
 
 
+def _filter_value(filters: Any) -> int:
+    value = getattr(filters, "value", filters)
+    return int(value)
+
+
+def _has_filter(filters: int, flag: QDir.Filter) -> bool:
+    return bool(filters & int(flag.value))
+
+
+def _entry_matches_filters(name: str, path: str, is_dir: bool, filters: int) -> bool:
+    if name in {".", ".."} and _has_filter(filters, QDir.Filter.NoDotAndDotDot):
+        return False
+    if is_dir:
+        if not _has_filter(filters, QDir.Filter.Dirs):
+            return False
+    elif not _has_filter(filters, QDir.Filter.Files):
+        return False
+    if not _has_filter(filters, QDir.Filter.Hidden) and _is_hidden_entry(name, path):
+        return False
+    return _has_filter(filters, QDir.Filter.System) or not _is_system_entry(path)
+
+
+def _is_hidden_entry(name: str, path: str) -> bool:
+    if name.startswith("."):
+        return True
+    return bool(_windows_file_attributes(path) & 0x2)
+
+
+def _is_system_entry(path: str) -> bool:
+    return bool(_windows_file_attributes(path) & 0x4)
+
+
+def _windows_file_attributes(path: str) -> int:
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+    except (AttributeError, OSError):
+        logger.debug("Could not read Windows file attributes: %s", path, exc_info=True)
+        return 0
+    return 0 if attrs == -1 else int(attrs)
+
+
 class _ColumnFileSystemModel(QAbstractItemModel):
     """Small async filesystem model tailored to ``QColumnView``.
 
@@ -261,13 +311,14 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         self._jobs: dict[_ScanToken, _DirectoryScanJob] = {}
         self._icon_provider = QFileIconProvider()
         self._icon_cache: dict[str, QIcon] = {}
+        self._filters = _filter_value(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
         # symlink/junction/reparse point を辿るかどうか。スキャンの is_dir 判定に渡す。
         self._resolve_symlinks = False
         self.destroyed.connect(self._cancel_all_scans)
 
-    # QFileSystemModel-compatible no-ops used by ColumnBrowser setup.
-    def setFilter(self, _filters: Any) -> None:  # noqa: N802
-        return None
+    # QFileSystemModel-compatible setup used by ColumnBrowser.
+    def setFilter(self, filters: Any) -> None:  # noqa: N802
+        self._filters = _filter_value(filters)
 
     def setResolveSymlinks(self, enable: bool) -> None:  # noqa: N802
         self._resolve_symlinks = bool(enable)
@@ -471,6 +522,7 @@ class _ColumnFileSystemModel(QAbstractItemModel):
             key,
             node.scan_generation,
             token,
+            filters=self._filters,
             follow_symlinks=self._resolve_symlinks,
         )
         # autoDelete を切り、job の寿命を _jobs（Python 参照）で管理する。これがないと

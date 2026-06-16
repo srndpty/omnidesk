@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QModelIndex, QPoint, QPointF, Qt, QUrl
+from PyQt6.QtCore import QDir, QModelIndex, QPoint, QPointF, Qt, QUrl
 from PyQt6.QtGui import QIcon, QKeyEvent, QKeySequence, QWheelEvent
 from PyQt6.QtWidgets import QListView, QWidget
 
@@ -29,6 +29,7 @@ from omnidesk.ui.column_browser_model import (
     _DirectoryEntry,
     _DirectoryNode,
     _DirectoryScanJob,
+    _entry_matches_filters,
     _ScanToken,
     _sort_entries,
 )
@@ -881,6 +882,41 @@ def test_set_resolve_symlinks_controls_scan_policy(qtbot, tmp_path, monkeypatch)
         assert job._follow_symlinks is resolve
 
 
+def test_set_filter_is_passed_to_directory_scan_job(qtbot, tmp_path, monkeypatch) -> None:
+    target = tmp_path / "dir"
+    target.mkdir()
+    model = _ColumnFileSystemModel()
+    started_jobs: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", started_jobs.append)
+    model.setFilter(QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot)
+    index = model.setRootPath(str(target))
+
+    model.rowCount(index)
+
+    assert started_jobs
+    job = started_jobs[-1]
+    assert isinstance(job, _DirectoryScanJob)
+    assert job._filters == int((QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot).value)
+
+
+def test_column_model_filter_excludes_hidden_system_and_wrong_entry_type(tmp_path) -> None:
+    filters = int((QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot).value)
+
+    assert _entry_matches_filters("folder", str(tmp_path / "folder"), True, filters) is True
+    assert _entry_matches_filters("file.txt", str(tmp_path / "file.txt"), False, filters) is True
+    assert _entry_matches_filters(".secret", str(tmp_path / ".secret"), False, filters) is False
+    assert _entry_matches_filters(".", str(tmp_path / "."), True, filters) is False
+
+    dirs_only = int((QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot).value)
+    assert _entry_matches_filters("folder", str(tmp_path / "folder"), True, dirs_only) is True
+    assert _entry_matches_filters("file.txt", str(tmp_path / "file.txt"), False, dirs_only) is False
+
+    show_hidden = int(
+        (QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot | QDir.Filter.Hidden).value
+    )
+    assert _entry_matches_filters(".secret", str(tmp_path / ".secret"), False, show_hidden) is True
+
+
 def test_cancel_scan_try_takes_queued_job(qtbot, tmp_path, monkeypatch) -> None:
     # キャンセル時、まだ起動していない queued job は pool から tryTake で取り除き、
     # _jobs からも消すこと（巨大フォルダの順番待ちが新ルートを塞がないように）。
@@ -918,7 +954,12 @@ def test_cancelled_job_does_not_call_scandir(qtbot, tmp_path, monkeypatch) -> No
     token = _ScanToken()
     token.cancelled = True
     job = _DirectoryScanJob(
-        target, normalize_directory_key(str(target)), 1, token, follow_symlinks=False
+        target,
+        normalize_directory_key(str(target)),
+        1,
+        token,
+        filters=int((QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot).value),
+        follow_symlinks=False,
     )
     finished: list[object] = []
     job.signals.finished.connect(finished.append)
