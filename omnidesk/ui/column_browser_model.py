@@ -120,6 +120,11 @@ class _DirectoryScanJob(QRunnable):
         count = 0
         scanned: list[_DirectoryEntry] = []
         error: str | None = None
+        # tryTake で取り切れず起動してしまった job でも、os.scandir に入る前にここで
+        # 早期終了する。実行中の scandir 自体は止められないが、起動前キャンセルは潰せる。
+        if self._token.cancelled:
+            self._emit_finished(True, 0, started, None)
+            return
         try:
             with os.scandir(self._path) as entries:
                 for entry in entries:
@@ -143,6 +148,10 @@ class _DirectoryScanJob(QRunnable):
                         )
                     )
                     count += 1
+            # sort 自体はキャンセル不可なので、その手前で一度確認して無駄な整列を避ける。
+            if self._token.cancelled:
+                self._emit_finished(True, count, started, None)
+                return
             for batch in _entry_batches(_sort_entries(scanned), _SCAN_BATCH_SIZE):
                 if self._token.cancelled:
                     logger.info(
@@ -350,12 +359,10 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         node = self._node_from_index(index)
         if node is None or not node.is_dir:
             return
+        # キャンセルで中断済みの partial children は _cancel_scan が片付ける。読み込み済み
+        # （token なし）の children はここで通知付きにクリアしてから再スキャンする。
         self._cancel_scan(node)
-        if node.children:
-            self.beginRemoveRows(index, 0, len(node.children) - 1)
-            node.children.clear()
-            node.child_keys.clear()
-            self.endRemoveRows()
+        self._clear_children(node)
         node.loaded = False
         node.error = None
         self._start_scan(node)
@@ -401,16 +408,20 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         return icon
 
     def _index_for_path(self, path: Path) -> QModelIndex:
-        # パス指定の index 化。スキャンで親の children に挿入済みの node は正しい row を
-        # 持つ。未挿入（loaded 親に存在しない子・親が未読み込みなど）の場合は detached
-        # な node を作って row=0 の index を返すが、これは filePath などパス解決用であり、
-        # 可視行としては children に入れない（行追加は必ず beginInsertRows 経由）。
-        node = self._ensure_node(path)
+        # public ``index(str)`` 用のパス→index 解決。スキャンで親の children に挿入済みの
+        # node は正しい row を持つ。未挿入（loaded 親に存在しない子・親が未読み込みなど）の
+        # 場合は detached な node を作って row=0 の index を返す。これは filePath/refresh
+        # などパス解決用で、本体（ColumnBrowser）では view へ渡さず model メソッドにしか
+        # 渡していない（setRootIndex に渡す root index は setRootPath 由来）。可視行への
+        # 追加は必ず beginInsertRows 経由なので、detached node が列に紛れ込むことはない。
+        return self._index_for_node(self._ensure_node(path))
+
+    def _index_for_node(self, node: _DirectoryNode) -> QModelIndex:
         return self.createIndex(node.row, 0, node)
 
     def _ensure_node_index(self, path: Path, *, is_dir: bool | None = None) -> QModelIndex:
         node = self._ensure_node(path, is_dir=is_dir)
-        return self.createIndex(node.row, 0, node)
+        return self._index_for_node(node)
 
     def _ensure_node(self, path: Path, *, is_dir: bool | None = None) -> _DirectoryNode:
         key = normalize_directory_key(str(path))
@@ -429,23 +440,16 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         return node
 
     def _start_scan(self, node: _DirectoryNode) -> None:
+        # rowCount() からも呼ばれる（paint 中など）。ここで構造変更（beginRemoveRows）を
+        # 行うと model/view が壊れるため、partial children のクリアは _cancel_scan 側に
+        # 寄せ、ここでは行追加（beginInsertRows）を伴う非同期スキャンの起動だけ行う。
         if not node.is_dir or node.loading:
             return
         token = _ScanToken()
         node.scan_generation += 1
         node.scan_token = token
-        # loading を先に立て、以降の beginRemoveRows が誘発しうる rowCount 再入で
-        # 二重スキャンが始まらないようにする。
         node.loading = True
         node.error = None
-        # キャンセルで中断したスキャンの部分的な children が残っている場合は、再スキャン
-        # 前に通知付きで一度クリアし、削除済みファイルや古い順序が混ざらないようにする。
-        if node.children and not node.loaded:
-            index = self._index_for_path(node.path)
-            self.beginRemoveRows(index, 0, len(node.children) - 1)
-            node.children.clear()
-            node.child_keys.clear()
-            self.endRemoveRows()
         key = normalize_directory_key(str(node.path))
         job = _DirectoryScanJob(
             node.path,
@@ -454,6 +458,10 @@ class _ColumnFileSystemModel(QAbstractItemModel):
             token,
             follow_symlinks=self._resolve_symlinks,
         )
+        # autoDelete を切り、job の寿命を _jobs（Python 参照）で管理する。これがないと
+        # 実行完了後に C++ 側が破棄され、_jobs に残った wrapper への tryTake が
+        # "wrapped C/C++ object has been deleted" で落ちる。finished で pop する。
+        job.setAutoDelete(False)
         job.signals.batchReady.connect(self._handle_scan_batch)
         job.signals.finished.connect(self._handle_scan_finished)
         self._jobs[token] = job
@@ -462,13 +470,34 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         )
         self._scan_pool.start(job)
 
+    def _clear_children(self, node: _DirectoryNode) -> None:
+        """node の children を通知付きで空にする。paint 経路から呼ばないこと。"""
+        if not node.children:
+            return
+        self.beginRemoveRows(self._index_for_node(node), 0, len(node.children) - 1)
+        node.children.clear()
+        node.child_keys.clear()
+        self.endRemoveRows()
+
     def _cancel_scan(self, node: _DirectoryNode) -> None:
-        if node.scan_token is not None:
-            node.scan_token.cancelled = True
-            node.scan_token = None
+        token = node.scan_token
+        node.scan_token = None
         node.loading = False
+        if token is None:
+            return
+        token.cancelled = True
+        # まだ起動していない queued job は pool から取り除き、_jobs からも消す。これで
+        # 巨大フォルダのスキャンが順番待ちのまま新 root のスキャンを塞ぐのを防ぐ。
+        job = self._jobs.get(token)
+        if job is not None and not sip.isdeleted(job) and self._scan_pool.tryTake(job):
+            self._jobs.pop(token, None)
+        # キャンセルで中断した partial children を通知付きで掃除する（rowCount/paint 経路
+        # ではなくナビゲーション・refresh 経路から呼ばれるので beginRemoveRows は安全）。
+        self._clear_children(node)
 
     def _cancel_all_scans(self) -> None:
+        # destroyed 経由でも呼ばれる。構造変更（beginRemoveRows）や、破棄中のスレッド
+        # プールへのアクセス（tryTake）は避け、token のキャンセルだけ行う。
         for node in self._nodes_by_key.values():
             if node.scan_token is not None:
                 node.scan_token.cancelled = True
@@ -506,7 +535,7 @@ class _ColumnFileSystemModel(QAbstractItemModel):
             return
         first = len(node.children)
         last = first + len(new_nodes) - 1
-        self.beginInsertRows(self._index_for_path(node.path), first, last)
+        self.beginInsertRows(self._index_for_node(node), first, last)
         node.children.extend(new_nodes)
         self.endInsertRows()
         logger.debug("Column directory scan batch inserted: %s rows=%d", node.path, len(new_nodes))

@@ -27,6 +27,8 @@ from omnidesk.ui.column_browser_helpers import ERROR_PLACEHOLDER
 from omnidesk.ui.column_browser_model import (
     _ColumnFileSystemModel,
     _DirectoryEntry,
+    _DirectoryScanJob,
+    _ScanToken,
     _sort_entries,
 )
 
@@ -876,6 +878,52 @@ def test_set_resolve_symlinks_controls_scan_policy(qtbot, tmp_path, monkeypatch)
         assert started_jobs[-1]._follow_symlinks is resolve
 
 
+def test_cancel_scan_try_takes_queued_job(qtbot, tmp_path, monkeypatch) -> None:
+    # キャンセル時、まだ起動していない queued job は pool から tryTake で取り除き、
+    # _jobs からも消すこと（巨大フォルダの順番待ちが新ルートを塞がないように）。
+    target = tmp_path / "dir"
+    target.mkdir()
+    model = _ColumnFileSystemModel()
+    taken: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    monkeypatch.setattr(model._scan_pool, "tryTake", lambda job: bool(taken.append(job)) or True)
+    index = model.setRootPath(str(target))
+    node = model._node_from_index(index)
+    assert node is not None
+    model._start_scan(node)
+    token = node.scan_token
+    job = model._jobs[token]
+
+    model._cancel_scan(node)
+
+    assert taken == [job]
+    assert token not in model._jobs
+    assert node.scan_token is None
+    assert node.loading is False
+
+
+def test_cancelled_job_does_not_call_scandir(qtbot, tmp_path, monkeypatch) -> None:
+    # 起動前にキャンセル済みの job は os.scandir に入る前に早期終了すること。
+    target = tmp_path / "dir"
+    target.mkdir()
+
+    def boom(_path):
+        raise AssertionError("scandir must not run for a pre-cancelled job")
+
+    monkeypatch.setattr(column_browser_model_module.os, "scandir", boom)
+    token = _ScanToken()
+    token.cancelled = True
+    job = _DirectoryScanJob(
+        target, normalize_directory_key(str(target)), 1, token, follow_symlinks=False
+    )
+    finished: list[object] = []
+    job.signals.finished.connect(finished.append)
+
+    job.run()
+
+    assert finished, "cancelled job should still emit finished"
+
+
 def test_large_directory_loads_all_entries_without_duplicates(qtbot, tmp_path) -> None:
     # 多数のエントリ（複数バッチ）でも、全件が一意な連番 row で読み込まれること。
     # child_keys による O(1) 重複判定が線形探索の O(n²) を置き換えている回帰確認。
@@ -1146,14 +1194,34 @@ def test_delete_selected_aborts_when_declined(monkeypatch, qtbot, tmp_path: Path
     assert called == []
 
 
-def test_directory_loaded_marks_path_loaded(qtbot, tmp_path: Path) -> None:
+def test_is_directory_loaded_reflects_model_scan_state(qtbot, tmp_path: Path) -> None:
+    # loaded 状態の正の状態源は model（node.loaded）のみ。スキャン前は未読み込み、
+    # スキャン完了後に読み込み済みになる。
+    (tmp_path / "child").mkdir()
     browser = ColumnBrowser()
     qtbot.addWidget(browser)
     index = browser._model.index(str(tmp_path))
 
     assert browser._is_directory_loaded(index) is False
-    browser._handle_directory_loaded(str(tmp_path))
+    with qtbot.waitSignal(browser._model.directoryLoaded, timeout=2000):
+        browser._model.rowCount(index)
     assert browser._is_directory_loaded(index) is True
+
+
+def test_refresh_does_not_use_stale_loaded_dirs(qtbot, tmp_path: Path) -> None:
+    # 一度 loaded になったディレクトリを refresh すると、再スキャン中は未読み込み扱いに
+    # 戻ること（古い loaded 状態が残って「空」と誤表示しないこと）。
+    (tmp_path / "child").mkdir()
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    index = browser._model.index(str(tmp_path))
+    with qtbot.waitSignal(browser._model.directoryLoaded, timeout=2000):
+        browser._model.rowCount(index)
+    assert browser._is_directory_loaded(index) is True
+
+    browser._model.refresh(index)
+
+    assert browser._is_directory_loaded(index) is False
 
 
 def test_paste_destination_resolves_dir_and_file(tmp_path: Path) -> None:

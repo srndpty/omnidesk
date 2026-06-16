@@ -86,7 +86,6 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
         self._model.setResolveSymlinks(True)
         self._model.setReadOnly(True)
-        self._loaded_dirs: set[str] = set()
         self._clipboard: _ClipboardPayload | None = None
         # フォルダを開いた直後の1回だけ、新しい列が見えるようにスクロールするための
         # ワンショットフラグ。貼り付けや再読み込みでは立てないので視点が飛ばない。
@@ -274,19 +273,16 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
     def _is_directory_loaded(self, index: QModelIndex) -> bool:
         if not index.isValid():
             return True
-        loaded = getattr(self._model, "is_directory_loaded", None)
-        key_loaded = normalize_directory_key(self._model.filePath(index)) in self._loaded_dirs
-        if callable(loaded):
-            return bool(loaded(index)) or key_loaded
-        return key_loaded
+        # 正の状態源は model の node.loaded のみ。古い _loaded_dirs を OR していると、
+        # refresh 中の再スキャン時に「読み込み中…」ではなく「空のフォルダ」と誤表示する。
+        return self._model.is_directory_loaded(index)
 
     def _directory_error(self, index: QModelIndex) -> str | None:
         if not index.isValid():
             return None
         return self._model.directory_error(index)
 
-    def _handle_directory_loaded(self, path: str) -> None:
-        self._loaded_dirs.add(normalize_directory_key(path))
+    def _handle_directory_loaded(self, _path: str) -> None:
         # 読み込みが終わったディレクトリは空になった（プレースホルダが変わる）かも
         # しれないので、列を再描画して「読み込み中…」を「（空のフォルダ）」へ更新する。
         # ここではスクロールには触れない（reveal は range 変化時のみ）。読み込みは
