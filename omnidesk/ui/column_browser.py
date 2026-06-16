@@ -215,6 +215,7 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         # フォルダを開くと右端に新しい列が出るので、それが見えるようにする。
         # ファイル選択では列が増えないのでスクロール位置は動かさない。
         if file_info.isDir():
+            self._cancel_stale_directory_scans(self._current_path)
             self._view.restore_preview_artifact_constraints()
             self._schedule_reveal()
         else:
@@ -250,7 +251,11 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
     def _is_directory_loaded(self, index: QModelIndex) -> bool:
         if not index.isValid():
             return True
-        return normalize_directory_key(self._model.filePath(index)) in self._loaded_dirs
+        loaded = getattr(self._model, "is_directory_loaded", None)
+        key_loaded = normalize_directory_key(self._model.filePath(index)) in self._loaded_dirs
+        if callable(loaded):
+            return bool(loaded(index)) or key_loaded
+        return key_loaded
 
     def _handle_directory_loaded(self, path: str) -> None:
         self._loaded_dirs.add(normalize_directory_key(path))
@@ -260,6 +265,19 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         # レイアウト確定前にも届きうるため、ここで詰めると左へ飛ぶ恐れがある。
         for column in self._view.column_views():
             column.viewport().update()
+
+    def _cancel_stale_directory_scans(self, current: Path) -> None:
+        cancel_scans_except = getattr(self._model, "cancel_scans_except", None)
+        if not callable(cancel_scans_except):
+            return
+        allowed = {self._root_path}
+        current_path = current
+        while current_path != current_path.parent:
+            allowed.add(current_path)
+            if current_path == self._root_path:
+                break
+            current_path = current_path.parent
+        cancel_scans_except(allowed)
 
     def _schedule_settle(self) -> None:
         # 余白（デッドスペース）を詰めるだけの settle。reveal はしない。浅い階層へ

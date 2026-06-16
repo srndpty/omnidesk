@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 from PyQt6.QtCore import QModelIndex, QPoint, QPointF, Qt, QUrl
-from PyQt6.QtGui import QKeyEvent, QKeySequence, QWheelEvent
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtGui import QIcon, QKeyEvent, QKeySequence, QWheelEvent
+from PyQt6.QtWidgets import QListView, QWidget
 
 import omnidesk.ui.column_browser as column_browser_module
 import omnidesk.ui.column_browser_operations as column_browser_operations_module
@@ -21,6 +21,7 @@ from omnidesk.ui.column_browser import (
     paste_destination,
     viewport_right_to_content_right,
 )
+from omnidesk.ui.column_browser_model import _DirectoryEntry, _sort_entries
 
 
 def test_set_root_path_accepts_directory_and_file(qtbot, tmp_path: Path) -> None:
@@ -522,6 +523,92 @@ def test_model_reports_directories_as_expandable_and_files_as_leaves(qtbot, tmp_
 
     assert browser._model.hasChildren(dir_index) is True
     assert browser._model.hasChildren(file_index) is False
+
+
+def test_columns_are_virtualized_for_large_directories(qtbot, tmp_path: Path) -> None:
+    # 数万件のフォルダでフリーズしないよう、列は uniform item sizes と Batched
+    # レイアウトで仮想化されている必要がある。
+    for index in range(5):
+        (tmp_path / f"file-{index}.txt").write_text("x", encoding="utf-8")
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.show()
+    qtbot.waitExposed(browser)
+    browser.set_root_path(tmp_path)
+    qtbot.waitUntil(
+        lambda: any(column.rootIndex().isValid() for column in browser._view.column_views()),
+        timeout=1000,
+    )
+
+    columns = [column for column in browser._view.column_views() if column.rootIndex().isValid()]
+    assert columns
+    for column in columns:
+        assert column.uniformItemSizes() is True
+        assert column.layoutMode() == QListView.LayoutMode.Batched
+
+
+def test_column_model_keeps_standard_icons(qtbot, tmp_path: Path) -> None:
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("x", encoding="utf-8")
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+
+    folder_icon = browser._model.data(
+        browser._model.index(str(folder)),
+        Qt.ItemDataRole.DecorationRole,
+    )
+    file_icon = browser._model.data(
+        browser._model.index(str(file_path)),
+        Qt.ItemDataRole.DecorationRole,
+    )
+
+    assert isinstance(folder_icon, QIcon)
+    assert not folder_icon.isNull()
+    assert isinstance(file_icon, QIcon)
+    assert not file_icon.isNull()
+
+
+def test_column_model_sorts_directories_first_with_windows_natural_order() -> None:
+    entries = [
+        _DirectoryEntry(path="alpha.txt", name="alpha.txt", is_dir=False),
+        _DirectoryEntry(path="file10", name="file10", is_dir=True),
+        _DirectoryEntry(path="file2", name="file2", is_dir=True),
+        _DirectoryEntry(path="_data.txt", name="_data.txt", is_dir=False),
+        _DirectoryEntry(path="_data", name="_data", is_dir=True),
+        _DirectoryEntry(path="file10.txt", name="file10.txt", is_dir=False),
+        _DirectoryEntry(path="file2.txt", name="file2.txt", is_dir=False),
+    ]
+
+    assert [entry.name for entry in _sort_entries(entries)] == [
+        "_data",
+        "file2",
+        "file10",
+        "_data.txt",
+        "alpha.txt",
+        "file2.txt",
+        "file10.txt",
+    ]
+
+
+def test_column_creation_does_not_force_synchronous_fetch_more(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    child = tmp_path / "child"
+    child.mkdir()
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    child_index = browser._model.index(str(child))
+    calls: list[QModelIndex] = []
+    monkeypatch.setattr(browser._model, "fetchMore", calls.append)
+
+    column = browser._view.createColumn(child_index)
+
+    assert column.rootIndex() == child_index
+    assert calls == []
 
 
 def test_file_selection_does_not_show_empty_preview_column(qtbot, tmp_path: Path) -> None:
