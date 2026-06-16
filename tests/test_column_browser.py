@@ -312,6 +312,7 @@ def test_shallower_directory_selection_schedules_dead_space_settle(
     browser._handle_selection_changed(browser._model.index(str(base)), QModelIndex())
 
     assert len(scheduled) == 1
+    assert browser._pending_reveal is False
     assert browser._last_depth == len(base.parts)
 
 
@@ -390,6 +391,113 @@ def test_settle_columns_keeps_existing_offset_for_viewport_relative_columns(
 
     assert hbar.maximum() == 640
     assert hbar.value() == 640
+
+
+def test_shallower_settle_animates_left_before_clamping_scroll_range(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    class _Column:
+        def __init__(self, *, x: int, width: int) -> None:
+            self._x = x
+            self._width = width
+
+        def rootIndex(self) -> QModelIndex:  # noqa: N802
+            return browser._model.index(str(tmp_path))
+
+        def isVisible(self) -> bool:  # noqa: N802
+            return True
+
+        def x(self) -> int:
+            return self._x
+
+        def width(self) -> int:
+            return self._width
+
+        def viewport(self):
+            return self
+
+        def update(self) -> None:
+            return None
+
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.resize(420, 300)
+    browser.set_root_path(tmp_path)
+    hbar = browser._view.horizontalScrollBar()
+    browser._settling = True
+    hbar.setRange(0, 1000)
+    hbar.setValue(640)
+    browser._settling = False
+    viewport_width = browser._view.viewport().width()
+    monkeypatch.setattr(
+        browser._view,
+        "column_views",
+        lambda: [_Column(x=-640, width=viewport_width)],
+    )
+
+    browser._settle_columns(reveal=False)
+
+    assert browser._horizontal_scroll_animation is not None
+    assert hbar.maximum() == 1000
+    qtbot.waitUntil(lambda: browser._horizontal_scroll_animation is None, timeout=1000)
+    assert hbar.value() == 0
+    assert hbar.maximum() == 0
+
+
+def test_shallower_selection_restores_qt_scroll_jump_before_animation(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    class _Column:
+        def __init__(self, *, x: int, width: int) -> None:
+            self._x = x
+            self._width = width
+
+        def rootIndex(self) -> QModelIndex:  # noqa: N802
+            return browser._model.index(str(tmp_path))
+
+        def isVisible(self) -> bool:  # noqa: N802
+            return True
+
+        def x(self) -> int:
+            return self._x
+
+        def width(self) -> int:
+            return self._width
+
+        def viewport(self):
+            return self
+
+        def update(self) -> None:
+            return None
+
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.resize(420, 300)
+    browser.set_root_path(tmp_path)
+    hbar = browser._view.horizontalScrollBar()
+    browser._previous_horizontal_scroll_value = 640
+    browser._last_horizontal_scroll_value = 0
+    browser._previous_horizontal_scroll_maximum = 1000
+    browser._last_horizontal_scroll_maximum = 0
+    hbar.setRange(0, 0)
+    hbar.setValue(0)
+    viewport_width = browser._view.viewport().width()
+    monkeypatch.setattr(
+        browser._view,
+        "column_views",
+        lambda: [_Column(x=-640, width=viewport_width)],
+    )
+
+    browser._restore_horizontal_scroll_before_shallow_animation()
+    assert hbar.value() == 640
+    assert hbar.maximum() == 1000
+
+    browser._settle_columns(reveal=False)
+
+    assert browser._horizontal_scroll_animation is not None
+    qtbot.waitUntil(lambda: browser._horizontal_scroll_animation is None, timeout=1000)
+    assert hbar.value() == 0
+    assert hbar.maximum() == 0
 
 
 def test_reveal_settle_can_use_pending_hidden_columns(monkeypatch, qtbot, tmp_path: Path) -> None:
