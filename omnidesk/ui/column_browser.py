@@ -170,6 +170,7 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         # 古い current/selection とアクティブ列の参照を捨てておく。
         self._view.clear_navigation_state()
         index = self._model.setRootPath(str(target))
+        assert self._model._is_attached_index(index)
         # 別ツリーへ移る前に、旧ツリーで走っている（または待機中の）スキャンを止める。
         # スキャンプールはスレッド数が限られるため、巨大フォルダのスキャンが居座ると
         # 新ルートのスキャンが順番待ちになり、列が「読み込み中…」のまま展開されない。

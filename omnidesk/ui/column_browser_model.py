@@ -361,7 +361,12 @@ class _ColumnFileSystemModel(QAbstractItemModel):
             return
         # キャンセルで中断済みの partial children は _cancel_scan が片付ける。読み込み済み
         # （token なし）の children はここで通知付きにクリアしてから再スキャンする。
+        direct_children = list(node.children)
         self._cancel_scan(node)
+        # 明示 refresh では直下 child のキャッシュも古い可能性が高い。親の再スキャンで
+        # 同じ child node を再利用しても、次に child を開いたときは再スキャンさせる。
+        for child in direct_children:
+            self._invalidate_node_cache(child, clear_children=True)
         self._clear_children(node)
         node.loaded = False
         node.error = None
@@ -389,6 +394,16 @@ class _ColumnFileSystemModel(QAbstractItemModel):
             return None
         node = index.internalPointer()
         return node if isinstance(node, _DirectoryNode) else None
+
+    def _is_attached_index(self, index: QModelIndex) -> bool:
+        node = self._node_from_index(index)
+        if node is None:
+            return False
+        if normalize_directory_key(str(node.path)) == normalize_directory_key(str(self._root_path)):
+            return True
+        if node.parent is None:
+            return True
+        return normalize_directory_key(str(node.path)) in node.parent.child_keys
 
     def _icon_for_node(self, node: _DirectoryNode) -> QIcon:
         if node.is_dir:
@@ -479,6 +494,14 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         node.child_keys.clear()
         self.endRemoveRows()
 
+    def _invalidate_node_cache(self, node: _DirectoryNode, *, clear_children: bool) -> None:
+        if node.scan_token is not None:
+            self._cancel_scan(node)
+        elif clear_children:
+            self._clear_children(node)
+        node.loaded = False
+        node.error = None
+
     def _cancel_scan(self, node: _DirectoryNode) -> None:
         token = node.scan_token
         node.scan_token = None
@@ -514,6 +537,8 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         if node is None or generation != node.scan_generation or node.scan_token is not token:
             return
         new_nodes: list[_DirectoryNode] = []
+        new_keys: list[str] = []
+        new_key_set: set[str] = set()
         for entry in entries:
             entry_key = normalize_directory_key(entry.path)
             child = self._nodes_by_key.get(entry_key)
@@ -522,21 +547,26 @@ class _ColumnFileSystemModel(QAbstractItemModel):
                 child.name = entry.name
                 self._nodes_by_key[entry_key] = child
             else:
+                type_changed = child.is_dir != entry.is_dir
+                if type_changed:
+                    self._invalidate_node_cache(child, clear_children=True)
                 child.parent = node
                 child.name = entry.name
                 child.is_dir = entry.is_dir
             # 既に children に入っているキーは O(1) で弾く（line search を避ける）。
-            if entry_key in node.child_keys:
+            if entry_key in node.child_keys or entry_key in new_key_set:
                 continue
             child.row = len(node.children) + len(new_nodes)
             new_nodes.append(child)
-            node.child_keys.add(entry_key)
+            new_keys.append(entry_key)
+            new_key_set.add(entry_key)
         if not new_nodes:
             return
         first = len(node.children)
         last = first + len(new_nodes) - 1
         self.beginInsertRows(self._index_for_node(node), first, last)
         node.children.extend(new_nodes)
+        node.child_keys.update(new_keys)
         self.endInsertRows()
         logger.debug("Column directory scan batch inserted: %s rows=%d", node.path, len(new_nodes))
 

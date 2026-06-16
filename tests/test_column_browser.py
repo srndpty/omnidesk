@@ -27,6 +27,7 @@ from omnidesk.ui.column_browser_helpers import ERROR_PLACEHOLDER
 from omnidesk.ui.column_browser_model import (
     _ColumnFileSystemModel,
     _DirectoryEntry,
+    _DirectoryNode,
     _DirectoryScanJob,
     _ScanToken,
     _sort_entries,
@@ -875,7 +876,9 @@ def test_set_resolve_symlinks_controls_scan_policy(qtbot, tmp_path, monkeypatch)
         model.rowCount(index)
 
         assert started_jobs
-        assert started_jobs[-1]._follow_symlinks is resolve
+        job = started_jobs[-1]
+        assert isinstance(job, _DirectoryScanJob)
+        assert job._follow_symlinks is resolve
 
 
 def test_cancel_scan_try_takes_queued_job(qtbot, tmp_path, monkeypatch) -> None:
@@ -892,6 +895,7 @@ def test_cancel_scan_try_takes_queued_job(qtbot, tmp_path, monkeypatch) -> None:
     assert node is not None
     model._start_scan(node)
     token = node.scan_token
+    assert token is not None
     job = model._jobs[token]
 
     model._cancel_scan(node)
@@ -963,6 +967,124 @@ def test_duplicate_batch_does_not_insert_duplicate_rows(qtbot, tmp_path, monkeyp
     model._handle_scan_batch((key, node.scan_generation, node.scan_token, entries))
     assert model.rowCount(root_index) == 1
     assert len(node.child_keys) == 1
+
+
+def test_parent_refresh_invalidates_direct_child_cache(qtbot, tmp_path, monkeypatch) -> None:
+    target = tmp_path / "dir"
+    child_path = target / "child"
+    child_path.mkdir(parents=True)
+    model = _ColumnFileSystemModel()
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    root_index = model.setRootPath(str(target))
+    node = model._node_from_index(root_index)
+    assert node is not None
+    model._start_scan(node)
+    key = normalize_directory_key(str(target))
+    child_key = normalize_directory_key(str(child_path))
+    model._handle_scan_batch(
+        (
+            key,
+            node.scan_generation,
+            node.scan_token,
+            [_DirectoryEntry(path=str(child_path), name="child", is_dir=True)],
+        )
+    )
+    child = node.children[0]
+    grandchild = _DirectoryNode(child_path / "old.txt", parent=child, is_dir=False)
+    child.children.append(grandchild)
+    child.child_keys.add(normalize_directory_key(str(grandchild.path)))
+    child.loaded = True
+    child.error = "stale"
+
+    model.refresh(root_index)
+
+    assert child_key not in node.child_keys
+    assert child.loaded is False
+    assert child.error is None
+    assert child.children == []
+    assert child.child_keys == set()
+
+
+def test_scan_batch_invalidates_reused_child_when_type_changes(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "dir"
+    child_path = target / "child"
+    child_path.mkdir(parents=True)
+    model = _ColumnFileSystemModel()
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    root_index = model.setRootPath(str(target))
+    node = model._node_from_index(root_index)
+    assert node is not None
+    child = model._ensure_node(child_path, is_dir=True)
+    child.loaded = True
+    child.error = "stale"
+    grandchild = _DirectoryNode(child_path / "old.txt", parent=child, is_dir=False)
+    child.children.append(grandchild)
+    child.child_keys.add(normalize_directory_key(str(grandchild.path)))
+    model._start_scan(node)
+    key = normalize_directory_key(str(target))
+
+    model._handle_scan_batch(
+        (
+            key,
+            node.scan_generation,
+            node.scan_token,
+            [_DirectoryEntry(path=str(child_path), name="child", is_dir=False)],
+        )
+    )
+
+    assert node.children == [child]
+    assert child.is_dir is False
+    assert child.loaded is False
+    assert child.error is None
+    assert child.children == []
+    assert child.child_keys == set()
+
+
+def test_scan_batch_updates_child_keys_inside_insert_rows(qtbot, tmp_path, monkeypatch) -> None:
+    target = tmp_path / "dir"
+    target.mkdir()
+    model = _ColumnFileSystemModel()
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    root_index = model.setRootPath(str(target))
+    node = model._node_from_index(root_index)
+    assert node is not None
+    model._start_scan(node)
+    key = normalize_directory_key(str(target))
+    child_key = normalize_directory_key(str(target / "a.txt"))
+    seen_during_insert: list[bool] = []
+    original_begin = model.beginInsertRows
+
+    def begin_insert(parent: QModelIndex, first: int, last: int) -> None:
+        seen_during_insert.append(child_key in node.child_keys)
+        original_begin(parent, first, last)
+
+    monkeypatch.setattr(model, "beginInsertRows", begin_insert)
+
+    model._handle_scan_batch(
+        (
+            key,
+            node.scan_generation,
+            node.scan_token,
+            [_DirectoryEntry(path=str(target / "a.txt"), name="a.txt", is_dir=False)],
+        )
+    )
+
+    assert seen_during_insert == [False]
+    assert child_key in node.child_keys
+
+
+def test_model_reports_attached_and_detached_indexes(qtbot, tmp_path) -> None:
+    target = tmp_path / "dir"
+    child_path = target / "child"
+    target.mkdir()
+    model = _ColumnFileSystemModel()
+    root_index = model.setRootPath(str(target))
+    detached_child = model.index(str(child_path))
+
+    assert model._is_attached_index(root_index) is True
+    assert model._is_attached_index(detached_child) is False
 
 
 def test_column_model_sorts_directories_first_with_windows_natural_order() -> None:
