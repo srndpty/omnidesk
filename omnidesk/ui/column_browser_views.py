@@ -57,10 +57,12 @@ class _ColumnListView(QListView):
         self,
         parent: QWidget | None,
         is_directory_loaded: Callable[[QModelIndex], bool],
+        directory_error: Callable[[QModelIndex], str | None],
         column_view: _DarkColumnView,
     ) -> None:
         super().__init__(parent)
         self._is_directory_loaded = is_directory_loaded
+        self._directory_error = directory_error
         self._column_view = column_view
         # 項目数の多いフォルダ（数万件）でフリーズしないよう、リスト列を仮想化する。
         # ファイル列はアイテム高さが一定なので uniform item sizes が安全に効き、
@@ -95,6 +97,7 @@ class _ColumnListView(QListView):
                 text = column_placeholder_text(
                     row_count=model.rowCount(root),
                     loaded=self._is_directory_loaded(root),
+                    error=self._directory_error(root),
                 )
                 if text:
                     painter.setPen(QColor(_PLACEHOLDER_COLOR))
@@ -118,15 +121,21 @@ class _DarkColumnView(QColumnView):
         super().__init__(parent)
         self.setStyleSheet(_COLUMN_VIEW_STYLESHEET)
         self._is_directory_loaded: Callable[[QModelIndex], bool] = lambda _index: True
+        self._directory_error: Callable[[QModelIndex], str | None] = lambda _index: None
         self._active_column: _ColumnListView | None = None
         self._focused_column_root = QModelIndex()
 
     def set_directory_loaded_predicate(self, predicate: Callable[[QModelIndex], bool]) -> None:
         self._is_directory_loaded = predicate
 
+    def set_directory_error_provider(self, provider: Callable[[QModelIndex], str | None]) -> None:
+        self._directory_error = provider
+
     def createColumn(self, index: QModelIndex) -> QAbstractItemView:  # noqa: N802
         self.restore_preview_artifact_constraints()
-        view = _ColumnListView(self.viewport(), self._is_directory_loaded, self)
+        view = _ColumnListView(
+            self.viewport(), self._is_directory_loaded, self._directory_error, self
+        )
         self.initializeColumn(view)
         view.setRootIndex(index)
         # ホイールイベントはカーソル直下のウィジェットに届くため、内側の列のリスト
@@ -153,9 +162,9 @@ class _DarkColumnView(QColumnView):
         """ファイル選択時に QColumnView が残す空 preview/item view を畳む。"""
         target = current if current is not None else self.currentIndex()
         model = self.model()
-        if not target.isValid() or model is None:
+        if not target.isValid() or not isinstance(model, _ColumnFileSystemModel):
             return
-        if not hasattr(model, "isDir") or model.isDir(target):
+        if model.isDir(target):
             return
         for view in self._preview_artifact_views():
             view.hide()

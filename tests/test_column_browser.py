@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from PyQt6.QtGui import QIcon, QKeyEvent, QKeySequence, QWheelEvent
 from PyQt6.QtWidgets import QListView, QWidget
 
 import omnidesk.ui.column_browser as column_browser_module
+import omnidesk.ui.column_browser_model as column_browser_model_module
 import omnidesk.ui.column_browser_operations as column_browser_operations_module
 from omnidesk.ui.column_browser import (
     EMPTY_PLACEHOLDER,
@@ -21,7 +23,12 @@ from omnidesk.ui.column_browser import (
     paste_destination,
     viewport_right_to_content_right,
 )
-from omnidesk.ui.column_browser_model import _DirectoryEntry, _sort_entries
+from omnidesk.ui.column_browser_helpers import ERROR_PLACEHOLDER
+from omnidesk.ui.column_browser_model import (
+    _ColumnFileSystemModel,
+    _DirectoryEntry,
+    _sort_entries,
+)
 
 
 def test_set_root_path_accepts_directory_and_file(qtbot, tmp_path: Path) -> None:
@@ -113,6 +120,83 @@ def test_set_root_path_clears_stale_navigation_state(qtbot, tmp_path: Path) -> N
 
     assert not browser._view.currentIndex().isValid()
     assert browser._view.paste_directory() is None
+
+
+def test_ensure_relevant_columns_visible_shows_hidden_path_column(qtbot, tmp_path) -> None:
+    # QColumnView が現在パス上の列を hidden のまま取り残しても、明示的に可視化する。
+    child = tmp_path / "child"
+    child.mkdir()
+    (child / "grandchild").mkdir()
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.show()
+    qtbot.waitExposed(browser)
+    browser.set_root_path(tmp_path)
+    qtbot.waitUntil(
+        lambda: any(column.rootIndex().isValid() for column in browser._view.column_views()),
+        timeout=1000,
+    )
+
+    browser._current_path = tmp_path
+    columns = [c for c in browser._view.column_views() if c.rootIndex().isValid()]
+    assert columns
+    target = columns[0]
+    target.hide()
+    assert target.isVisible() is False
+
+    browser._ensure_relevant_columns_visible()
+
+    assert target.isVisible() is True
+
+
+def test_ensure_relevant_columns_visible_skips_unrelated_columns(qtbot, tmp_path) -> None:
+    # 現在パスに無関係な（祖先でない）列は触らない。
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.show()
+    qtbot.waitExposed(browser)
+    browser.set_root_path(tmp_path)
+    qtbot.waitUntil(
+        lambda: any(column.rootIndex().isValid() for column in browser._view.column_views()),
+        timeout=1000,
+    )
+
+    # current_path を実在しない無関係パスにして、root 列が祖先扱いされないようにする。
+    browser._current_path = tmp_path.parent / "unrelated" / "deep"
+    columns = [c for c in browser._view.column_views() if c.rootIndex().isValid()]
+    assert columns
+    target = columns[0]
+    target.hide()
+
+    browser._ensure_relevant_columns_visible()
+
+    assert target.isVisible() is False
+
+
+def test_set_root_path_cancels_scans_in_other_subtrees(qtbot, tmp_path, monkeypatch) -> None:
+    # 別ツリーへ移ると、旧ツリーで走っているスキャンがキャンセルされ、スキャンプール
+    # を占有し続けないこと。これがないと巨大フォルダのスキャンが新ルートのスキャンを
+    # ブロックし、列が展開されない。
+    deep = tmp_path / "a" / "deep"
+    deep.mkdir(parents=True)
+    other = tmp_path / "b"
+    other.mkdir()
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    # スキャンを実際には走らせず「loading」のまま留めてスレッド占有を再現する。
+    monkeypatch.setattr(browser._model._scan_pool, "start", lambda _job: None)
+
+    browser.set_root_path(deep)
+    deep_index = browser._model.index(str(deep))
+    browser._model.rowCount(deep_index)
+    deep_node = browser._model._node_from_index(deep_index)
+    assert deep_node is not None
+    assert deep_node.loading is True
+
+    browser.set_root_path(other)
+
+    assert deep_node.loading is False
+    assert deep_node.scan_token is None
 
 
 def test_handle_selection_changed_ignores_invalid_index(qtbot) -> None:
@@ -369,6 +453,9 @@ def test_settle_columns_keeps_existing_offset_for_viewport_relative_columns(
         def update(self) -> None:
             return None
 
+        def show(self) -> None:
+            return None
+
     browser = ColumnBrowser()
     qtbot.addWidget(browser)
     browser.set_root_path(tmp_path)
@@ -417,6 +504,9 @@ def test_shallower_settle_animates_left_before_clamping_scroll_range(
             return self
 
         def update(self) -> None:
+            return None
+
+        def show(self) -> None:
             return None
 
     browser = ColumnBrowser()
@@ -468,6 +558,9 @@ def test_shallower_selection_restores_qt_scroll_jump_before_animation(
             return self
 
         def update(self) -> None:
+            return None
+
+        def show(self) -> None:
             return None
 
     browser = ColumnBrowser()
@@ -524,6 +617,9 @@ def test_reveal_settle_can_use_pending_hidden_columns(monkeypatch, qtbot, tmp_pa
             return self
 
         def update(self) -> None:
+            return None
+
+        def show(self) -> None:
             return None
 
     browser = ColumnBrowser()
@@ -677,6 +773,148 @@ def test_column_model_keeps_standard_icons(qtbot, tmp_path: Path) -> None:
     assert not folder_icon.isNull()
     assert isinstance(file_icon, QIcon)
     assert not file_icon.isNull()
+
+
+def test_failed_directory_scan_does_not_retry_forever(qtbot, tmp_path, monkeypatch) -> None:
+    # アクセス不能ディレクトリで rowCount→再スキャンの無限ループにならないこと。
+    target = tmp_path / "denied"
+    target.mkdir()
+
+    def boom(_path):
+        raise OSError("Access is denied")
+
+    monkeypatch.setattr(column_browser_model_module.os, "scandir", boom)
+    model = _ColumnFileSystemModel()
+    index = model.setRootPath(str(target))
+
+    with qtbot.waitSignal(model.directoryLoaded, timeout=2000):
+        model.rowCount(index)
+
+    node = model._node_from_index(index)
+    assert node is not None
+    assert node.error is not None
+    assert node.loaded is True
+    generation_after_failure = node.scan_generation
+
+    for _ in range(5):
+        model.rowCount(index)
+
+    # 失敗後は loaded=True なので再スキャンが走らず、世代も増えない。
+    assert node.scan_generation == generation_after_failure
+    assert model.directory_error(index) is not None
+
+
+def test_failed_scan_shows_error_placeholder() -> None:
+    assert column_placeholder_text(row_count=0, loaded=True, error="denied") == ERROR_PLACEHOLDER
+    # 中身があれば error があってもプレースホルダは出さない。
+    assert column_placeholder_text(row_count=3, loaded=True, error="denied") is None
+
+
+def test_cancelled_old_scan_does_not_remove_new_job_reference(qtbot, tmp_path, monkeypatch) -> None:
+    # generation 1 開始 → cancel → generation 2 開始 → generation 1 の finished を遅れて
+    # 流しても、新しい job 参照（_jobs / scan_token）が壊れないこと。
+    target = tmp_path / "dir"
+    target.mkdir()
+    model = _ColumnFileSystemModel()
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    index = model.setRootPath(str(target))
+    node = model._node_from_index(index)
+    assert node is not None
+    key = normalize_directory_key(str(target))
+
+    model._start_scan(node)
+    token_a = node.scan_token
+    assert token_a in model._jobs
+
+    model._cancel_scan(node)
+    model._start_scan(node)
+    token_b = node.scan_token
+    assert token_b is not token_a
+    assert token_b in model._jobs
+
+    # generation 1（token_a）の finished が遅れて到着。
+    model._handle_scan_finished((key, 1, token_a, True, 0, time.perf_counter(), None))
+
+    assert token_a not in model._jobs
+    assert token_b in model._jobs
+    assert node.scan_token is token_b
+    assert node.loading is True
+
+
+def test_index_for_unknown_child_under_loaded_parent_does_not_mutate_children(
+    qtbot, tmp_path
+) -> None:
+    # loaded 親に対して未知 path の index を引いても、通知なしに children が増えないこと。
+    model = _ColumnFileSystemModel()
+    index = model.setRootPath(str(tmp_path))
+    node = model._node_from_index(index)
+    assert node is not None
+    node.loaded = True
+    assert node.children == []
+
+    unknown = tmp_path / "ghost.txt"
+    child_index = model.index(str(unknown))
+
+    assert node.children == []
+    assert model.filePath(child_index) == str(unknown)
+
+
+def test_set_resolve_symlinks_controls_scan_policy(qtbot, tmp_path, monkeypatch) -> None:
+    target = tmp_path / "dir"
+    target.mkdir()
+
+    for resolve in (False, True):
+        model = _ColumnFileSystemModel()
+        started_jobs: list[object] = []
+        monkeypatch.setattr(model._scan_pool, "start", started_jobs.append)
+        model.setResolveSymlinks(resolve)
+        index = model.setRootPath(str(target))
+
+        model.rowCount(index)
+
+        assert started_jobs
+        assert started_jobs[-1]._follow_symlinks is resolve
+
+
+def test_large_directory_loads_all_entries_without_duplicates(qtbot, tmp_path) -> None:
+    # 多数のエントリ（複数バッチ）でも、全件が一意な連番 row で読み込まれること。
+    # child_keys による O(1) 重複判定が線形探索の O(n²) を置き換えている回帰確認。
+    count = 1000
+    for index in range(count):
+        (tmp_path / f"f{index:05d}.txt").write_text("x", encoding="utf-8")
+    model = _ColumnFileSystemModel()
+    root_index = model.setRootPath(str(tmp_path))
+
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.rowCount(root_index)
+
+    node = model._node_from_index(root_index)
+    assert node is not None
+    assert model.rowCount(root_index) == count
+    assert len(node.children) == count
+    assert len(node.child_keys) == count
+    assert [child.row for child in node.children] == list(range(count))
+
+
+def test_duplicate_batch_does_not_insert_duplicate_rows(qtbot, tmp_path, monkeypatch) -> None:
+    target = tmp_path / "dir"
+    target.mkdir()
+    model = _ColumnFileSystemModel()
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    root_index = model.setRootPath(str(target))
+    node = model._node_from_index(root_index)
+    assert node is not None
+    model._start_scan(node)
+    key = normalize_directory_key(str(target))
+    entries = [_DirectoryEntry(path=str(target / "a.txt"), name="a.txt", is_dir=False)]
+
+    model._handle_scan_batch((key, node.scan_generation, node.scan_token, entries))
+    assert model.rowCount(root_index) == 1
+
+    # 同一バッチを再投入しても重複行が増えないこと。
+    model._handle_scan_batch((key, node.scan_generation, node.scan_token, entries))
+    assert model.rowCount(root_index) == 1
+    assert len(node.child_keys) == 1
 
 
 def test_column_model_sorts_directories_first_with_windows_natural_order() -> None:

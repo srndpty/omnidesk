@@ -6,10 +6,12 @@ import logging
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
+from typing import cast
 
 from PyQt6 import sip
 from PyQt6.QtCore import (
     QAbstractAnimation,
+    QByteArray,
     QDir,
     QEasingCurve,
     QModelIndex,
@@ -105,6 +107,7 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
 
         self._view = _DarkColumnView(self)
         self._view.set_directory_loaded_predicate(self._is_directory_loaded)
+        self._view.set_directory_error_provider(self._directory_error)
         self._view.setModel(self._model)
         self._view.setAlternatingRowColors(True)
         self._view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
@@ -168,6 +171,10 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         # 古い current/selection とアクティブ列の参照を捨てておく。
         self._view.clear_navigation_state()
         index = self._model.setRootPath(str(target))
+        # 別ツリーへ移る前に、旧ツリーで走っている（または待機中の）スキャンを止める。
+        # スキャンプールはスレッド数が限られるため、巨大フォルダのスキャンが居座ると
+        # 新ルートのスキャンが順番待ちになり、列が「読み込み中…」のまま展開されない。
+        self._cancel_stale_directory_scans(target)
         self._view.setRootIndex(index)
         self._connect_selection_signals()
         self._cancel_pending_reveal()
@@ -272,6 +279,11 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         if callable(loaded):
             return bool(loaded(index)) or key_loaded
         return key_loaded
+
+    def _directory_error(self, index: QModelIndex) -> str | None:
+        if not index.isValid():
+            return None
+        return self._model.directory_error(index)
 
     def _handle_directory_loaded(self, path: str) -> None:
         self._loaded_dirs.add(normalize_directory_key(path))
@@ -439,6 +451,9 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
             if reveal:
                 hbar.setValue(desired)
         finally:
+            # 列の表示漏れ対策は _settling=True のうちに行う。show() が誘発する
+            # rangeChanged は再入ガードで無視され、無限ループにならない。
+            self._ensure_relevant_columns_visible()
             self._settling = False
 
     def _animate_horizontal_scroll_left(self, target_value: int) -> None:
@@ -450,7 +465,9 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
             return
         self._stop_horizontal_scroll_animation()
         self._pending_scroll_maximum = target_value
-        animation = QPropertyAnimation(hbar, b"value", self)
+        # PyQt6 は実行時に bytes を受け付けるが、QByteArray の型スタブに bytes 受け取りの
+        # コンストラクタが無いため、cast で QByteArray として渡す。
+        animation = QPropertyAnimation(hbar, cast(QByteArray, b"value"), self)
         animation.setStartValue(start_value)
         animation.setEndValue(target_value)
         animation.setDuration(180)
@@ -475,11 +492,30 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
             if hbar.maximum() > target_value:
                 hbar.setMaximum(target_value)
         finally:
+            self._ensure_relevant_columns_visible()
             self._settling = False
 
     def _is_reveal_relevant_column(self, column: _ColumnListView) -> bool:
         root_path = self._model.filePath(column.rootIndex())
         return is_same_or_ancestor_path(root_path, str(self._current_path))
+
+    def _ensure_relevant_columns_visible(self) -> None:
+        """現在パス上の列で、配置済みなのに非表示のままの列を明示的に表示する。
+
+        QColumnView は深い階層から浅い別ツリーへジャンプして複数列を一度に作り直す
+        とき、新しい列を正しい位置・幅に配置しながら show() し損ねることがある
+        （visible=False のまま中身が見えない）。現在パスの祖先・自身に当たり、幅を
+        持つ列は必ず可視化することで、列の表示漏れを補う。
+        """
+        current = str(self._current_path)
+        for column in self._view.column_views():
+            root = column.rootIndex()
+            if not root.isValid() or column.width() <= 0:
+                continue
+            if not is_same_or_ancestor_path(self._model.filePath(root), current):
+                continue
+            if not column.isVisible():
+                column.show()
 
     def _connect_selection_signals(self) -> None:
         selection_model = self._view.selectionModel()

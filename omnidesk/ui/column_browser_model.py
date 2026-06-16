@@ -44,7 +44,9 @@ class _DirectoryEntry:
 
 class _DirectoryNode:
     __slots__ = (
+        "child_keys",
         "children",
+        "error",
         "is_dir",
         "loaded",
         "loading",
@@ -69,8 +71,16 @@ class _DirectoryNode:
         self.row = 0
         self.is_dir = path.is_dir() if is_dir is None else is_dir
         self.children: list[_DirectoryNode] = []
+        # children に入っている正規化キーの集合。重複挿入の判定を O(1) にし、巨大
+        # ディレクトリで ``child in node.children`` の線形探索（O(n²)）になるのを防ぐ。
+        self.child_keys: set[str] = set()
+        # ``loaded`` は「スキャンを試行し終えた」ことを表す。成否は ``error`` で区別する。
+        # こうすることで、アクセス不能ディレクトリで rowCount→再スキャンの無限ループを
+        # 避けつつ、プレースホルダで失敗を表示できる。手動 refresh のときだけ ``loaded``
+        # を False に戻して再試行する。
         self.loaded = False
         self.loading = False
+        self.error: str | None = None
         self.scan_generation = 0
         self.scan_token: _ScanToken | None = None
 
@@ -88,12 +98,21 @@ class _DirectoryScanSignals(QObject):
 
 
 class _DirectoryScanJob(QRunnable):
-    def __init__(self, path: Path, key: str, generation: int, token: _ScanToken) -> None:
+    def __init__(
+        self,
+        path: Path,
+        key: str,
+        generation: int,
+        token: _ScanToken,
+        *,
+        follow_symlinks: bool,
+    ) -> None:
         super().__init__()
         self._path = path
         self._key = key
         self._generation = generation
         self._token = token
+        self._follow_symlinks = follow_symlinks
         self.signals = _DirectoryScanSignals()
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
@@ -110,12 +129,10 @@ class _DirectoryScanJob(QRunnable):
                             self._path,
                             count,
                         )
-                        self.signals.finished.emit(
-                            (self._key, self._generation, True, count, started, None)
-                        )
+                        self._emit_finished(True, count, started, None)
                         return
                     try:
-                        is_dir = entry.is_dir(follow_symlinks=True)
+                        is_dir = entry.is_dir(follow_symlinks=self._follow_symlinks)
                     except OSError:
                         is_dir = False
                     scanned.append(
@@ -133,16 +150,21 @@ class _DirectoryScanJob(QRunnable):
                         self._path,
                         count,
                     )
-                    self.signals.finished.emit(
-                        (self._key, self._generation, True, count, started, None)
-                    )
+                    self._emit_finished(True, count, started, None)
                     return
-                self.signals.batchReady.emit((self._key, self._generation, batch))
+                self.signals.batchReady.emit((self._key, self._generation, self._token, batch))
         except OSError as exc:
             error = str(exc)
             logger.info("Column directory scan failed: %s error=%s", self._path, exc)
+        self._emit_finished(self._token.cancelled, count, started, error)
+
+    def _emit_finished(
+        self, cancelled: bool, count: int, started: float, error: str | None
+    ) -> None:
+        # token を payload に含めることで、generation 再利用・古い signal・キャンセル後
+        # 再開が絡んでも、ハンドラ側が必ず正しい job を ``_jobs`` から除去できる。
         self.signals.finished.emit(
-            (self._key, self._generation, self._token.cancelled, count, started, error)
+            (self._key, self._generation, self._token, cancelled, count, started, error)
         )
 
 
@@ -226,18 +248,20 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         self._nodes_by_key: dict[str, _DirectoryNode] = {}
         self._root_path = Path.home()
         self._scan_pool = QThreadPool(self)
-        self._scan_pool.setMaxThreadCount(2)
+        self._scan_pool.setMaxThreadCount(4)
         self._jobs: dict[_ScanToken, _DirectoryScanJob] = {}
         self._icon_provider = QFileIconProvider()
         self._icon_cache: dict[str, QIcon] = {}
+        # symlink/junction/reparse point を辿るかどうか。スキャンの is_dir 判定に渡す。
+        self._resolve_symlinks = False
         self.destroyed.connect(self._cancel_all_scans)
 
     # QFileSystemModel-compatible no-ops used by ColumnBrowser setup.
     def setFilter(self, _filters: Any) -> None:  # noqa: N802
         return None
 
-    def setResolveSymlinks(self, _enable: bool) -> None:  # noqa: N802
-        return None
+    def setResolveSymlinks(self, enable: bool) -> None:  # noqa: N802
+        self._resolve_symlinks = bool(enable)
 
     def setReadOnly(self, _enable: bool) -> None:  # noqa: N802
         return None
@@ -330,8 +354,10 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         if node.children:
             self.beginRemoveRows(index, 0, len(node.children) - 1)
             node.children.clear()
+            node.child_keys.clear()
             self.endRemoveRows()
         node.loaded = False
+        node.error = None
         self._start_scan(node)
 
     def cancel_scans_except(self, allowed_paths: set[Path]) -> None:
@@ -346,6 +372,10 @@ class _ColumnFileSystemModel(QAbstractItemModel):
     def is_directory_loaded(self, index: QModelIndex) -> bool:
         node = self._node_from_index(index)
         return bool(node is not None and node.loaded)
+
+    def directory_error(self, index: QModelIndex) -> str | None:
+        node = self._node_from_index(index)
+        return node.error if node is not None else None
 
     def _node_from_index(self, index: QModelIndex) -> _DirectoryNode | None:
         if not index.isValid():
@@ -371,6 +401,10 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         return icon
 
     def _index_for_path(self, path: Path) -> QModelIndex:
+        # パス指定の index 化。スキャンで親の children に挿入済みの node は正しい row を
+        # 持つ。未挿入（loaded 親に存在しない子・親が未読み込みなど）の場合は detached
+        # な node を作って row=0 の index を返すが、これは filePath などパス解決用であり、
+        # 可視行としては children に入れない（行追加は必ず beginInsertRows 経由）。
         node = self._ensure_node(path)
         return self.createIndex(node.row, 0, node)
 
@@ -387,15 +421,11 @@ class _ColumnFileSystemModel(QAbstractItemModel):
             return existing
         parent_path = path.parent
         parent_node = None if parent_path == path else self._ensure_node(parent_path, is_dir=True)
+        # children への挿入は必ずスキャンの beginInsertRows 経由で行う。ここで loaded
+        # 親へ直接 append すると、model 通知なしに row が増え、ソート順も壊れるため、
+        # node を登録するだけに留める（row は親が未挿入なら 0 のまま）。
         node = _DirectoryNode(path, parent=parent_node, is_dir=is_dir)
         self._nodes_by_key[key] = node
-        if (
-            parent_node is not None
-            and parent_node.loaded
-            and not any(child.path == path for child in parent_node.children)
-        ):
-            node.row = len(parent_node.children)
-            parent_node.children.append(node)
         return node
 
     def _start_scan(self, node: _DirectoryNode) -> None:
@@ -404,9 +434,26 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         token = _ScanToken()
         node.scan_generation += 1
         node.scan_token = token
+        # loading を先に立て、以降の beginRemoveRows が誘発しうる rowCount 再入で
+        # 二重スキャンが始まらないようにする。
         node.loading = True
+        node.error = None
+        # キャンセルで中断したスキャンの部分的な children が残っている場合は、再スキャン
+        # 前に通知付きで一度クリアし、削除済みファイルや古い順序が混ざらないようにする。
+        if node.children and not node.loaded:
+            index = self._index_for_path(node.path)
+            self.beginRemoveRows(index, 0, len(node.children) - 1)
+            node.children.clear()
+            node.child_keys.clear()
+            self.endRemoveRows()
         key = normalize_directory_key(str(node.path))
-        job = _DirectoryScanJob(node.path, key, node.scan_generation, token)
+        job = _DirectoryScanJob(
+            node.path,
+            key,
+            node.scan_generation,
+            token,
+            follow_symlinks=self._resolve_symlinks,
+        )
         job.signals.batchReady.connect(self._handle_scan_batch)
         job.signals.finished.connect(self._handle_scan_finished)
         self._jobs[token] = job
@@ -431,9 +478,11 @@ class _ColumnFileSystemModel(QAbstractItemModel):
     def _handle_scan_batch(self, payload: object) -> None:
         if sip.isdeleted(self):
             return
-        key, generation, entries = cast(tuple[str, int, list[_DirectoryEntry]], payload)
+        key, generation, token, entries = cast(
+            tuple[str, int, _ScanToken, list[_DirectoryEntry]], payload
+        )
         node = self._nodes_by_key.get(key)
-        if node is None or generation != node.scan_generation or node.scan_token is None:
+        if node is None or generation != node.scan_generation or node.scan_token is not token:
             return
         new_nodes: list[_DirectoryNode] = []
         for entry in entries:
@@ -447,10 +496,12 @@ class _ColumnFileSystemModel(QAbstractItemModel):
                 child.parent = node
                 child.name = entry.name
                 child.is_dir = entry.is_dir
-            if child in node.children:
+            # 既に children に入っているキーは O(1) で弾く（line search を避ける）。
+            if entry_key in node.child_keys:
                 continue
             child.row = len(node.children) + len(new_nodes)
             new_nodes.append(child)
+            node.child_keys.add(entry_key)
         if not new_nodes:
             return
         first = len(node.children)
@@ -463,29 +514,33 @@ class _ColumnFileSystemModel(QAbstractItemModel):
     def _handle_scan_finished(self, payload: object) -> None:
         if sip.isdeleted(self):
             return
-        key, generation, cancelled, count, started, error = cast(
-            tuple[str, int, bool, int, float, str | None],
+        key, generation, token, cancelled, count, started, error = cast(
+            tuple[str, int, _ScanToken, bool, int, float, str | None],
             payload,
         )
-        node = self._nodes_by_key.get(key)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
-        token = node.scan_token if node is not None else None
-        if token is not None:
-            self._jobs.pop(token, None)
-        if node is None or generation != node.scan_generation:
-            return
-        if cancelled or node.scan_token is None:
+        # payload 由来の token で必ず除去する。これにより、古い job の finished が
+        # 新しい job の参照を消したり、キャンセル済み token が残留したりしない。
+        self._jobs.pop(token, None)
+        node = self._nodes_by_key.get(key)
+        if node is None or generation != node.scan_generation or node.scan_token is not token:
+            # キャンセル済み・世代交代・別 job に置き換え済み。状態には触れない。
             logger.info(
-                "Column directory scan ignored: %s generation=%d count=%d elapsed_ms=%d",
-                node.path,
+                "Column directory scan ignored: %s generation=%d cancelled=%s count=%d "
+                "elapsed_ms=%d",
+                "" if node is None else node.path,
                 generation,
+                cancelled,
                 count,
                 elapsed_ms,
             )
             return
         node.loading = False
         node.scan_token = None
-        node.loaded = error is None
+        # 成否に関わらず「試行は完了した」とみなす。失敗時も loaded=True にすることで
+        # rowCount→再スキャンの無限ループを防ぎ、error はプレースホルダ表示に使う。
+        node.loaded = True
+        node.error = error
         logger.info(
             "Column directory scan finished: %s count=%d elapsed_ms=%d error=%s",
             node.path,
