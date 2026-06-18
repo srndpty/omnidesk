@@ -627,6 +627,15 @@ def test_media_file_system_model_cache_save_generation_is_not_reused(tmp_path: P
     assert cache_path.read_text(encoding="utf-8") == "newest"
 
 
+def test_media_file_system_model_forget_failed_thumbnails_clears_set() -> None:
+    model = MediaFileSystemModel()
+    model._failed.update({"a", "b"})
+
+    model.forget_failed_thumbnails()
+
+    assert model._failed == set()
+
+
 def test_media_file_system_model_ensure_thumbnail_skips_memory_pending_failed(
     monkeypatch,
     tmp_path: Path,

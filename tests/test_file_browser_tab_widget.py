@@ -528,6 +528,25 @@ def test_file_browser_tab_refresh_preserves_selection_and_resorts(
     assert sorted_columns == [(0, Qt.SortOrder.AscendingOrder)]
 
 
+def test_file_browser_tab_refresh_retries_failed_thumbnails(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(tab, "navigate_to", lambda path: True)
+    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
+    monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
+    monkeypatch.setattr(tab._model, "sort", lambda column, order: None)
+    tab._model._failed.add(str(tmp_path / "locked.png"))
+
+    tab.refresh()
+
+    assert tab._model._failed == set()
+
+
 def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
     monkeypatch,
     qtbot,

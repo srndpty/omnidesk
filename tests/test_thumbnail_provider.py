@@ -166,6 +166,26 @@ def test_cancel_thumbnail_cancels_image_token_and_removes_queued_video() -> None
     assert provider._queued_video_keys == {"keep-me"}
 
 
+def test_cancel_thumbnail_drops_image_job_and_token_entries() -> None:
+    provider = MediaThumbnailProvider()
+    token = CancellationToken(3)
+    provider._image_jobs["leaky-key"] = cast(_ImageJob, object())
+    provider._image_tokens["leaky-key"] = token
+
+    provider.cancel_thumbnail("leaky-key")
+
+    assert token.cancelled
+    assert "leaky-key" not in provider._image_jobs
+    assert "leaky-key" not in provider._image_tokens
+
+
+def test_on_image_finished_ignores_result_after_token_dropped(qtbot) -> None:
+    provider = MediaThumbnailProvider()
+
+    with qtbot.assertNotEmitted(provider.thumbnailReady, wait=100):
+        provider._on_image_finished("dropped", QImage(), 100, 0)
+
+
 def test_on_image_finished_suppresses_cancelled_token(qtbot) -> None:
     provider = MediaThumbnailProvider()
     token = CancellationToken(6)
