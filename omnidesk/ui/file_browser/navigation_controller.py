@@ -90,6 +90,9 @@ class FileBrowserNavigationMixin:
 
     def refresh(self) -> None:
         """Refresh the current directory view."""
+        # 明示的な refresh では、以前失敗したサムネイル（一時的にロックされていた
+        # ファイルなど）を再試行する。これをしないとモデルの寿命の間ずっと空のままになる。
+        self._model.forget_failed_thumbnails()
         selected = self._selected_index_path()
         preserve_selection = self._preserve_selection_on_refresh
         if (

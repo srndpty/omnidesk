@@ -177,6 +177,16 @@ class MediaFileSystemModel(QFileSystemModel):
             self._cancel_thumbnail_key(key)
         self._visible_keys.clear()
 
+    def forget_failed_thumbnails(self) -> None:
+        """記録済みのサムネイル失敗を消し、可視アイテムを再試行できるようにする。
+
+        一過性の読み取りエラー（ロック中・書き込み途中のファイルなど）は、成功時しか
+        ``_failed`` を解除せず、ファイル単位の無効化経路も無いため、モデルの寿命の間
+        ずっと残ってしまう。明示的な refresh が、それらのファイルを再試行する自然な
+        起点となる。
+        """
+        self._failed.clear()
+
     def cancel_background_work(self) -> None:
         """Cancel thumbnail work owned by this model before shutdown or tab disposal."""
         self.clear_visible_thumbnail_targets()

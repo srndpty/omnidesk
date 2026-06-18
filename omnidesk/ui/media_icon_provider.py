@@ -138,9 +138,13 @@ class MediaThumbnailProvider(QObject):
         return False
 
     def cancel_thumbnail(self, key: str) -> None:
-        image_token = self._image_tokens.get(key)
+        image_token = self._image_tokens.pop(key, None)
         if image_token is not None:
             image_token.cancel()
+            # キャンセルされた画像ジョブは emit せずに run() を抜けるため、
+            # _on_image_finished が呼ばれずこれらのエントリが掃除されない。
+            # 再要求されないままキャンセルされたキーが溜まらないよう、ここで取り除く。
+            self._image_jobs.pop(key, None)
         video_token = self._video_tokens.get(key)
         if video_token is not None:
             video_token.cancel()
@@ -176,7 +180,11 @@ class MediaThumbnailProvider(QObject):
         self, key: str, image: QImage | None, edge: int, generation: int
     ) -> None:
         token = self._image_tokens.get(key)
-        if token is not None and token.generation != generation:
+        if token is None:
+            # token は cancel_thumbnail で破棄済み（または重複配信）。古いアイコンを
+            # emit せず、遅れて届いた結果は無視する。
+            return
+        if token.generation != generation:
             logger.debug(
                 "Ignoring stale image thumbnail job: %s generation=%s current=%s",
                 key,
@@ -186,7 +194,7 @@ class MediaThumbnailProvider(QObject):
             return
         self._image_jobs.pop(key, None)
         self._image_tokens.pop(key, None)
-        if token is not None and token.cancelled:
+        if token.cancelled:
             return
         icon: QIcon | None = None
         if image is not None and not image.isNull():
