@@ -269,7 +269,10 @@ class FileBrowserNavigationMixin:
         """名前順/拡張子順を切り替え、選択を見やすい位置へ保つ。"""
         if mode not in ("name", "extension"):
             return
-        if self._model.sort_mode() == mode:
+        # 既に同じ方式かつ名前列で並んでいるなら何もしない。ただしサイズ列・更新日時列で
+        # 並べ替えた後は、同じ方式の再選択でも名前列へ戻す必要がある（sort_mode() は
+        # ヘッダー列で並べ替えても保持されたままのため、列も併せて確認する）。
+        if self._model.sort_mode() == mode and self._header.sortIndicatorSection() == 0:
             return
         # 直前にサイズ列・更新日時列で並べ替えていても名前列へ戻す。これをしないと、
         # 以降の refresh が古いヘッダー（_sort_current_directory が参照）で再ソートしてしまう。

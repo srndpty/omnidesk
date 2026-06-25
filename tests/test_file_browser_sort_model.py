@@ -96,6 +96,30 @@ def test_menu_sort_overrides_prior_size_column_sort(qtbot, tmp_path: Path) -> No
     assert tab._tree_view.header().sortIndicatorSection() == 0
 
 
+def test_reselecting_same_mode_restores_name_column_after_header_sort(
+    qtbot, tmp_path: Path
+) -> None:
+    # 「名前順」のままサイズ列で並べ替えた後、メニューで同じ「名前順」を選び直すと
+    # 名前列の並びへ戻る（同一方式の再選択でも列0へ戻す）。
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.txt").write_text("xxxxxxxxxx", encoding="utf-8")  # 大きい
+    (tmp_path / "b.txt").write_text("x", encoding="utf-8")  # 小さい
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 3)
+
+    assert tab.sort_mode() == "name"
+    tab._tree_view.sortByColumn(1, Qt.SortOrder.AscendingOrder)
+    # サイズ昇順では b.txt(小) が a.txt(大) より前に来る。
+    qtbot.waitUntil(lambda: _visible_names(tab) == ["sub", "b.txt", "a.txt"], timeout=3000)
+
+    tab.set_sort_mode("name")  # 同じ方式の再選択
+
+    qtbot.waitUntil(lambda: _visible_names(tab) == ["sub", "a.txt", "b.txt"], timeout=3000)
+    assert tab._header.sortIndicatorSection() == 0
+
+
 def test_build_sort_menu_reflects_current_mode(qtbot, tmp_path: Path) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
