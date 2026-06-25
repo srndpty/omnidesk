@@ -265,6 +265,26 @@ class FileBrowserNavigationMixin:
         if self._name_column_width > 0:
             self._header.resizeSection(0, self._name_column_width)
 
+    def set_sort_mode(self, mode: str) -> None:
+        """名前順/拡張子順を切り替え、選択を見やすい位置へ保つ。"""
+        if mode not in ("name", "extension"):
+            return
+        # 既に同じ方式かつ名前列で並んでいるなら何もしない。ただしサイズ列・更新日時列で
+        # 並べ替えた後は、同じ方式の再選択でも名前列へ戻す必要がある（sort_mode() は
+        # ヘッダー列で並べ替えても保持されたままのため、列も併せて確認する）。
+        if self._model.sort_mode() == mode and self._header.sortIndicatorSection() == 0:
+            return
+        # 直前にサイズ列・更新日時列で並べ替えていても名前列へ戻す。これをしないと、
+        # 以降の refresh が古いヘッダー（_sort_current_directory が参照）で再ソートしてしまう。
+        self._tree_view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+        self._model.set_sort_mode(mode)
+        selected = self._selected_index_path()
+        if selected is not None:
+            self._select_path(selected, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+    def sort_mode(self) -> str:
+        return self._model.sort_mode()
+
     def _sort_current_directory(self, *, reason: str) -> None:
         column = self._header.sortIndicatorSection()
         if column < 0:
@@ -477,7 +497,10 @@ class FileBrowserNavigationMixin:
     # ------------------------------------------------------------------
     def _update_media_mode(self, directory: Path, *, select_default: bool = True) -> None:
         # should_enable = self._is_media_heavy(directory)
-        should_enable = True  # 常にサムネイルモードにする
+        # ユーザーが明示的に表示モードを切り替えていれば、その選択を尊重する。
+        # こうしないと、削除後の refresh などで強制的にタイル表示へ戻ってしまう。
+        # 未指定（None）の場合は既定として常にサムネイルモードにする。
+        should_enable = self._manual_media_mode if self._manual_media_mode is not None else True
         if should_enable != self._media_icon_mode:
             self._media_icon_mode = should_enable
             self._apply_media_mode(select_default=select_default)

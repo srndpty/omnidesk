@@ -265,6 +265,46 @@ def test_main_window_f1_shows_shortcuts_dialog(monkeypatch, qtbot, tmp_path: Pat
     assert window._shortcuts_dialog is None
 
 
+def test_main_window_has_menu_bar_without_toolbar(monkeypatch, qtbot, tmp_path: Path) -> None:
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    from PyQt6.QtWidgets import QToolBar
+
+    top_level = [action.text() for action in window.menuBar().actions()]
+    assert top_level == ["ファイル(&F)", "編集(&E)", "表示(&V)", "ヘルプ(&H)"]
+    assert window.findChildren(main_window_module.QToolButton)  # 表示切替の角ウィジェット
+    assert not window.findChildren(QToolBar)  # ツールバーは廃止済み
+
+
+def test_main_window_view_toggle_is_corner_widget(monkeypatch, qtbot, tmp_path: Path) -> None:
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    corner = window.menuBar().cornerWidget(Qt.Corner.TopRightCorner)
+    assert corner is not None
+    assert corner.defaultAction() is window._toggle_view_action
+
+
+def test_main_window_edit_menu_is_disabled_placeholder_for_fake_tab(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window._rebuild_edit_menu()
+    actions = [a for a in window._edit_menu.actions() if not a.isSeparator()]
+    # FakeTab には edit_menu_actions が無いため、無効なプレースホルダだけが入る
+    assert len(actions) == 1
+    assert not actions[0].isEnabled()
+
+
 def test_main_window_persists_width_and_session(monkeypatch, qtbot, tmp_path: Path) -> None:
     saved: list[dict] = []
     settings: dict = {}

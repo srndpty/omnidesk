@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QItemSelectionModel, Qt
-from PyQt6.QtGui import QAction, QKeySequence, QShortcut
-from PyQt6.QtWidgets import QAbstractItemView, QMenu
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
+from PyQt6.QtWidgets import QAbstractItemView, QMenu, QWidget
 
 from ..file_browser_actions import file_action_states
 
@@ -40,6 +40,10 @@ class FileBrowserActionsMixin:
         self._new_folder_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
         self._new_folder_action.triggered.connect(self._create_new_folder)
 
+        self._select_all_action = QAction("Select All", self)
+        self._select_all_action.setShortcut(QKeySequence("Ctrl+A"))
+        self._select_all_action.triggered.connect(self._select_all)
+
         for action in (
             self._rename_action,
             self._copy_action,
@@ -48,14 +52,34 @@ class FileBrowserActionsMixin:
             self._delete_action,
             self._new_file_action,
             self._new_folder_action,
+            self._select_all_action,
         ):
             self.addAction(action)
 
         self._setup_shortcuts()
         self._update_action_states()
 
+    def edit_menu_actions(self) -> list[QAction | None]:
+        """上部メニューバーの「編集」に並べる QAction（``None`` は区切り線）。
+
+        各タブが自前で保持する QAction をそのまま返すことで、ショートカットの
+        二重登録（曖昧なショートカット警告）を避ける。
+        """
+        return [
+            self._cut_action,
+            self._copy_action,
+            self._paste_action,
+            None,
+            self._delete_action,
+            self._rename_action,
+            None,
+            self._select_all_action,
+            None,
+            self._new_file_action,
+            self._new_folder_action,
+        ]
+
     def _setup_shortcuts(self) -> None:
-        QShortcut(QKeySequence("Ctrl+A"), self, self._select_all)
         QShortcut(QKeySequence("Alt+D"), self, self._focus_path_edit)
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, self.go_back)
         QShortcut(QKeySequence("Alt+Left"), self, self.go_back)
@@ -114,4 +138,24 @@ class FileBrowserActionsMixin:
         menu.addSeparator()
         menu.addAction(self._new_file_action)
         menu.addAction(self._new_folder_action)
+        menu.addSeparator()
+        menu.addMenu(self.build_sort_menu(menu))
         menu.exec(view.viewport().mapToGlobal(point))
+
+    def build_sort_menu(self, parent: QWidget) -> QMenu:
+        """Windows エクスプローラー風の「並べ替え」メニュー（名前順/拡張子順の択一）を作る。
+
+        コンテキストメニューと上部メニューバーの両方から再利用する。現在の並べ替え
+        方式にチェックを入れた、使い捨てのメニューを返す。
+        """
+        menu = QMenu("並べ替え", parent)
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        current = self.sort_mode()
+        for label, mode in (("名前順", "name"), ("拡張子順", "extension")):
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(current == mode)
+            action.triggered.connect(lambda _checked=False, m=mode: self.set_sort_mode(m))
+            group.addAction(action)
+        return menu

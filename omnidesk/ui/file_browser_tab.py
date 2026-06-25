@@ -22,6 +22,7 @@ from .file_browser.clipboard import FileBrowserClipboardMixin, _ClipboardPayload
 from .file_browser.command_runner import FileBrowserCommandRunnerMixin
 from .file_browser.navigation_controller import FileBrowserNavigationMixin
 from .file_browser.operations_controller import FileBrowserOperationsMixin
+from .file_browser.sort_model import SortedFileSystemModel
 from .file_browser.status_controller import FileBrowserStatusMixin, _DirectoryCountJob
 from .file_browser.thumbnail_controller import FileBrowserThumbnailMixin
 from .file_browser.toolbar import _configure_arrow_button
@@ -93,11 +94,16 @@ class FileBrowserTab(
         self._deferred_refresh_target: Path | None = None
         self._preserve_selection_on_refresh = True
 
-        self._model = MediaFileSystemModel(self)
-        self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
-        # self._model.thumbnailUpdated.connect(self._handle_thumbnail_updated)
-        self._model.setResolveSymlinks(True)
-        self._model.setReadOnly(True)
+        self._source_model = MediaFileSystemModel(self)
+        self._source_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
+        # self._source_model.thumbnailUpdated.connect(self._handle_thumbnail_updated)
+        self._source_model.setResolveSymlinks(True)
+        self._source_model.setReadOnly(True)
+
+        # 名前順/拡張子順の並べ替えはプロキシ側で制御し、UI からは従来どおり
+        # ``self._model`` を QFileSystemModel と同じ感覚で扱えるようにする。
+        self._model = SortedFileSystemModel(self)
+        self._model.setSourceModel(self._source_model)
 
         # モデルのレイアウトが変更されたら、サムネイル要求をトリガーする
         self._model.layoutChanged.connect(self._on_layout_changed)

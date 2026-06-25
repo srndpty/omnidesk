@@ -540,11 +540,11 @@ def test_file_browser_tab_refresh_retries_failed_thumbnails(
     monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(tab._model, "sort", lambda column, order: None)
-    tab._model._failed.add(str(tmp_path / "locked.png"))
+    tab._source_model._failed.add(str(tmp_path / "locked.png"))
 
     tab.refresh()
 
-    assert tab._model._failed == set()
+    assert tab._source_model._failed == set()
 
 
 def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
@@ -786,6 +786,21 @@ def test_file_browser_tab_name_column_width_and_view_toggle(qtbot) -> None:
 
     assert tab._media_icon_mode is (not before)
     assert tab._toggle_view_button.text() in {"List View", "Tile View"}
+
+
+def test_manual_list_view_persists_through_media_mode_update(qtbot, tmp_path: Path) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+
+    # 既定はタイル表示。手動でリスト表示へ切り替える。
+    assert tab._media_icon_mode is True
+    tab._handle_view_toggle_clicked()
+    assert tab._media_icon_mode is False
+
+    # 削除後の refresh などで呼ばれる経路でも、手動選択を維持する。
+    tab._update_media_mode(tmp_path, select_default=False)
+    assert tab._media_icon_mode is False
 
 
 def test_file_browser_tab_tile_view_uses_single_pass_fixed_grid(qtbot) -> None:
