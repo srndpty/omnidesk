@@ -540,11 +540,11 @@ def test_file_browser_tab_refresh_retries_failed_thumbnails(
     monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(tab._model, "sort", lambda column, order: None)
-    tab._model._failed.add(str(tmp_path / "locked.png"))
+    tab._source_model._failed.add(str(tmp_path / "locked.png"))
 
     tab.refresh()
 
-    assert tab._model._failed == set()
+    assert tab._source_model._failed == set()
 
 
 def test_file_browser_tab_refresh_keeps_explicit_pending_selection(

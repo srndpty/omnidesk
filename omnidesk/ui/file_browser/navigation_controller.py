@@ -265,6 +265,20 @@ class FileBrowserNavigationMixin:
         if self._name_column_width > 0:
             self._header.resizeSection(0, self._name_column_width)
 
+    def set_sort_mode(self, mode: str) -> None:
+        """名前順/拡張子順を切り替え、選択を見やすい位置へ保つ。"""
+        if mode not in ("name", "extension"):
+            return
+        if self._model.sort_mode() == mode:
+            return
+        self._model.set_sort_mode(mode)
+        selected = self._selected_index_path()
+        if selected is not None:
+            self._select_path(selected, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+    def sort_mode(self) -> str:
+        return self._model.sort_mode()
+
     def _sort_current_directory(self, *, reason: str) -> None:
         column = self._header.sortIndicatorSection()
         if column < 0:

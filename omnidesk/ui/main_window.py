@@ -6,7 +6,14 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThreadPool
 from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import QFileDialog, QLabel, QMainWindow, QSizePolicy, QStackedWidget, QToolBar
+from PyQt6.QtWidgets import (
+    QFileDialog,
+    QLabel,
+    QMainWindow,
+    QSizePolicy,
+    QStackedWidget,
+    QToolButton,
+)
 
 from ..utils.config import AppSettings, load_settings, save_settings
 from ..utils.paths import get_default_start_path
@@ -51,7 +58,7 @@ class MainWindow(QMainWindow):
         self._view_mode = "tabs"
 
         self._create_actions()
-        self._setup_toolbar()
+        self._setup_menu_bar()
         self._setup_status_bar()
 
         self._restore_initial_state()
@@ -86,40 +93,45 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     def _create_actions(self) -> None:
-        self._new_tab_action = QAction("New Tab", self)
+        self._new_tab_action = QAction("新しいタブ", self)
         self._new_tab_action.setShortcut(QKeySequence("Ctrl+T"))
         self._new_tab_action.triggered.connect(self._handle_new_tab)
 
-        self._close_tab_action = QAction("Close Tab", self)
+        self._close_tab_action = QAction("タブを閉じる", self)
         self._close_tab_action.setShortcut(QKeySequence("Ctrl+W"))
         self._close_tab_action.triggered.connect(self._handle_close_tab)
 
-        self._reopen_closed_tab_action = QAction("Reopen Closed Tab", self)
+        self._reopen_closed_tab_action = QAction("閉じたタブを開き直す", self)
         self._reopen_closed_tab_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self._reopen_closed_tab_action.triggered.connect(self._handle_reopen_closed_tab)
 
-        self._open_folder_action = QAction("Open Folder...", self)
+        self._open_folder_action = QAction("フォルダを開く…", self)
         self._open_folder_action.setShortcut(QKeySequence("Ctrl+O"))
         self._open_folder_action.triggered.connect(self._handle_open_folder)
 
-        self._refresh_action = QAction("Reload", self)
+        self._quit_action = QAction("終了", self)
+        self._quit_action.setShortcut(QKeySequence("Ctrl+Q"))
+        self._quit_action.triggered.connect(self.close)
+
+        self._refresh_action = QAction("再読み込み", self)
         self._refresh_action.setShortcut(QKeySequence(Qt.Key.Key_F5))
         self._refresh_action.triggered.connect(self._handle_refresh)
 
-        self._go_up_action = QAction("Go Up", self)
+        self._go_up_action = QAction("上の階層へ", self)
         self._go_up_action.setShortcut(QKeySequence("Alt+Up"))
         self._go_up_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self._go_up_action.triggered.connect(self._handle_go_up)
 
+        # NOTE: 右上に固定するボタンのラベルでもあるため、英語表記のまま維持する。
         self._toggle_view_action = QAction("Switch to Column View", self)
         self._toggle_view_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
         self._toggle_view_action.triggered.connect(self._handle_toggle_view)
 
-        self._next_tab_action = QAction("Next Tab", self)
+        self._next_tab_action = QAction("次のタブ", self)
         self._next_tab_action.setShortcut(QKeySequence("Ctrl+Tab"))
         self._next_tab_action.triggered.connect(self._handle_next_tab)
 
-        self._previous_tab_action = QAction("Previous Tab", self)
+        self._previous_tab_action = QAction("前のタブ", self)
         self._previous_tab_action.setShortcut(QKeySequence("Ctrl+Shift+Tab"))
         self._previous_tab_action.triggered.connect(self._handle_previous_tab)
 
@@ -132,6 +144,7 @@ class MainWindow(QMainWindow):
             self._close_tab_action,
             self._reopen_closed_tab_action,
             self._open_folder_action,
+            self._quit_action,
             self._refresh_action,
             self._go_up_action,
             self._toggle_view_action,
@@ -141,16 +154,72 @@ class MainWindow(QMainWindow):
         ):
             self.addAction(action)
 
-    def _setup_toolbar(self) -> None:
-        toolbar = QToolBar("MainToolbar", self)
-        toolbar.setMovable(False)
-        toolbar.addAction(self._new_tab_action)
-        toolbar.addSeparator()
-        toolbar.addAction(self._open_folder_action)
-        toolbar.addAction(self._refresh_action)
-        toolbar.addSeparator()
-        toolbar.addAction(self._toggle_view_action)
-        self.addToolBar(toolbar)
+    def _setup_menu_bar(self) -> None:
+        """一般的なソフトウェアに倣い、機能をメニューバーへ整理する。
+
+        ツールバーは廃止し、よく使う「表示切替」だけメニューバー右端に固定する。
+        編集・並べ替えはアクティブなタブに委譲するため、表示直前に組み立て直す。
+        """
+        menu_bar = self.menuBar()
+
+        file_menu = menu_bar.addMenu("ファイル(&F)")
+        file_menu.addAction(self._new_tab_action)
+        file_menu.addAction(self._close_tab_action)
+        file_menu.addAction(self._reopen_closed_tab_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self._open_folder_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self._quit_action)
+
+        self._edit_menu = menu_bar.addMenu("編集(&E)")
+        self._edit_menu.aboutToShow.connect(self._rebuild_edit_menu)
+
+        self._view_menu = menu_bar.addMenu("表示(&V)")
+        self._view_menu.aboutToShow.connect(self._rebuild_view_menu)
+
+        help_menu = menu_bar.addMenu("ヘルプ(&H)")
+        help_menu.addAction(self._shortcuts_action)
+
+        toggle_button = QToolButton(menu_bar)
+        toggle_button.setDefaultAction(self._toggle_view_action)
+        toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        toggle_button.setAutoRaise(True)
+        menu_bar.setCornerWidget(toggle_button, Qt.Corner.TopRightCorner)
+        self._toggle_view_button = toggle_button
+
+    def _rebuild_edit_menu(self) -> None:
+        """「編集」メニューをアクティブなタブの QAction から組み立て直す。"""
+        menu = self._edit_menu
+        menu.clear()
+        tab = self._tab_container.current_tab() if self._is_tab_mode() else None
+        if tab is None or not hasattr(tab, "edit_menu_actions"):
+            placeholder = menu.addAction("（タブ表示中に使用できます）")
+            placeholder.setEnabled(False)
+            return
+        for action in tab.edit_menu_actions():
+            if action is None:
+                menu.addSeparator()
+            else:
+                menu.addAction(action)
+
+    def _rebuild_view_menu(self) -> None:
+        """「表示」メニューを組み立て直す（並べ替えはアクティブなタブに委譲）。"""
+        menu = self._view_menu
+        menu.clear()
+        menu.addAction(self._refresh_action)
+        menu.addAction(self._go_up_action)
+        menu.addSeparator()
+        tab = self._tab_container.current_tab() if self._is_tab_mode() else None
+        if tab is not None and hasattr(tab, "build_sort_menu"):
+            menu.addMenu(tab.build_sort_menu(menu))
+        else:
+            placeholder = menu.addMenu("並べ替え")
+            placeholder.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction(self._toggle_view_action)
+        menu.addSeparator()
+        menu.addAction(self._next_tab_action)
+        menu.addAction(self._previous_tab_action)
 
     def _setup_status_bar(self) -> None:
         self._status_path_label.setMinimumWidth(0)

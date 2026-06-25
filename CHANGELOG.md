@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added a Windows Explorer-style "並べ替え" (sort by) submenu to the file list context menu with mutually exclusive 名前順 / 拡張子順 options, implemented via a sort proxy model so files can be ordered by their true extension.
+- Reorganized the main window features into a proper menu bar (ファイル / 編集 / 表示 / ヘルプ), removed the old toolbar, and pinned only the view-switch button to the top-right corner of the menu bar.
 - Added project metadata, centralized pytest/coverage/Ruff configuration, and local pre-commit hooks.
 - Added GitHub Actions CI for linting, tests, coverage, and Windows PyInstaller smoke builds.
 - Added rotating file logging under the OmniDesk user configuration directory.
