@@ -788,6 +788,21 @@ def test_file_browser_tab_name_column_width_and_view_toggle(qtbot) -> None:
     assert tab._toggle_view_button.text() in {"List View", "Tile View"}
 
 
+def test_manual_list_view_persists_through_media_mode_update(qtbot, tmp_path: Path) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+
+    # 既定はタイル表示。手動でリスト表示へ切り替える。
+    assert tab._media_icon_mode is True
+    tab._handle_view_toggle_clicked()
+    assert tab._media_icon_mode is False
+
+    # 削除後の refresh などで呼ばれる経路でも、手動選択を維持する。
+    tab._update_media_mode(tmp_path, select_default=False)
+    assert tab._media_icon_mode is False
+
+
 def test_file_browser_tab_tile_view_uses_single_pass_fixed_grid(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)

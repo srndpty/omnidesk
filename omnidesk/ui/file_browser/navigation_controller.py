@@ -491,7 +491,10 @@ class FileBrowserNavigationMixin:
     # ------------------------------------------------------------------
     def _update_media_mode(self, directory: Path, *, select_default: bool = True) -> None:
         # should_enable = self._is_media_heavy(directory)
-        should_enable = True  # 常にサムネイルモードにする
+        # ユーザーが明示的に表示モードを切り替えていれば、その選択を尊重する。
+        # こうしないと、削除後の refresh などで強制的にタイル表示へ戻ってしまう。
+        # 未指定（None）の場合は既定として常にサムネイルモードにする。
+        should_enable = self._manual_media_mode if self._manual_media_mode is not None else True
         if should_enable != self._media_icon_mode:
             self._media_icon_mode = should_enable
             self._apply_media_mode(select_default=select_default)
