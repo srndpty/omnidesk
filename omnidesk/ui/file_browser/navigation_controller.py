@@ -271,6 +271,9 @@ class FileBrowserNavigationMixin:
             return
         if self._model.sort_mode() == mode:
             return
+        # 直前にサイズ列・更新日時列で並べ替えていても名前列へ戻す。これをしないと、
+        # 以降の refresh が古いヘッダー（_sort_current_directory が参照）で再ソートしてしまう。
+        self._tree_view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self._model.set_sort_mode(mode)
         selected = self._selected_index_path()
         if selected is not None:

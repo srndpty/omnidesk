@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QModelIndex, QSortFilterProxyModel, Qt, pyqtSignal
 
-from ..file_browser_sort import EntryMeta, SortMode, entry_is_before
+from ..file_browser_sort import COLUMN_NAME, EntryMeta, SortMode, entry_is_before
 from ..media_file_system_model import MediaFileSystemModel
 
 
@@ -53,13 +53,17 @@ class SortedFileSystemModel(QSortFilterProxyModel):
     # sorting
     # ------------------------------------------------------------------
     def set_sort_mode(self, mode: SortMode) -> None:
-        """名前順/拡張子順を切り替え、必要なら再ソートする。"""
+        """名前順/拡張子順を切り替えて再ソートする。
+
+        名前順/拡張子順はどちらも名前列の並び順なので、直前にサイズ列や更新日時列で
+        並べ替えていても、必ず名前列（列0）へ戻してから再ソートする。
+        """
         if mode == self._sort_mode:
             return
         self._sort_mode = mode
+        self.sort(COLUMN_NAME, self.sortOrder())
+        # 列が既に 0 でモードだけ変わった場合でも確実に再ソートさせる。
         self.invalidate()
-        column = self.sortColumn() if self.sortColumn() >= 0 else 0
-        self.sort(column, self.sortOrder())
 
     def sort_mode(self) -> SortMode:
         return self._sort_mode

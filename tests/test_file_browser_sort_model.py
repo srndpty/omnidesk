@@ -72,6 +72,30 @@ def test_sort_mode_can_toggle_back_to_name(qtbot, tmp_path: Path) -> None:
     )
 
 
+def test_menu_sort_overrides_prior_size_column_sort(qtbot, tmp_path: Path) -> None:
+    # 「サイズ」列で並べ替えた後でも、メニューの「拡張子順」は名前列で並べ替える。
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.png").write_text("xxxxxxxxxx", encoding="utf-8")  # 大きい
+    (tmp_path / "d.png").write_text("x", encoding="utf-8")  # 小さい
+    (tmp_path / "b.txt").write_text("xxx", encoding="utf-8")
+    (tmp_path / "c.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+
+    # ヘッダーの「サイズ」列(1)で降順ソートしておく。
+    tab._tree_view.sortByColumn(1, Qt.SortOrder.DescendingOrder)
+    tab.set_sort_mode("extension")
+
+    qtbot.waitUntil(
+        lambda: _visible_names(tab) == ["sub", "a.png", "d.png", "b.txt", "c.txt"],
+        timeout=3000,
+    )
+    # 以降の refresh でも拡張子順が維持される（ヘッダーが列0へ戻っている）。
+    assert tab._tree_view.header().sortIndicatorSection() == 0
+
+
 def test_build_sort_menu_reflects_current_mode(qtbot, tmp_path: Path) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
