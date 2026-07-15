@@ -171,6 +171,7 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
     def _visible_tree_indexes(self, view: QTreeView) -> list[QModelIndex]:
         indexes: list[QModelIndex] = []
         viewport = view.viewport()
+        assert viewport is not None
         height = max(1, view.sizeHintForRow(0))
         y = 0
         seen_rows: set[int] = set()
@@ -188,6 +189,7 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
     def _visible_tile_indexes(self, view: QListView) -> list[QModelIndex]:
         indexes: list[QModelIndex] = []
         viewport = view.viewport()
+        assert viewport is not None
         rect = viewport.rect()
         # QListView::indexAt only returns an item when the probe point is inside
         # the painted item rect. A tile-sized stride can skip every item if the
@@ -210,4 +212,6 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         for view in (self._tile_view, self._tree_view):
             rect = view.visualRect(index)
             if rect.isValid():
-                view.viewport().update(rect)
+                viewport = view.viewport()
+                assert viewport is not None
+                viewport.update(rect)

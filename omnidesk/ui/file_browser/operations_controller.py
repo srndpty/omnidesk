@@ -104,7 +104,7 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
             # Editor never opened, so the seed would otherwise leak into a later
             # unrelated rename of the same path.
             self._inline_rename_seed = None
-        return opened
+        return bool(opened)
 
     def _consume_rename_seed(self, path: Path) -> str | None:
         """Return any pending editor seed text for ``path``.
@@ -304,7 +304,9 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
 
         job.signals.finished.connect(handle_finished)
         self._file_operation_jobs.append(job)
-        QThreadPool.globalInstance().start(job)
+        pool = QThreadPool.globalInstance()
+        assert pool is not None
+        pool.start(job)
         return job
 
     def _handle_file_operation_finished(

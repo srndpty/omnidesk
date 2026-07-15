@@ -78,3 +78,27 @@ def test_configure_logging_falls_back_when_target_directory_fails(
     configured = logging_config.configure_logging(path=log_file, force=True)
 
     assert configured == fallback_root / "OmniDesk" / "logs" / "omnidesk.log"
+
+
+def test_rotating_handler_continues_when_another_process_locks_log(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    log_file = tmp_path / "omnidesk.log"
+    handler = logging_config._WindowsSafeRotatingFileHandler(
+        log_file,
+        maxBytes=1,
+        backupCount=1,
+        encoding="utf-8",
+    )
+
+    def deny_rotation(_source: str, _destination: str) -> None:
+        raise PermissionError()
+
+    monkeypatch.setattr(handler, "rotate", deny_rotation)
+    record = logging.LogRecord("omnidesk.test", logging.INFO, __file__, 1, "locked", (), None)
+
+    handler.emit(record)
+    handler.close()
+
+    assert "locked" in log_file.read_text(encoding="utf-8")

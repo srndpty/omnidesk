@@ -13,6 +13,19 @@ LOG_FILE_NAME = "omnidesk.log"
 DEFAULT_LOG_LEVEL = logging.INFO
 
 
+class _WindowsSafeRotatingFileHandler(RotatingFileHandler):
+    """他プロセスがログを使用中でも現在のファイルへの記録を継続する。"""
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except PermissionError:
+            # Windowsでは別プロセスが同じログを開いているとrenameできない。
+            # ローテーションは次回へ延期し、今回のレコードは失わず追記する。
+            if self.stream is None and not self.delay:
+                self.stream = self._open()
+
+
 def _default_log_dir() -> Path:
     local_appdata = os.environ.get("LOCALAPPDATA")
     if local_appdata:
@@ -81,7 +94,7 @@ def configure_logging(
 
 
 def _rotating_file_handler(path: Path) -> RotatingFileHandler:
-    return RotatingFileHandler(
+    return _WindowsSafeRotatingFileHandler(
         path,
         maxBytes=1_000_000,
         backupCount=3,

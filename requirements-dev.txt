@@ -59,12 +59,15 @@ platformdirs==4.10.0
 pluggy==1.6.0
     # via
     #   pytest
+    #   pytest-cov
     #   pytest-qt
-pre-commit==4.2.0
+pre-commit==4.6.0
     # via -r requirements-dev.in
 pyfakefs==6.2.0
     # via -r requirements-dev.in
-pyinstaller==6.16.0
+pygments==2.20.0
+    # via pytest
+pyinstaller==6.21.0
     # via -r requirements-dev.in
 pyinstaller-hooks-contrib==2026.6
     # via pyinstaller
@@ -82,9 +85,9 @@ pyqt6-sip==13.10.2
     # via
     #   -r requirements.in
     #   pyqt6
-pyright==1.1.409
+pyright==1.1.411
     # via -r requirements-dev.in
-pytest==8.3.5
+pytest==9.1.1
     # via
     #   -r requirements-dev.in
     #   pytest-cov
@@ -92,11 +95,11 @@ pytest==8.3.5
     #   pytest-qt
     #   pytest-timeout
     #   pytest-xdist
-pytest-cov==6.0.0
+pytest-cov==7.1.0
     # via -r requirements-dev.in
 pytest-mock==3.15.1
     # via -r requirements-dev.in
-pytest-qt==4.4.0
+pytest-qt==4.5.0
     # via -r requirements-dev.in
 pytest-timeout==2.4.0
     # via -r requirements-dev.in
@@ -112,7 +115,7 @@ pywin32-ctypes==0.2.3
     # via pyinstaller
 pyyaml==6.0.3
     # via pre-commit
-ruff==0.11.6
+ruff==0.15.21
     # via -r requirements-dev.in
 send2trash==2.1.0
     # via -r requirements.in
@@ -128,6 +131,7 @@ typing-extensions==4.16.0
     # via
     #   exceptiongroup
     #   pyright
+    #   pytest-qt
     #   virtualenv
 virtualenv==21.6.1
     # via pre-commit

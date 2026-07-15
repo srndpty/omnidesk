@@ -81,6 +81,7 @@ class BrowserStatusController:
     ) -> None:
         view = self._active_view()
         viewport = view.viewport()
+        assert viewport is not None
         if view is self._tile_view:
             viewport.update()
             return

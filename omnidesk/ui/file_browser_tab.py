@@ -124,6 +124,7 @@ class FileBrowserTab(
         self._tree_view.setIconSize(QSize(32, 32))
 
         header = self._tree_view.header()
+        assert header is not None
         header.setStretchLastSection(False)
         header.setSectionsClickable(True)
         header.setMinimumSectionSize(80)
@@ -311,9 +312,14 @@ class FileBrowserTab(
         self._deferred_refresh_timer.setInterval(0)
         self._deferred_refresh_timer.timeout.connect(self._complete_deferred_refresh)
 
-        self._tree_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
-        self._tile_view.verticalScrollBar().valueChanged.connect(self._on_scroll)
-        self._tree_view.horizontalScrollBar().valueChanged.connect(self._on_scroll)
-        self._tile_view.horizontalScrollBar().valueChanged.connect(self._on_scroll)
+        scroll_bars = (
+            self._tree_view.verticalScrollBar(),
+            self._tile_view.verticalScrollBar(),
+            self._tree_view.horizontalScrollBar(),
+            self._tile_view.horizontalScrollBar(),
+        )
+        for scroll_bar in scroll_bars:
+            assert scroll_bar is not None
+            scroll_bar.valueChanged.connect(self._on_scroll)
 
         self._model.directoryLoaded.connect(self._on_directory_loaded)

@@ -676,8 +676,10 @@ def test_deep_folder_selection_reveals_new_column(qtbot, tmp_path: Path) -> None
         qtbot.waitUntil(lambda path=path: browser._model.index(str(path)).isValid(), timeout=1000)
         browser._view.setCurrentIndex(browser._model.index(str(path)))
         qtbot.waitUntil(
-            lambda: browser._view.horizontalScrollBar().value()
-            == browser._view.horizontalScrollBar().maximum(),
+            lambda: (
+                browser._view.horizontalScrollBar().value()
+                == browser._view.horizontalScrollBar().maximum()
+            ),
             timeout=1000,
         )
         hbar = browser._view.horizontalScrollBar()

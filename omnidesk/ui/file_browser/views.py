@@ -125,7 +125,9 @@ class _BaseFileViewMixin:
         self._drop_target_index = QModelIndex()
         view.setDragEnabled(True)
         view.setAcceptDrops(True)
-        view.viewport().setAcceptDrops(True)
+        viewport = view.viewport()
+        assert viewport is not None
+        viewport.setAcceptDrops(True)
         view.setDropIndicatorShown(True)
         view.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         view.setDefaultDropAction(Qt.DropAction.MoveAction)
@@ -219,7 +221,9 @@ class _BaseFileViewMixin:
         view = cast(QAbstractItemView, self)
         view.setState(QAbstractItemView.State.NoState)
         self._set_drop_target_index(QModelIndex())
-        view.viewport().update()
+        viewport = view.viewport()
+        assert viewport is not None
+        viewport.update()
 
     def _drop_target_index_at(self, pos: QPoint) -> QModelIndex:
         index = cast(QAbstractItemView, self).indexAt(pos)
@@ -251,12 +255,15 @@ class _BaseFileViewMixin:
             return
         rect = self._drop_target_rect(index)
         if rect.isValid():
-            cast(QAbstractItemView, self).viewport().update(rect)
+            viewport = cast(QAbstractItemView, self).viewport()
+            assert viewport is not None
+            viewport.update(rect)
 
     def _drop_target_rect(self, index: QModelIndex) -> QRect:
         view = cast(QAbstractItemView, self)
         if isinstance(view, QTreeView):
             model = view.model()
+            assert model is not None
             root = view.rootIndex()
             column_count = model.columnCount(root)
             rect = view.visualRect(index.siblingAtColumn(0))
@@ -425,7 +432,9 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
             self._rubber_band.setGeometry(QRect(origin, QSize()))
             self._rubber_band.show()
 
-            self._last_selection = QItemSelection(self.selectionModel().selection())
+            selection_model = self.selectionModel()
+            assert selection_model is not None
+            self._last_selection = QItemSelection(selection_model.selection())
 
             event.accept()
             return
@@ -458,6 +467,7 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
         selection_rect = self._rubber_band.geometry()
         root = self.rootIndex()
         model = self.model()
+        assert model is not None
         column_count = model.columnCount()
         row_rects: list[tuple[int, QRect]] = []
 
@@ -469,9 +479,9 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
             full_row_rect = self.visualRect(first_col_index).united(self.visualRect(last_col_index))
             row_rects.append((row, full_row_rect))
 
-        current_rows = rubber_band_intersecting_rows(
-            selection_rect, self.viewport().rect(), row_rects
-        )
+        viewport = self.viewport()
+        assert viewport is not None
+        current_rows = rubber_band_intersecting_rows(selection_rect, viewport.rect(), row_rects)
         current_indexes = {(row, column) for row in current_rows for column in range(column_count)}
         previous_indexes = {
             (index.row(), index.column()) for index in self._last_selection.indexes()
@@ -489,6 +499,7 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
             if start_index.isValid() and end_index.isValid():
                 target_selection.select(start_index, end_index)
         selection_model = self.selectionModel()
+        assert selection_model is not None
         selection_model.select(target_selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
 

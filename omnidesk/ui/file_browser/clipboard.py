@@ -89,7 +89,9 @@ class ClipboardController:
             else:
                 rect = view.visualRect(index)
             if rect.isValid():
-                view.viewport().update(rect)
+                viewport = view.viewport()
+                assert viewport is not None
+                viewport.update(rect)
 
     @staticmethod
     def normalise_path(path: Path) -> Path:

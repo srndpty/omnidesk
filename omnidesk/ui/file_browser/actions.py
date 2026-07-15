@@ -191,7 +191,9 @@ class FileBrowserActionsMixin(_ActionsMixinBase):
         menu.addAction(self._new_folder_action)
         menu.addSeparator()
         menu.addMenu(self.build_sort_menu(menu))
-        menu.exec(view.viewport().mapToGlobal(point))
+        viewport = view.viewport()
+        assert viewport is not None
+        menu.exec(viewport.mapToGlobal(point))
 
     def build_sort_menu(self, parent: QWidget) -> QMenu:
         """Windows エクスプローラー風の「並べ替え」メニュー（名前順/拡張子順の択一）を作る。
@@ -205,6 +207,7 @@ class FileBrowserActionsMixin(_ActionsMixinBase):
         current = self.sort_mode()
         for label, mode in (("名前順", "name"), ("拡張子順", "extension")):
             action = menu.addAction(label)
+            assert action is not None
             action.setCheckable(True)
             action.setChecked(current == mode)
             action.triggered.connect(lambda _checked=False, m=mode: self.set_sort_mode(m))

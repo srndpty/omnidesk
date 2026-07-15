@@ -166,10 +166,9 @@ def test_file_browser_tab_go_up_selects_previous_folder(monkeypatch, qtbot, tmp_
     monkeypatch.setattr(
         tab,
         "_select_path",
-        lambda path, scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible: selected.append(
-            (path, scroll_hint)
-        )
-        or True,
+        lambda path, scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible: (
+            selected.append((path, scroll_hint)) or True
+        ),
     )
 
     tab.go_up()
@@ -311,10 +310,9 @@ def test_file_browser_tab_go_back_selects_folder_left_behind(
     monkeypatch.setattr(
         tab,
         "_select_path",
-        lambda path, scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible: selected.append(
-            (path, scroll_hint)
-        )
-        or True,
+        lambda path, scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible: (
+            selected.append((path, scroll_hint)) or True
+        ),
     )
 
     tab.go_back()
@@ -593,9 +591,9 @@ def test_file_browser_tab_refresh_and_select_defers_selection_until_model_ready(
     monkeypatch.setattr(
         tab,
         "_select_path",
-        lambda path,
-        scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible,
-        **kwargs: selected.append(path) or False,
+        lambda path, scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible, **kwargs: (
+            selected.append(path) or False
+        ),
     )
 
     tab._refresh_and_select(target)
@@ -666,8 +664,10 @@ def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
     tab.refresh()
 
     qtbot.waitUntil(
-        lambda: Path(tab._model.filePath(tab._tree_view.rootIndex())) == current
-        and Path(tab._model.filePath(tab._tile_view.rootIndex())) == current,
+        lambda: (
+            Path(tab._model.filePath(tab._tree_view.rootIndex())) == current
+            and Path(tab._model.filePath(tab._tile_view.rootIndex())) == current
+        ),
         timeout=1000,
     )
     assert tab.current_path() == current
@@ -739,9 +739,9 @@ def test_file_browser_tab_settled_scroll_does_not_override_new_user_selection(
     monkeypatch.setattr(
         tab,
         "_select_path",
-        lambda path,
-        scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible,
-        **kwargs: selected.append(path) or True,
+        lambda path, scroll_hint=QAbstractItemView.ScrollHint.EnsureVisible, **kwargs: (
+            selected.append(path) or True
+        ),
     )
 
     tab._apply_settled_scroll()
@@ -1397,8 +1397,9 @@ def test_file_browser_tab_external_drop_performs_operation_and_refreshes(
     monkeypatch.setattr(
         tab,
         "_perform_copy_or_move_with_result",
-        lambda paths, target_dir, move: operations.append((paths, target_dir, move))
-        or FileOperationResult([], []),
+        lambda paths, target_dir, move: (
+            operations.append((paths, target_dir, move)) or FileOperationResult([], [])
+        ),
     )
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
 
@@ -1558,8 +1559,9 @@ def test_file_browser_tab_apply_rename_clips_after_confirmation(
     monkeypatch.setattr(tab, "_select_path", lambda path: True)
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
-        lambda _parent, title, text, *args: questions.append((title, text))
-        or QMessageBox.StandardButton.Ok,
+        lambda _parent, title, text, *args: (
+            questions.append((title, text)) or QMessageBox.StandardButton.Ok
+        ),
     )
 
     tab._apply_rename(original, long_name)
@@ -1704,8 +1706,9 @@ def test_file_browser_tab_paste_copy_and_move_updates_clipboard_and_actions(
     monkeypatch.setattr(
         tab,
         "_perform_copy_or_move_with_result",
-        lambda paths, dest_dir, move: operations.append((paths, dest_dir, move))
-        or FileOperationResult([], [dest_dir]),
+        lambda paths, dest_dir, move: (
+            operations.append((paths, dest_dir, move)) or FileOperationResult([], [dest_dir])
+        ),
     )
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
 
