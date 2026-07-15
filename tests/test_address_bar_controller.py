@@ -56,7 +56,11 @@ def test_execute_command_builds_cmd_batch_and_exe_arguments(
     tmp_path: Path,
 ) -> None:
     controller, _calls = _controller(mocker, qtbot, tmp_path)
-    started = mocker.patch.object(address_module.QProcess, "startDetached", return_value=True)
+    started = mocker.patch.object(
+        address_module.QProcess,
+        "startDetached",
+        return_value=(True, 1234),
+    )
     monkeypatch.setenv("COMSPEC", "C:\\Windows\\cmd.exe")
 
     controller.execute_command("cmd")
@@ -74,17 +78,50 @@ def test_execute_command_builds_cmd_batch_and_exe_arguments(
     ]
 
 
-def test_execute_command_reports_not_found_and_start_failure(mocker, qtbot, tmp_path: Path) -> None:
+def test_execute_command_reports_not_found(mocker, qtbot, tmp_path: Path) -> None:
     controller, calls = _controller(mocker, qtbot, tmp_path)
-    resolve = mocker.patch.object(controller, "resolve_program", return_value=(None, False))
-    started = mocker.patch.object(address_module.QProcess, "startDetached", return_value=False)
+    mocker.patch.object(controller, "resolve_program", return_value=(None, False))
+    started = mocker.patch.object(
+        address_module.QProcess,
+        "startDetached",
+        return_value=(True, 1234),
+    )
 
     controller.execute_command("missing")
-    resolve.return_value = ("C:\\tools\\viewer.exe", False)
+
+    calls["show_warning"].assert_called_once_with(
+        "Command not found",
+        "'missing' is not found in current folder or PATH.",
+    )
+    started.assert_not_called()
+
+
+def test_execute_command_reports_start_failure_for_all_launch_paths(
+    mocker,
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    controller, calls = _controller(mocker, qtbot, tmp_path)
+    mocker.patch.object(
+        controller,
+        "resolve_program",
+        side_effect=[("C:\\tools\\job.cmd", True), ("C:\\tools\\viewer.exe", False)],
+    )
+    started = mocker.patch.object(
+        address_module.QProcess,
+        "startDetached",
+        return_value=(False, 0),
+    )
+    monkeypatch.setenv("COMSPEC", "C:\\Windows\\cmd.exe")
+
+    controller.execute_command("cmd")
+    controller.execute_command("job.cmd")
     controller.execute_command("viewer.exe")
 
     assert calls["show_warning"].call_args_list == [
-        mocker.call("Command not found", "'missing' is not found in current folder or PATH."),
+        mocker.call("Command", "Failed to start:\ncmd"),
+        mocker.call("Command", "Failed to start:\njob.cmd"),
         mocker.call("Command", "Failed to start:\nviewer.exe"),
     ]
-    started.assert_called_once_with("C:\\tools\\viewer.exe", [], str(tmp_path))
+    assert started.call_count == 3

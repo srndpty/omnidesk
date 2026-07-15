@@ -1181,7 +1181,7 @@ def test_file_browser_tab_execute_command_starts_direct_and_batch(monkeypatch, q
     qtbot.addWidget(tab)
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.command_runner.QProcess.startDetached",
-        lambda program, args, cwd: starts.append((program, list(args), cwd)) or True,
+        lambda program, args, cwd: starts.append((program, list(args), cwd)) or (True, 1234),
     )
 
     monkeypatch.setattr(
@@ -1213,7 +1213,7 @@ def test_file_browser_tab_execute_command_strips_argument_quotes(monkeypatch, qt
     qtbot.addWidget(tab)
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.command_runner.QProcess.startDetached",
-        lambda program, args, cwd: starts.append((program, list(args), cwd)) or True,
+        lambda program, args, cwd: starts.append((program, list(args), cwd)) or (True, 1234),
     )
     monkeypatch.setattr(
         tab._address_bar_controller,
@@ -1233,7 +1233,7 @@ def test_file_browser_tab_execute_command_starts_cmd_special_case(monkeypatch, q
     monkeypatch.setenv("COMSPEC", "C:/Windows/System32/cmd.exe")
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.command_runner.QProcess.startDetached",
-        lambda program, args, cwd: starts.append((program, list(args), cwd)) or True,
+        lambda program, args, cwd: starts.append((program, list(args), cwd)) or (True, 1234),
     )
 
     tab._execute_address_command("cmd")
@@ -2469,7 +2469,7 @@ def test_file_browser_tab_execute_command_warns_when_start_fails(monkeypatch, qt
     )
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.command_runner.QProcess.startDetached",
-        lambda *args, **kwargs: False,
+        lambda *args, **kwargs: (False, 0),
     )
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.command_runner.QMessageBox.warning",

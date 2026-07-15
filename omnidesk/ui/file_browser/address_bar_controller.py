@@ -28,6 +28,12 @@ def _strip_surrounding_quotes(value: str) -> str:
     return value
 
 
+def _start_detached(program: str, args: list[str], working_directory: Path) -> bool:
+    """QtのPID付き戻り値からプロセス開始の成否だけを返す。"""
+    started, _pid = QProcess.startDetached(program, args, str(working_directory))
+    return started
+
+
 class AddressBarController:
     """アドレス入力の解釈とWindowsプロセス起動を担当する。"""
 
@@ -73,7 +79,7 @@ class AddressBarController:
         current_path = self._current_path()
         if program.lower() in ("cmd", "cmd.exe"):
             comspec = os.environ.get("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
-            if not QProcess.startDetached(comspec, [], str(current_path)):
+            if not _start_detached(comspec, [], current_path):
                 self._show_start_failure(cmdline, current_path)
             return
         resolved, is_batch = self.resolve_program(program)
@@ -86,9 +92,9 @@ class AddressBarController:
             return
         if is_batch:
             comspec = os.environ.get("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
-            started = QProcess.startDetached(comspec, ["/C", resolved, *args], str(current_path))
+            started = _start_detached(comspec, ["/C", resolved, *args], current_path)
         else:
-            started = QProcess.startDetached(resolved, args, str(current_path))
+            started = _start_detached(resolved, args, current_path)
         if not started:
             self._show_start_failure(cmdline, current_path)
 

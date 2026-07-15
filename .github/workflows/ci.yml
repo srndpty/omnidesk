@@ -20,8 +20,15 @@ jobs:
       - name: Install runtime dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Import runtime modules
-        run: python -c "import dotenv, natsort, send2trash; from PyQt6 import QtCore, QtGui, QtMultimedia, QtWidgets; import omnidesk.app"
+      - name: Construct runtime widget
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          python -c "import dotenv, natsort, send2trash;
+          from PyQt6.QtWidgets import QApplication;
+          from omnidesk.ui.file_browser_tab import FileBrowserTab;
+          app = QApplication([]); widget = FileBrowserTab();
+          widget.close(); app.processEvents()"
 
   quality:
     runs-on: windows-latest

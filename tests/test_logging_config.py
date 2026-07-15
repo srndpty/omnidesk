@@ -108,3 +108,51 @@ def test_rotating_handler_continues_when_another_process_locks_log(
 
     assert log_file.read_text(encoding="utf-8").count("locked") == 3
     assert rotate_attempts == 1
+
+
+def test_rotating_handler_retries_after_cooldown_and_resets_deadline(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    log_file = tmp_path / "omnidesk.log"
+    handler = logging_config._WindowsSafeRotatingFileHandler(
+        log_file,
+        maxBytes=1,
+        backupCount=1,
+        encoding="utf-8",
+    )
+    now = 100.0
+    failed_attempts = 0
+    successful_attempts = 0
+    original_rotate = handler.rotate
+
+    monkeypatch.setattr(logging_config.time, "monotonic", lambda: now)
+
+    def deny_rotation(_source: str, _destination: str) -> None:
+        nonlocal failed_attempts
+        failed_attempts += 1
+        raise PermissionError()
+
+    def allow_rotation(source: str, destination: str) -> None:
+        nonlocal successful_attempts
+        successful_attempts += 1
+        original_rotate(source, destination)
+
+    monkeypatch.setattr(handler, "rotate", deny_rotation)
+    record = logging.LogRecord("omnidesk.test", logging.INFO, __file__, 1, "retry", (), None)
+
+    handler.emit(record)
+    now = 110.0
+    handler.emit(record)
+    monkeypatch.setattr(handler, "rotate", allow_rotation)
+    now = 130.0
+    handler.emit(record)
+
+    assert failed_attempts == 1
+    assert successful_attempts == 1
+    assert handler._rollover_retry_at == 0.0
+
+    handler.emit(record)
+    handler.close()
+
+    assert successful_attempts == 2
