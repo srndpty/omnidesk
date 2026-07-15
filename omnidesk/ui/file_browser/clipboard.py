@@ -1,15 +1,20 @@
 """Clipboard state helpers for the file browser tab."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from PyQt6.QtCore import QModelIndex
 
 from .views import _BaseFileViewMixin
+
+if TYPE_CHECKING:
+    from PyQt6.QtWidgets import QAbstractItemView
+
+    from .sort_model import SortedFileSystemModel
+    from .views import _FileTileView, _FileTreeView
 
 
 class _ClipboardPayload(TypedDict):
@@ -21,6 +26,19 @@ _ClipboardVisualMode = Literal["copy", "move"]
 
 
 class FileBrowserClipboardMixin:
+    if TYPE_CHECKING:
+        # 他のMixinやFileBrowserTab本体が用意する属性/メソッドの型宣言。
+        # これらは実行時には定義されないため型チェック時のみ参照する。
+        _model: SortedFileSystemModel
+        _clipboard: _ClipboardPayload | None
+        _clipboard_path_set: set[Path]
+        _tree_view: _FileTreeView
+        _tile_view: _FileTileView
+
+        def _active_view(self) -> QAbstractItemView: ...
+
+        def _update_action_states(self) -> None: ...
+
     def _paths_from_indexes(self, indexes: list[QModelIndex]) -> list[Path]:
         paths: list[Path] = []
         seen: set[Path] = set()

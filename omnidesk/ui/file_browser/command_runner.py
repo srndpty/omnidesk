@@ -1,17 +1,21 @@
 """Address-bar command execution for the file browser tab."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import logging
 import os
 import shlex
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QProcess
 from PyQt6.QtWidgets import QMessageBox
 
 from ..file_browser_helpers import resolve_windows_program
 from ..file_browser_navigation import resolve_address_path
+
+if TYPE_CHECKING:
+    from PyQt6.QtWidgets import QLineEdit
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,15 @@ def _strip_surrounding_quotes(value: str) -> str:
 
 
 class FileBrowserCommandRunnerMixin:
+    if TYPE_CHECKING:
+        # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
+        _path_edit: QLineEdit
+        _current_path: Path
+
+        def _open_file(self, path: Path) -> None: ...
+
+        def navigate_to(self, path: Path, *, from_history: bool = False) -> bool: ...
+
     def _handle_path_entered(self) -> None:
         text = self._path_edit.text().strip()
         if not text:

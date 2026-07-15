@@ -1,20 +1,60 @@
 """Thumbnail scheduling and visible-index helpers for the file browser tab."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QModelIndex, QPoint
-from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QListView, QTreeView
+from PyQt6.QtGui import QCloseEvent, QResizeEvent
+from PyQt6.QtWidgets import QListView, QTreeView, QWidget
 
+from ..file_browser_background import FileBrowserThumbnailScheduler
 from ..file_browser_visible import index_identity, tile_probe_points, tile_probe_step
+from ..file_operation_jobs import FileOperationJob
+from .sort_model import SortedFileSystemModel
+
+if TYPE_CHECKING:
+    from PyQt6.QtCore import QTimer
+
+    from .status_controller import _DirectoryCountJob
+    from .views import _FileTileView, _FileTreeView
 
 logger = logging.getLogger(__name__)
 
 
-class FileBrowserThumbnailMixin:
+_ThumbnailMixinBase = QWidget if TYPE_CHECKING else object
+
+
+class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
+    if TYPE_CHECKING:
+        # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
+        _current_path: Path
+        _deferred_refresh_target: Path | None
+        _deferred_refresh_timer: QTimer
+        _file_operation_jobs: list[FileOperationJob]
+        _is_active: bool
+        _is_scrolling_for_thumbnails: bool
+        _model: SortedFileSystemModel
+        _refresh_sort_timer: QTimer
+        _selection_restore_timer: QTimer
+        _settled_scroll_timer: QTimer
+        _status_count_generation: int
+        _status_count_jobs: dict[int, _DirectoryCountJob]
+        _status_count_refresh_on_activate: bool
+        _thumbnail_scheduler: FileBrowserThumbnailScheduler
+        _tile_view: _FileTileView
+        _tree_view: _FileTreeView
+
+        def _active_view(self) -> QListView | QTreeView: ...
+
+        def _request_status_item_counts(self, path: Path) -> None: ...
+
+        def _schedule_refresh_sort(self) -> None: ...
+
+        def _schedule_settled_scroll(self) -> None: ...
+
     def activate(self) -> None:
         """Start visible-item thumbnail work when this tab becomes active."""
         if self._is_active:
@@ -61,7 +101,7 @@ class FileBrowserThumbnailMixin:
         self.cancel_all_work_for_shutdown()
         super().closeEvent(event)
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         """ウィンドウサイズが変更されたときに呼び出される"""
         # 親クラスの元のリサイズ処理を必ず呼び出す
         # スクロール時と同じタイマーを開始し、可視範囲のサムネイル要求をスケジュールする

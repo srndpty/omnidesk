@@ -1,17 +1,23 @@
 """Status summary and directory-count jobs for the file browser tab."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QItemSelection, QObject, QRunnable, pyqtSignal
+from PyQt6.QtCore import QItemSelection, QObject, QRunnable, QThreadPool, QTimer, pyqtSignal
 
 from ..file_browser_status import (
     BrowserStatus,
     browser_status_from_counts,
     directory_item_counts,
 )
+
+if TYPE_CHECKING:
+    from PyQt6.QtCore import pyqtBoundSignal
+    from PyQt6.QtWidgets import QAbstractItemView
+
+    from .views import _FileTileView
 
 
 class _DirectoryCountSignals(QObject):
@@ -37,6 +43,25 @@ class _DirectoryCountJob(QRunnable):
 
 
 class FileBrowserStatusMixin:
+    if TYPE_CHECKING:
+        # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
+        _current_path: Path
+        _selection_restore_timer: QTimer
+        _status_count_generation: int
+        _status_count_jobs: dict[int, _DirectoryCountJob]
+        _status_count_pool: QThreadPool
+        _status_count_refresh_on_activate: bool
+        _status_file_count: int
+        _status_folder_count: int
+        _tile_view: _FileTileView
+        statusChanged: pyqtBoundSignal
+
+        def _active_view(self) -> QAbstractItemView: ...
+
+        def _selected_paths(self) -> list[Path]: ...
+
+        def _update_action_states(self) -> None: ...
+
     def status_summary(self) -> BrowserStatus:
         return browser_status_from_counts(
             self._status_folder_count,

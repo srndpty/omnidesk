@@ -1,6 +1,5 @@
 """File browser widget that powers each tab."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import logging

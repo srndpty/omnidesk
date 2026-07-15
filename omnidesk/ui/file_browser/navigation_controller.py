@@ -1,15 +1,23 @@
 """Navigation, refresh, selection restore, and view-mode orchestration."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import logging
 from contextlib import suppress
 from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar
 
-from PyQt6.QtCore import QItemSelectionModel, QModelIndex, QSize, Qt, QUrl
+from PyQt6.QtCore import QItemSelection, QItemSelectionModel, QModelIndex, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeyEvent
-from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMessageBox
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QLineEdit,
+    QMessageBox,
+    QStackedWidget,
+    QToolButton,
+    QWidget,
+)
 
 from ..file_browser_helpers import deletion_replacement_path
 from ..file_browser_media_mode import (
@@ -18,6 +26,7 @@ from ..file_browser_media_mode import (
     media_mode_button_text,
 )
 from ..file_browser_navigation import (
+    DirectoryFingerprint,
     directory_fingerprint,
     directory_fingerprint_changed,
     navigation_history_step,
@@ -29,11 +38,84 @@ from ..file_browser_navigation import (
     should_record_history,
 )
 from ..file_browser_selection import has_selection_path_in_directory, pending_selection_action
+from .sort_model import SortedFileSystemModel
+from .views import _FileTileView, _FileTreeView
+
+if TYPE_CHECKING:
+    from PyQt6.QtCore import pyqtBoundSignal
 
 logger = logging.getLogger(__name__)
 
 
-class FileBrowserNavigationMixin:
+_NavigationMixinBase = QWidget if TYPE_CHECKING else object
+
+
+class FileBrowserNavigationMixin(_NavigationMixinBase):
+    if TYPE_CHECKING:
+        # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
+        DEFAULT_NAME_COLUMN_WIDTH: ClassVar[int]
+        MEDIA_MIN_COUNT: ClassVar[int]
+        MEDIA_RATIO_THRESHOLD: ClassVar[float]
+        MEDIA_SCAN_LIMIT: ClassVar[int]
+        _bound_selection_model: QItemSelectionModel | None
+        _current_directory_fingerprint: DirectoryFingerprint | None
+        _current_directory_has_local_changes: bool
+        _current_path: Path
+        _deferred_refresh_target: Path | None
+        _deferred_refresh_timer: QTimer
+        _forward_history: list[Path]
+        _has_loaded_root: bool
+        _header: QHeaderView
+        _manual_media_mode: bool | None
+        _media_icon_mode: bool
+        _model: SortedFileSystemModel
+        _name_column_width: int
+        _navigation_history: list[Path]
+        _path_edit: QLineEdit
+        _pending_selection_path: Path | None
+        _pending_selection_scroll_hint: QAbstractItemView.ScrollHint
+        _preserve_selection_on_refresh: bool
+        _refresh_selection_path: Path | None
+        _refresh_sort_active: bool
+        _refresh_sort_retries: int
+        _refresh_sort_timer: QTimer
+        _selection_restore_timer: QTimer
+        _settled_scroll_hint: QAbstractItemView.ScrollHint
+        _settled_scroll_path: Path | None
+        _settled_scroll_retries: int
+        _settled_scroll_timer: QTimer
+        _tile_view: _FileTileView
+        _toggle_view_button: QToolButton
+        _tree_view: _FileTreeView
+        _view_stack: QStackedWidget
+        directoryChanged: pyqtBoundSignal
+        nameColumnWidthChanged: pyqtBoundSignal
+        requestOpenInNewTab: pyqtBoundSignal
+
+        def _handle_selection_changed(
+            self,
+            selected: QItemSelection | None = None,
+            deselected: QItemSelection | None = None,
+        ) -> None: ...
+
+        def _request_status_item_counts(self, path: Path) -> None: ...
+
+        def _restart_thumbnail_requests(self) -> None: ...
+
+        def _select_path(
+            self,
+            path: Path,
+            scroll_hint: QAbstractItemView.ScrollHint = QAbstractItemView.ScrollHint.EnsureVisible,
+            *,
+            defer_settle: bool = True,
+        ) -> bool: ...
+
+        def _select_pending_path_if_ready(self) -> bool: ...
+
+        def _update_action_states(self) -> None: ...
+
+        def _update_navigation_button_states(self) -> None: ...
+
     def navigate_to(self, path: Path, *, from_history: bool = False) -> bool:
         """Display the given directory as the current root."""
         if not path.exists():

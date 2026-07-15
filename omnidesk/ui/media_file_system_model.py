@@ -104,7 +104,9 @@ class MediaFileSystemModel(QFileSystemModel):
         self.setReadOnly(False)
         self._icon_provider = QFileIconProvider()
         self._folder_scans: dict[str, FolderScanJob] = {}
-        self._scan_pool = QThreadPool.globalInstance()
+        scan_pool = QThreadPool.globalInstance()
+        assert scan_pool is not None
+        self._scan_pool = scan_pool
         self._cache_jobs: dict[str, CacheLoadJob] = {}
         self._cache_save_generations: dict[tuple[int, str, int], int] = {}
         self._cache_save_lock = Lock()

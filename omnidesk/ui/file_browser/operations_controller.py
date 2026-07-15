@@ -1,14 +1,14 @@
 """File-operation orchestration for the file browser tab."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import logging
 from contextlib import suppress
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QItemSelectionModel, QThreadPool
-from PyQt6.QtWidgets import QAbstractItemView, QInputDialog, QMessageBox
+from PyQt6.QtWidgets import QAbstractItemView, QInputDialog, QMessageBox, QWidget
 
 from ..file_browser_drop import has_blocked_self_move
 from ..file_browser_navigation import same_navigation_path
@@ -27,6 +27,8 @@ from ..file_operations import (
     rename_path,
     resolve_destination,
 )
+from .clipboard import _ClipboardPayload
+from .sort_model import SortedFileSystemModel
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,41 @@ def _ellipsize_for_dialog(text: str, limit: int = 300) -> str:
     return f"{text[:head]}\n…\n{text[-tail:]}"
 
 
-class FileBrowserOperationsMixin:
+_OperationsMixinBase = QWidget if TYPE_CHECKING else object
+
+
+class FileBrowserOperationsMixin(_OperationsMixinBase):
+    if TYPE_CHECKING:
+        # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
+        _clipboard: _ClipboardPayload | None
+        _current_directory_has_local_changes: bool
+        _current_path: Path
+        _deferred_refresh_target: Path | None
+        _file_operation_jobs: list[FileOperationJob]
+        _inline_rename_seed: tuple[Path, str | None] | None
+        _model: SortedFileSystemModel
+        _pending_selection_path: Path | None
+        _pending_selection_scroll_hint: QAbstractItemView.ScrollHint
+        _preserve_selection_on_refresh: bool
+
+        def _active_view(self) -> QAbstractItemView: ...
+
+        def _defer_settled_scroll(
+            self, path: Path, scroll_hint: QAbstractItemView.ScrollHint
+        ) -> None: ...
+
+        def _selected_paths(self) -> list[Path]: ...
+
+        def _selection_path_before_deleted_items(self, paths: list[Path]) -> Path | None: ...
+
+        def _set_clipboard(self, payload: _ClipboardPayload | None) -> None: ...
+
+        def _update_action_states(self) -> None: ...
+
+        def focus_view(self) -> None: ...
+
+        def refresh(self) -> None: ...
+
     def _rename_selected(self) -> None:
         paths = self._selected_paths()
         if len(paths) != 1:

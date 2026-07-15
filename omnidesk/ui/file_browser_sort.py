@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, cast
 
 # QFileSystemModel の列番号。名前列のみ「並べ替え方式」（名前順/拡張子順）の影響を受ける。
 COLUMN_NAME = 0
@@ -91,7 +91,9 @@ def entry_is_before(
     right_key = entry_sort_key(right, column=column, mode=mode)
     if left_key == right_key:
         return False
-    before = left_key < right_key
+    # 同じcolumn/modeから生成したキー同士なので、実行時のタプル形状は一致する。
+    # 戻り値のunionをPyrightが列値に応じて絞れないため、比較地点だけ境界を明示する。
+    before = cast(Any, left_key) < cast(Any, right_key)
     return (not before) if descending else before
 
 
