@@ -91,14 +91,20 @@ def test_rotating_handler_continues_when_another_process_locks_log(
         backupCount=1,
         encoding="utf-8",
     )
+    rotate_attempts = 0
 
     def deny_rotation(_source: str, _destination: str) -> None:
+        nonlocal rotate_attempts
+        rotate_attempts += 1
         raise PermissionError()
 
     monkeypatch.setattr(handler, "rotate", deny_rotation)
     record = logging.LogRecord("omnidesk.test", logging.INFO, __file__, 1, "locked", (), None)
 
     handler.emit(record)
+    handler.emit(record)
+    handler.emit(record)
     handler.close()
 
-    assert "locked" in log_file.read_text(encoding="utf-8")
+    assert log_file.read_text(encoding="utf-8").count("locked") == 3
+    assert rotate_attempts == 1

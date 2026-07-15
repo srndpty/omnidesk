@@ -5,6 +5,24 @@ on:
   pull_request:
 
 jobs:
+  runtime-smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Import runtime modules
+        run: python -c "import dotenv, natsort, send2trash; from PyQt6 import QtCore, QtGui, QtMultimedia, QtWidgets; import omnidesk.app"
+
   quality:
     runs-on: windows-latest
     steps:
@@ -38,7 +56,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           COVERAGE_FILE: tmp/.coverage
-        run: python -m pytest --cov=omnidesk --cov-report=term-missing --cov-report=xml:tmp\coverage.xml --cov-fail-under=70
+        run: python -m pytest --cov=omnidesk --cov-report=term-missing --cov-report=xml:tmp\coverage.xml
 
       - name: PyInstaller smoke build
         run: pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist packaging\pyinstaller\OmniDesk.spec

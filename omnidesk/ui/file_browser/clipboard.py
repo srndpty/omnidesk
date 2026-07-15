@@ -32,14 +32,12 @@ class ClipboardController:
         tree_view: _FileTreeView,
         tile_view: _FileTileView,
         selected_paths: Callable[[], list[Path]],
-        repaint_paths: Callable[[set[Path]], None],
         update_action_states: Callable[[], None],
     ) -> None:
         self._model = model
         self._tree_view = tree_view
         self._tile_view = tile_view
         self._selected_paths = selected_paths
-        self._repaint_paths = repaint_paths
         self._update_action_states = update_action_states
         self.payload: _ClipboardPayload | None = None
         self.path_set: set[Path] = set()
@@ -60,7 +58,7 @@ class ClipboardController:
         previous_paths = self.path_set
         self.payload = payload
         self.path_set = self.paths_from_payload(payload)
-        self._repaint_paths(previous_paths | self.path_set)
+        self.repaint_paths(previous_paths | self.path_set)
         self._update_action_states()
 
     def paths_from_payload(self, payload: _ClipboardPayload | None) -> set[Path]:
@@ -155,12 +153,8 @@ class FileBrowserClipboardMixin:
 
     @_clipboard.setter
     def _clipboard(self, value: _ClipboardPayload | None) -> None:
-        self._clipboard_controller.payload = value
+        self._clipboard_controller.set_payload(value)
 
     @property
     def _clipboard_path_set(self) -> set[Path]:
         return self._clipboard_controller.path_set
-
-    @_clipboard_path_set.setter
-    def _clipboard_path_set(self, value: set[Path]) -> None:
-        self._clipboard_controller.path_set = value

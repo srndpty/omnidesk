@@ -39,16 +39,12 @@ class AddressBarController:
         open_file: Callable[[Path], None],
         navigate_to: Callable[[Path], bool],
         show_warning: Callable[[str, str], None],
-        resolve_program: Callable[[str], tuple[str | None, bool]],
-        execute_command: Callable[[str], None],
     ) -> None:
         self._parent = parent
         self._current_path = current_path
         self._open_file = open_file
         self._navigate_to = navigate_to
         self._show_warning = show_warning
-        self._resolve_program = resolve_program
-        self._execute_command = execute_command
 
     def handle_text(self, text: str) -> None:
         text = text.strip()
@@ -61,7 +57,7 @@ class AddressBarController:
             else:
                 self._navigate_to(candidate)
             return
-        self._execute_command(text)
+        self.execute_command(text)
 
     def execute_command(self, cmdline: str) -> None:
         try:
@@ -80,7 +76,7 @@ class AddressBarController:
             if not QProcess.startDetached(comspec, [], str(current_path)):
                 self._show_start_failure(cmdline, current_path)
             return
-        resolved, is_batch = self._resolve_program(program)
+        resolved, is_batch = self.resolve_program(program)
         if not resolved:
             logger.warning("アドレスバーのコマンドが見つかりません: %s", program)
             self._show_warning(

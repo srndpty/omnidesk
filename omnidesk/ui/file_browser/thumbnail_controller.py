@@ -21,7 +21,6 @@ from .sort_refresh_controller import SortRefreshController
 if TYPE_CHECKING:
     from PyQt6.QtCore import QTimer
 
-    from .status_controller import _DirectoryCountJob
     from .views import _FileTileView, _FileTreeView
 
 logger = logging.getLogger(__name__)
@@ -43,9 +42,6 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         _sort_refresh_controller: SortRefreshController
         _selection_restore_controller: SelectionRestoreController
         _settled_scroll_controller: SettledScrollController
-        _status_count_generation: int
-        _status_count_jobs: dict[int, _DirectoryCountJob]
-        _status_count_refresh_on_activate: bool
         _thumbnail_scheduler: FileBrowserThumbnailScheduler
         _tile_view: _FileTileView
         _tree_view: _FileTreeView
@@ -53,6 +49,12 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         def _active_view(self) -> QListView | QTreeView: ...
 
         def _request_status_item_counts(self, path: Path) -> None: ...
+
+        def _deactivate_status_item_counts(self) -> None: ...
+
+        def _resume_status_item_counts(self) -> None: ...
+
+        def _shutdown_status_item_counts(self) -> None: ...
 
         def _schedule_refresh_sort(self) -> None: ...
 
@@ -65,8 +67,7 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         logger.debug("Activating tab for %s", self._current_path)
         self._is_active = True
         self._restart_thumbnail_requests()
-        if self._status_count_refresh_on_activate:
-            self._request_status_item_counts(self._current_path)
+        self._resume_status_item_counts()
 
     def deactivate(self) -> None:
         """Stop visible-item thumbnail work when this tab becomes inactive."""
@@ -80,13 +81,12 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         """Cancel work that is only useful while this tab is visible."""
         self._thumbnail_scheduler.cancel()
         self._model.cancel_background_work()
-        if self._status_count_jobs:
-            self._status_count_refresh_on_activate = True
-        self._status_count_generation += 1
+        self._deactivate_status_item_counts()
 
     def cancel_all_work_for_shutdown(self) -> None:
         """Cancel all work owned by this tab during shutdown or disposal."""
         self.cancel_inactive_tab_work()
+        self._shutdown_status_item_counts()
         self._selection_restore_controller.cancel()
         self._settled_scroll_controller.cancel()
         self._sort_refresh_controller.cancel()

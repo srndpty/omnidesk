@@ -125,6 +125,23 @@ class BrowserStatusController:
     def update_counts(self) -> None:
         self.folder_count, self.file_count = directory_item_counts(self._current_path())
 
+    def deactivate(self) -> None:
+        """進行中の集計を無効化し、次回アクティブ化時の再取得を予約する。"""
+        if self.jobs:
+            self.refresh_on_activate = True
+        self.generation += 1
+
+    def resume(self, callback: Callable[[str, int, int, int], None]) -> None:
+        """必要なら非アクティブ中に無効化した集計を再開する。"""
+        if self.refresh_on_activate:
+            self.request_counts(self._current_path(), callback)
+
+    def shutdown(self) -> None:
+        """終了後に集計結果が現在状態へ反映されないよう無効化する。"""
+        self.generation += 1
+        self.refresh_on_activate = False
+        self.jobs.clear()
+
     def schedule_selection_restore(self) -> None:
         self._selection_restore.schedule()
 
@@ -171,6 +188,15 @@ class FileBrowserStatusMixin:
 
     def _update_status_item_counts(self) -> None:
         self._status_controller.update_counts()
+
+    def _deactivate_status_item_counts(self) -> None:
+        self._status_controller.deactivate()
+
+    def _resume_status_item_counts(self) -> None:
+        self._status_controller.resume(self._handle_status_item_counts_ready)
+
+    def _shutdown_status_item_counts(self) -> None:
+        self._status_controller.shutdown()
 
     @property
     def _status_folder_count(self) -> int:

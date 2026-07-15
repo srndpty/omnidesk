@@ -171,7 +171,6 @@ class FileBrowserTab(
             tree_view=self._tree_view,
             tile_view=self._tile_view,
             selected_paths=lambda: self._selected_paths(),
-            repaint_paths=lambda paths: self._repaint_clipboard_paths(paths),
             update_action_states=lambda: self._update_action_states(),
         )
         status_count_pool = QThreadPool.globalInstance()
@@ -215,7 +214,6 @@ class FileBrowserTab(
         self._create_actions()
         self._configure_header_sections()
         self._apply_name_column_width()
-        self._apply_media_mode()
 
         self._path_edit = QLineEdit(self)
         self._path_edit.setClearButtonEnabled(True)
@@ -225,8 +223,6 @@ class FileBrowserTab(
             open_file=lambda path: self._open_file(path),
             navigate_to=lambda path: self.navigate_to(path),
             show_warning=lambda title, message: self._show_address_warning(title, message),
-            resolve_program=lambda program: self._resolve_program_for_windows(program),
-            execute_command=lambda command: self._execute_address_command(command),
         )
         self._path_edit.returnPressed.connect(self._handle_path_entered)
 
@@ -323,3 +319,4 @@ class FileBrowserTab(
             scroll_bar.valueChanged.connect(self._on_scroll)
 
         self._model.directoryLoaded.connect(self._on_directory_loaded)
+        self._apply_media_mode()
