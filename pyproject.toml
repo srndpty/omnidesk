@@ -84,6 +84,8 @@ include = [
     "omnidesk/ui/file_browser/operations_controller.py",
     "omnidesk/ui/file_browser/selection_restore_controller.py",
     "omnidesk/ui/file_browser/settled_scroll_controller.py",
+    "omnidesk/ui/file_browser/sort_refresh_controller.py",
+    "omnidesk/ui/file_browser/view_mode_controller.py",
     "omnidesk/ui/file_browser/status_controller.py",
     "omnidesk/ui/file_browser/thumbnail_controller.py",
     "omnidesk/ui/file_browser/toolbar.py",

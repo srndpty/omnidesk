@@ -24,9 +24,11 @@ from .file_browser.operations_controller import FileBrowserOperationsMixin
 from .file_browser.selection_restore_controller import SelectionRestoreController
 from .file_browser.settled_scroll_controller import SettledScrollController
 from .file_browser.sort_model import SortedFileSystemModel
+from .file_browser.sort_refresh_controller import SortRefreshController
 from .file_browser.status_controller import FileBrowserStatusMixin, _DirectoryCountJob
 from .file_browser.thumbnail_controller import FileBrowserThumbnailMixin
 from .file_browser.toolbar import _configure_arrow_button
+from .file_browser.view_mode_controller import ViewModeController
 from .file_browser.views import (
     _FileTileView,
     _FileTreeView,
@@ -76,7 +78,6 @@ class FileBrowserTab(
         name_column_width: int | None = None,
     ) -> None:
         QWidget.__init__(self, parent)
-        self._media_icon_mode = False
         self._current_path = Path.home()
         self._navigation_history: list[Path] = []
         self._forward_history: list[Path] = []
@@ -84,9 +85,6 @@ class FileBrowserTab(
         self._current_directory_fingerprint: DirectoryFingerprint | None = None
         self._current_directory_has_local_changes = False
         self._is_active = False
-        self._refresh_sort_active = False
-        self._refresh_sort_retries = 0
-        self._refresh_selection_path: Path | None = None
         self._deferred_refresh_target: Path | None = None
         self._preserve_selection_on_refresh = True
         self._settled_scroll_controller = SettledScrollController(
@@ -156,8 +154,16 @@ class FileBrowserTab(
             has_deferred_refresh=lambda: self._deferred_refresh_target is not None,
             refresh=lambda preserve: self._refresh_for_selection_restore(preserve),
         )
+        self._sort_refresh_controller = SortRefreshController(
+            self,
+            model=self._model,
+            header=self._header,
+            tree_view=self._tree_view,
+            tile_view=self._tile_view,
+            selected_path=lambda: self._selected_index_path(),
+            select_path=lambda path: self._select_path(path),
+        )
 
-        self._manual_media_mode: bool | None = None
         self._clipboard: _ClipboardPayload | None = None
         self._clipboard_path_set: set[Path] = set()
         self._status_folder_count = 0
@@ -167,12 +173,35 @@ class FileBrowserTab(
         self._status_count_refresh_on_activate = False
         self._status_count_pool = QThreadPool.globalInstance()
         self._file_operation_jobs: list[FileOperationJob] = []
-        self._create_actions()
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")
         self._toggle_view_button.setToolTip("Toggle between tile and list views")
         self._toggle_view_button.clicked.connect(self._handle_view_toggle_clicked)
-        self._update_view_toggle_button()
+        preferred_name_column_width = (
+            name_column_width
+            if name_column_width and name_column_width > 0
+            else self.DEFAULT_NAME_COLUMN_WIDTH
+        )
+        self._bound_selection_model: QItemSelectionModel | None = None
+        self._view_mode_controller = ViewModeController(
+            model=self._model,
+            tree_view=self._tree_view,
+            tile_view=self._tile_view,
+            view_stack=self._view_stack,
+            header=self._header,
+            toggle_button=self._toggle_view_button,
+            name_column_width=preferred_name_column_width,
+            connect_selection_signals=lambda: self._connect_selection_signals(),
+            select_pending_or_first_row=lambda: self._select_pending_or_first_row(),
+            name_column_width_changed=lambda width: self.nameColumnWidthChanged.emit(width),
+            media_ratio_threshold=self.MEDIA_RATIO_THRESHOLD,
+            media_min_count=self.MEDIA_MIN_COUNT,
+            media_scan_limit=self.MEDIA_SCAN_LIMIT,
+        )
+        self._create_actions()
+        self._configure_header_sections()
+        self._apply_name_column_width()
+        self._apply_media_mode()
 
         self._path_edit = QLineEdit(self)
         self._path_edit.setClearButtonEnabled(True)
@@ -226,17 +255,6 @@ class FileBrowserTab(
         root_layout.addLayout(path_bar_layout)
         root_layout.addWidget(self._view_stack, stretch=1)
 
-        self._name_column_width = (
-            name_column_width
-            if name_column_width and name_column_width > 0
-            else self.DEFAULT_NAME_COLUMN_WIDTH
-        )
-        self._bound_selection_model: QItemSelectionModel | None = None
-
-        self._configure_header_sections()
-        self._apply_name_column_width()
-        self._apply_media_mode()
-
         self._is_scrolling_for_thumbnails = False
 
         self._thumbnail_request_timer = QTimer(self)
@@ -265,11 +283,6 @@ class FileBrowserTab(
             set_scrolling=self._set_thumbnail_scrolling,
             request_visible=self._request_visible_thumbnail_batch,
         )
-
-        self._refresh_sort_timer = QTimer(self)
-        self._refresh_sort_timer.setSingleShot(True)
-        self._refresh_sort_timer.setInterval(80)
-        self._refresh_sort_timer.timeout.connect(self._apply_refresh_sort)
 
         self._deferred_refresh_timer = QTimer(self)
         self._deferred_refresh_timer.setSingleShot(True)

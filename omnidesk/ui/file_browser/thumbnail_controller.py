@@ -16,6 +16,7 @@ from ..file_operation_jobs import FileOperationJob
 from .selection_restore_controller import SelectionRestoreController
 from .settled_scroll_controller import SettledScrollController
 from .sort_model import SortedFileSystemModel
+from .sort_refresh_controller import SortRefreshController
 
 if TYPE_CHECKING:
     from PyQt6.QtCore import QTimer
@@ -39,7 +40,7 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         _is_active: bool
         _is_scrolling_for_thumbnails: bool
         _model: SortedFileSystemModel
-        _refresh_sort_timer: QTimer
+        _sort_refresh_controller: SortRefreshController
         _selection_restore_controller: SelectionRestoreController
         _settled_scroll_controller: SettledScrollController
         _status_count_generation: int
@@ -88,7 +89,7 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         self.cancel_inactive_tab_work()
         self._selection_restore_controller.cancel()
         self._settled_scroll_controller.cancel()
-        self._refresh_sort_timer.stop()
+        self._sort_refresh_controller.cancel()
         self._deferred_refresh_timer.stop()
         self._deferred_refresh_target = None
         for job in self._file_operation_jobs:
