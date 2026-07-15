@@ -34,10 +34,10 @@ from ..file_browser_navigation import (
     path_to_focus_after_go_up,
     refresh_sort_action,
     same_navigation_path,
-    settled_scroll_action,
     should_record_history,
 )
 from ..file_browser_selection import has_selection_path_in_directory, pending_selection_action
+from .settled_scroll_controller import SettledScrollController
 from .sort_model import SortedFileSystemModel
 from .views import _FileTileView, _FileTreeView
 
@@ -80,10 +80,7 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         _refresh_sort_retries: int
         _refresh_sort_timer: QTimer
         _selection_restore_timer: QTimer
-        _settled_scroll_hint: QAbstractItemView.ScrollHint
-        _settled_scroll_path: Path | None
-        _settled_scroll_retries: int
-        _settled_scroll_timer: QTimer
+        _settled_scroll_controller: SettledScrollController
         _tile_view: _FileTileView
         _toggle_view_button: QToolButton
         _tree_view: _FileTreeView
@@ -101,6 +98,8 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         def _request_status_item_counts(self, path: Path) -> None: ...
 
         def _restart_thumbnail_requests(self) -> None: ...
+
+        def _schedule_select_pending_or_first_row(self) -> None: ...
 
         def _select_path(
             self,
@@ -429,48 +428,43 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         path: Path,
         scroll_hint: QAbstractItemView.ScrollHint,
     ) -> None:
-        self._settled_scroll_path = path
-        self._settled_scroll_hint = scroll_hint
-        self._settled_scroll_retries = 8
-        self._schedule_settled_scroll()
+        self._settled_scroll_controller.defer(path, scroll_hint)
 
     def _schedule_settled_scroll(self) -> None:
-        if self._settled_scroll_path is None or self._settled_scroll_retries <= 0:
-            return
-        if not self._settled_scroll_timer.isActive():
-            self._settled_scroll_timer.start()
+        self._settled_scroll_controller.schedule()
 
     def _apply_settled_scroll(self) -> None:
-        path = self._settled_scroll_path
-        retries_before_attempt = self._settled_scroll_retries
-        if path is None or retries_before_attempt <= 0:
-            return
-        self._settled_scroll_retries -= 1
-        path_exists = path.exists()
-        can_apply = path_exists and self._can_apply_settled_scroll(path)
-        action = settled_scroll_action(
-            pending_path=path,
-            retries_before_attempt=retries_before_attempt,
-            path_exists=path_exists,
-            can_apply=can_apply,
-        )
-        if action == "path_missing":
-            self._settled_scroll_path = None
-            return
-        if action in {"inactive", "blocked"}:
-            return
-        self._select_path(path, self._settled_scroll_hint, defer_settle=False)
-        self._schedule_settled_scroll()
+        self._settled_scroll_controller.apply()
 
     def _can_apply_settled_scroll(self, path: Path) -> bool:
-        current = self._selected_index_path()
-        if current is None:
-            return True
-        if same_navigation_path(current, path):
-            return True
-        self._settled_scroll_path = None
-        self._settled_scroll_retries = 0
-        return False
+        return self._settled_scroll_controller.can_apply(path)
+
+    @property
+    def _settled_scroll_path(self) -> Path | None:
+        """既存API互換のためコントローラの保留パスを公開する。"""
+        return self._settled_scroll_controller.path
+
+    @_settled_scroll_path.setter
+    def _settled_scroll_path(self, path: Path | None) -> None:
+        self._settled_scroll_controller.path = path
+
+    @property
+    def _settled_scroll_hint(self) -> QAbstractItemView.ScrollHint:
+        """既存API互換のためコントローラのスクロール指定を公開する。"""
+        return self._settled_scroll_controller.scroll_hint
+
+    @_settled_scroll_hint.setter
+    def _settled_scroll_hint(self, hint: QAbstractItemView.ScrollHint) -> None:
+        self._settled_scroll_controller.scroll_hint = hint
+
+    @property
+    def _settled_scroll_retries(self) -> int:
+        """既存API互換のためコントローラの残試行回数を公開する。"""
+        return self._settled_scroll_controller.retries
+
+    @_settled_scroll_retries.setter
+    def _settled_scroll_retries(self, retries: int) -> None:
+        self._settled_scroll_controller.retries = retries
 
     def _configure_header_sections(self) -> None:
         if self._media_icon_mode:

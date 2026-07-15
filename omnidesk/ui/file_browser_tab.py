@@ -21,6 +21,7 @@ from .file_browser.clipboard import FileBrowserClipboardMixin, _ClipboardPayload
 from .file_browser.command_runner import FileBrowserCommandRunnerMixin
 from .file_browser.navigation_controller import FileBrowserNavigationMixin
 from .file_browser.operations_controller import FileBrowserOperationsMixin
+from .file_browser.settled_scroll_controller import SettledScrollController
 from .file_browser.sort_model import SortedFileSystemModel
 from .file_browser.status_controller import FileBrowserStatusMixin, _DirectoryCountJob
 from .file_browser.thumbnail_controller import FileBrowserThumbnailMixin
@@ -84,14 +85,20 @@ class FileBrowserTab(
         self._is_active = False
         self._pending_selection_path: Path | None = None
         self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-        self._settled_scroll_path: Path | None = None
-        self._settled_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-        self._settled_scroll_retries = 0
         self._refresh_sort_active = False
         self._refresh_sort_retries = 0
         self._refresh_selection_path: Path | None = None
         self._deferred_refresh_target: Path | None = None
         self._preserve_selection_on_refresh = True
+        self._settled_scroll_controller = SettledScrollController(
+            self,
+            select_path=lambda path, hint, defer_settle: self._select_path(
+                path,
+                hint,
+                defer_settle=defer_settle,
+            ),
+            selected_path=lambda: self._selected_index_path(),
+        )
 
         self._source_model = MediaFileSystemModel(self)
         self._source_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
@@ -250,11 +257,6 @@ class FileBrowserTab(
         self._selection_restore_timer = QTimer(self)
         self._selection_restore_timer.setSingleShot(True)
         self._selection_restore_timer.timeout.connect(self._select_pending_or_first_row)
-
-        self._settled_scroll_timer = QTimer(self)
-        self._settled_scroll_timer.setSingleShot(True)
-        self._settled_scroll_timer.setInterval(80)
-        self._settled_scroll_timer.timeout.connect(self._apply_settled_scroll)
 
         self._refresh_sort_timer = QTimer(self)
         self._refresh_sort_timer.setSingleShot(True)
