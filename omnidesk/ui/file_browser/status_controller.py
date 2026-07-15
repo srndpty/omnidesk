@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtCore import QItemSelection, QObject, QRunnable, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QItemSelection, QObject, QRunnable, QThreadPool, pyqtSignal
 
 from ..file_browser_status import (
     BrowserStatus,
     browser_status_from_counts,
     directory_item_counts,
 )
+from .selection_restore_controller import SelectionRestoreController
 
 if TYPE_CHECKING:
-    from PyQt6.QtCore import pyqtBoundSignal
     from PyQt6.QtWidgets import QAbstractItemView
 
     from .views import _FileTileView
@@ -46,7 +46,7 @@ class FileBrowserStatusMixin:
     if TYPE_CHECKING:
         # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
         _current_path: Path
-        _selection_restore_timer: QTimer
+        _selection_restore_controller: SelectionRestoreController
         _status_count_generation: int
         _status_count_jobs: dict[int, _DirectoryCountJob]
         _status_count_pool: QThreadPool
@@ -54,7 +54,8 @@ class FileBrowserStatusMixin:
         _status_file_count: int
         _status_folder_count: int
         _tile_view: _FileTileView
-        statusChanged: pyqtBoundSignal
+        # pyqtSignalはクラス属性ではデスクリプタ、インスタンスではbound signalになる。
+        statusChanged: Any
 
         def _active_view(self) -> QAbstractItemView: ...
 
@@ -102,8 +103,7 @@ class FileBrowserStatusMixin:
         )
 
     def _schedule_select_pending_or_first_row(self) -> None:
-        self._selection_restore_timer.stop()
-        self._selection_restore_timer.start(0)
+        self._selection_restore_controller.schedule()
 
     def _request_status_item_counts(self, path: Path) -> None:
         self._status_count_refresh_on_activate = False

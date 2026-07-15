@@ -21,6 +21,7 @@ from .file_browser.clipboard import FileBrowserClipboardMixin, _ClipboardPayload
 from .file_browser.command_runner import FileBrowserCommandRunnerMixin
 from .file_browser.navigation_controller import FileBrowserNavigationMixin
 from .file_browser.operations_controller import FileBrowserOperationsMixin
+from .file_browser.selection_restore_controller import SelectionRestoreController
 from .file_browser.settled_scroll_controller import SettledScrollController
 from .file_browser.sort_model import SortedFileSystemModel
 from .file_browser.status_controller import FileBrowserStatusMixin, _DirectoryCountJob
@@ -83,8 +84,6 @@ class FileBrowserTab(
         self._current_directory_fingerprint: DirectoryFingerprint | None = None
         self._current_directory_has_local_changes = False
         self._is_active = False
-        self._pending_selection_path: Path | None = None
-        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._refresh_sort_active = False
         self._refresh_sort_retries = 0
         self._refresh_selection_path: Path | None = None
@@ -144,6 +143,19 @@ class FileBrowserTab(
         self._view_stack = QStackedWidget(self)
         self._view_stack.addWidget(self._tree_view)
         self._view_stack.addWidget(self._tile_view)
+        self._selection_restore_controller = SelectionRestoreController(
+            self,
+            model=self._model,
+            active_view=lambda: self._active_view(),
+            apply_selection=lambda path, hint: (
+                self._select_path(path) if hint is None else self._select_path(path, hint)
+            ),
+            defer_scroll=lambda path, hint: self._defer_settled_scroll(path, hint),
+            has_current_selection=lambda: self._has_current_selection_in_current_directory(),
+            select_first_row=lambda: self._select_first_row(),
+            has_deferred_refresh=lambda: self._deferred_refresh_target is not None,
+            refresh=lambda preserve: self._refresh_for_selection_restore(preserve),
+        )
 
         self._manual_media_mode: bool | None = None
         self._clipboard: _ClipboardPayload | None = None
@@ -253,10 +265,6 @@ class FileBrowserTab(
             set_scrolling=self._set_thumbnail_scrolling,
             request_visible=self._request_visible_thumbnail_batch,
         )
-
-        self._selection_restore_timer = QTimer(self)
-        self._selection_restore_timer.setSingleShot(True)
-        self._selection_restore_timer.timeout.connect(self._select_pending_or_first_row)
 
         self._refresh_sort_timer = QTimer(self)
         self._refresh_sort_timer.setSingleShot(True)

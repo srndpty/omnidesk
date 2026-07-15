@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QListView, QTreeView, QWidget
 from ..file_browser_background import FileBrowserThumbnailScheduler
 from ..file_browser_visible import index_identity, tile_probe_points, tile_probe_step
 from ..file_operation_jobs import FileOperationJob
+from .selection_restore_controller import SelectionRestoreController
 from .settled_scroll_controller import SettledScrollController
 from .sort_model import SortedFileSystemModel
 
@@ -39,7 +40,7 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         _is_scrolling_for_thumbnails: bool
         _model: SortedFileSystemModel
         _refresh_sort_timer: QTimer
-        _selection_restore_timer: QTimer
+        _selection_restore_controller: SelectionRestoreController
         _settled_scroll_controller: SettledScrollController
         _status_count_generation: int
         _status_count_jobs: dict[int, _DirectoryCountJob]
@@ -85,7 +86,7 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
     def cancel_all_work_for_shutdown(self) -> None:
         """Cancel all work owned by this tab during shutdown or disposal."""
         self.cancel_inactive_tab_work()
-        self._selection_restore_timer.stop()
+        self._selection_restore_controller.cancel()
         self._settled_scroll_controller.cancel()
         self._refresh_sort_timer.stop()
         self._deferred_refresh_timer.stop()

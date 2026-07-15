@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from PyQt6.QtCore import QItemSelection, QItemSelectionModel, QModelIndex, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeyEvent
@@ -36,13 +36,11 @@ from ..file_browser_navigation import (
     same_navigation_path,
     should_record_history,
 )
-from ..file_browser_selection import has_selection_path_in_directory, pending_selection_action
+from ..file_browser_selection import has_selection_path_in_directory
+from .selection_restore_controller import SelectionRestoreController
 from .settled_scroll_controller import SettledScrollController
 from .sort_model import SortedFileSystemModel
 from .views import _FileTileView, _FileTreeView
-
-if TYPE_CHECKING:
-    from PyQt6.QtCore import pyqtBoundSignal
 
 logger = logging.getLogger(__name__)
 
@@ -72,22 +70,21 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         _name_column_width: int
         _navigation_history: list[Path]
         _path_edit: QLineEdit
-        _pending_selection_path: Path | None
-        _pending_selection_scroll_hint: QAbstractItemView.ScrollHint
         _preserve_selection_on_refresh: bool
         _refresh_selection_path: Path | None
         _refresh_sort_active: bool
         _refresh_sort_retries: int
         _refresh_sort_timer: QTimer
-        _selection_restore_timer: QTimer
+        _selection_restore_controller: SelectionRestoreController
         _settled_scroll_controller: SettledScrollController
         _tile_view: _FileTileView
         _toggle_view_button: QToolButton
         _tree_view: _FileTreeView
         _view_stack: QStackedWidget
-        directoryChanged: pyqtBoundSignal
-        nameColumnWidthChanged: pyqtBoundSignal
-        requestOpenInNewTab: pyqtBoundSignal
+        # pyqtSignalはクラス属性ではデスクリプタ、インスタンスではbound signalになる。
+        directoryChanged: Any
+        nameColumnWidthChanged: Any
+        requestOpenInNewTab: Any
 
         def _handle_selection_changed(
             self,
@@ -295,7 +292,7 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         self._request_status_item_counts(self._current_path)
         self._update_media_mode(self._current_path, select_default=False)
 
-        deferred_selection = self._selection_restore_timer.isActive()
+        deferred_selection = self._selection_restore_controller.is_scheduled()
         if not deferred_selection:
             self._select_pending_or_first_row()
 
@@ -502,29 +499,25 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
                 )
 
     def _select_pending_or_first_row(self) -> None:
-        pending = self._pending_selection_path
-        pending_scroll_hint = self._pending_selection_scroll_hint
-        pending_exists = bool(pending and pending.exists())
-        selected_pending = bool(
-            pending and pending_exists and self._select_path(pending, pending_scroll_hint)
-        )
-        action = pending_selection_action(
-            pending,
-            pending_exists=pending_exists,
-            selected_in_current_directory=self._has_current_selection_in_current_directory(),
-            pending_select_succeeded=selected_pending,
-        )
-        if action == "selected_pending":
-            self._pending_selection_path = None
-            self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-            return
-        if action == "wait_for_pending":
-            return
-        if action == "keep_current":
-            return
-        self._pending_selection_path = None
-        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-        self._select_first_row()
+        self._selection_restore_controller.select_pending_or_first_row()
+
+    @property
+    def _pending_selection_path(self) -> Path | None:
+        """既存API互換のためコントローラの保留パスを公開する。"""
+        return self._selection_restore_controller.pending_path
+
+    @_pending_selection_path.setter
+    def _pending_selection_path(self, path: Path | None) -> None:
+        self._selection_restore_controller.pending_path = path
+
+    @property
+    def _pending_selection_scroll_hint(self) -> QAbstractItemView.ScrollHint:
+        """既存API互換のためコントローラのスクロール指定を公開する。"""
+        return self._selection_restore_controller.scroll_hint
+
+    @_pending_selection_scroll_hint.setter
+    def _pending_selection_scroll_hint(self, hint: QAbstractItemView.ScrollHint) -> None:
+        self._selection_restore_controller.scroll_hint = hint
 
     def _has_current_selection_in_current_directory(self) -> bool:
         selection_model = self._active_view().selectionModel()

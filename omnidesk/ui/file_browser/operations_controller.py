@@ -7,7 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QItemSelectionModel, QThreadPool
+from PyQt6.QtCore import QThreadPool
 from PyQt6.QtWidgets import QAbstractItemView, QInputDialog, QMessageBox, QWidget
 
 from ..file_browser_drop import has_blocked_self_move
@@ -28,6 +28,7 @@ from ..file_operations import (
     resolve_destination,
 )
 from .clipboard import _ClipboardPayload
+from .selection_restore_controller import SelectionRestoreController
 from .sort_model import SortedFileSystemModel
 
 logger = logging.getLogger(__name__)
@@ -59,12 +60,9 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         _pending_selection_path: Path | None
         _pending_selection_scroll_hint: QAbstractItemView.ScrollHint
         _preserve_selection_on_refresh: bool
+        _selection_restore_controller: SelectionRestoreController
 
         def _active_view(self) -> QAbstractItemView: ...
-
-        def _defer_settled_scroll(
-            self, path: Path, scroll_hint: QAbstractItemView.ScrollHint
-        ) -> None: ...
 
         def _selected_paths(self) -> list[Path]: ...
 
@@ -204,20 +202,11 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         *,
         defer_settle: bool = True,
     ) -> bool:
-        index = self._model.index(str(path))
-        if not index.isValid():
-            return False
-        view = self._active_view()
-        selection_model = view.selectionModel()
-        if selection_model:
-            selection_model.setCurrentIndex(
-                index,
-                QItemSelectionModel.SelectionFlag.ClearAndSelect,
-            )
-        view.scrollTo(index, scroll_hint)
-        if defer_settle and scroll_hint == QAbstractItemView.ScrollHint.PositionAtCenter:
-            self._defer_settled_scroll(path, scroll_hint)
-        return True
+        return self._selection_restore_controller.select_path(
+            path,
+            scroll_hint,
+            defer_settle=defer_settle,
+        )
 
     def _refresh_and_select(
         self,
@@ -225,27 +214,22 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         *,
         preserve_selection: bool = True,
     ) -> None:
-        self._pending_selection_path = path
-        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
+        self._selection_restore_controller.refresh_and_select(
+            path,
+            preserve_selection=preserve_selection,
+        )
+
+    def _refresh_for_selection_restore(self, preserve_selection: bool) -> None:
+        """選択復元中だけrefreshの選択保持方針を差し替える。"""
         old_preserve_selection = self._preserve_selection_on_refresh
         self._preserve_selection_on_refresh = preserve_selection
         try:
             self.refresh()
         finally:
             self._preserve_selection_on_refresh = old_preserve_selection
-        self._select_pending_path_if_ready()
 
     def _select_pending_path_if_ready(self) -> bool:
-        pending = self._pending_selection_path
-        if pending is None:
-            return False
-        if not self._select_path(pending):
-            return False
-        if self._deferred_refresh_target is not None:
-            return True
-        self._pending_selection_path = None
-        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-        return True
+        return self._selection_restore_controller.select_pending_path_if_ready()
 
     def _paste_into_current(self) -> None:
         if not self._clipboard:
