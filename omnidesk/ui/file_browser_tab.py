@@ -96,7 +96,6 @@ class FileBrowserTab(
 
         self._source_model = MediaFileSystemModel(self)
         self._source_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
-        # self._source_model.thumbnailUpdated.connect(self._handle_thumbnail_updated)
         self._source_model.setResolveSymlinks(True)
         self._source_model.setReadOnly(True)
 
@@ -125,8 +124,6 @@ class FileBrowserTab(
         header.setSectionsClickable(True)
         header.setMinimumSectionSize(80)
         header.sectionResized.connect(self._handle_section_resized)
-        # NOTE: _tree_view.sortByColumn()よりも先に来なければならない！ 順序変更注意！
-        # header.sortIndicatorChanged.connect(self._on_sort_changed)
         self._header = header
 
         self._tree_view.setSortingEnabled(True)

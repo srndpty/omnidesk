@@ -18,7 +18,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements-dev.txt
 
       - name: Ruff lint
         run: python -m ruff check . --no-cache
@@ -38,7 +38,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           COVERAGE_FILE: tmp/.coverage
-        run: python -m pytest --cov=omnidesk --cov-report=term-missing --cov-report=xml:tmp\coverage.xml
+        run: python -m pytest --cov=omnidesk --cov-report=term-missing --cov-report=xml:tmp\coverage.xml --cov-fail-under=70
 
       - name: PyInstaller smoke build
         run: pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist packaging\pyinstaller\OmniDesk.spec

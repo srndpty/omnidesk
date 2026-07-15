@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Literal
 
 DirectoryFingerprint = tuple[int, int]
+RetrySelectionAction = Literal["inactive", "selected", "retry", "exhausted"]
+SettledScrollAction = Literal["inactive", "path_missing", "select", "blocked"]
 
 
 @dataclass(frozen=True)
@@ -101,3 +103,36 @@ def resolve_address_path(text: str, current_path: Path) -> Path:
     if not candidate.is_absolute():
         candidate = current_path / candidate
     return candidate
+
+
+def refresh_sort_action(
+    *,
+    active: bool,
+    retries_before_attempt: int,
+    restore_succeeded: bool,
+) -> RetrySelectionAction:
+    """リフレッシュ後ソートの継続可否を返す。"""
+    if not active or retries_before_attempt <= 0:
+        return "inactive"
+    if restore_succeeded:
+        return "selected"
+    if retries_before_attempt - 1 <= 0:
+        return "exhausted"
+    return "retry"
+
+
+def settled_scroll_action(
+    *,
+    pending_path: Path | None,
+    retries_before_attempt: int,
+    path_exists: bool,
+    can_apply: bool,
+) -> SettledScrollAction:
+    """遅延スクロールを適用・中断・継続するか返す。"""
+    if pending_path is None or retries_before_attempt <= 0:
+        return "inactive"
+    if not path_exists:
+        return "path_missing"
+    if not can_apply:
+        return "blocked"
+    return "select"

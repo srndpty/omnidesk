@@ -331,6 +331,12 @@ class FileBrowserOperationsMixin:
         try:
             return path.resolve().is_relative_to(potential_parent.resolve())
         except Exception:
+            logger.debug(
+                "包含判定のパス解決に失敗しました: path=%s potential_parent=%s",
+                path,
+                potential_parent,
+                exc_info=True,
+            )
             return False
 
     def _handle_external_drop(

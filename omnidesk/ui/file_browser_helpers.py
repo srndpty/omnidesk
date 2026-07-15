@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from collections.abc import Callable, Mapping
@@ -16,6 +17,8 @@ from .file_operations import (
 from .file_operations import (
     resolve_destination as resolve_destination,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def deletion_replacement_path(
@@ -35,6 +38,7 @@ def deletion_replacement_path(
             if candidate.resolve() in deleted_paths:
                 return None
         except Exception:
+            logger.debug("削除後の選択候補の解決に失敗しました: %s", candidate, exc_info=True)
             return None
         return candidate
 
@@ -77,6 +81,7 @@ def resolve_windows_program(
         try:
             return path.exists() and path.is_file()
         except Exception:
+            logger.debug("実行ファイル候補の確認に失敗しました: %s", path, exc_info=True)
             return False
 
     env = environ or os.environ

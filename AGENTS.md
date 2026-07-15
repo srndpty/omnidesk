@@ -35,6 +35,7 @@
 - `FileBrowserTab` はQt widget、signal、view更新に寄せてください。
 - ファイル操作は `omnidesk/ui/file_operations.py` へ集約し、UI側は短いエラー表示、サービス層は詳細ログを担当してください。
 - パス解決・選択復元・メディア表示判定・D&D判定・可視アイテム計算は、既存の `file_browser_*.py` ヘルパーへ追加してください。
+- `file_browser_*.py` というフラットなモジュールはUI非依存の純粋ヘルパー、`file_browser/` パッケージ配下はQt依存のコントローラとして扱ってください。
 - 新しい危険操作の防御は、UI確認だけに頼らずサービス層でも拒否してください。
 - サムネイル関連は、UIモデル・ジョブ管理・キャッシュの責務境界を保ってください。
 - 型検査は `pyproject.toml` の `[tool.pyright]` に含まれる低依存モジュールから段階的に広げてください。
@@ -56,7 +57,7 @@
 
 ## 依存とビルド
 - 通常の開発環境は `python -m pip install -r requirements-dev.txt` で準備してください。
-- 依存追加・更新は `requirements-dev.in` または `requirements.in` を編集し、`.\scripts\compile-requirements.ps1` で `requirements.txt` を再生成してください。
+- 依存追加・更新は `requirements.in`（ランタイム）または `requirements-dev.in`（開発用）を編集し、`.\scripts\compile-requirements.ps1` で `requirements.txt` と `requirements-dev.txt` を再生成してください。
 - CIはWindows上でRuff、Pyright、pytest、coverage、PyInstaller smoke buildを実行します。
 - Windowsビルド確認は `.\scripts\build-windows.ps1` を使ってください。`build_windows.bat` は互換用ラッパーです。
 - PyInstallerを手動実行する場合は以下を使ってください。

@@ -16,8 +16,10 @@ from omnidesk.ui.file_browser_navigation import (
     navigation_history_step,
     navigation_target,
     path_to_focus_after_go_up,
+    refresh_sort_action,
     resolve_address_path,
     same_navigation_path,
+    settled_scroll_action,
     should_record_history,
 )
 from omnidesk.ui.file_browser_selection import (
@@ -118,6 +120,99 @@ def test_resolve_address_path_expands_env_and_relative_paths(monkeypatch, tmp_pa
     assert (
         resolve_address_path("%OMNIDESK_TEST_FOLDER%\\file.txt", tmp_path)
         == tmp_path / "expanded" / "file.txt"
+    )
+
+
+def test_refresh_sort_action_covers_retry_outcomes() -> None:
+    assert (
+        refresh_sort_action(
+            active=False,
+            retries_before_attempt=10,
+            restore_succeeded=False,
+        )
+        == "inactive"
+    )
+    assert (
+        refresh_sort_action(
+            active=True,
+            retries_before_attempt=0,
+            restore_succeeded=False,
+        )
+        == "inactive"
+    )
+    assert (
+        refresh_sort_action(
+            active=True,
+            retries_before_attempt=3,
+            restore_succeeded=True,
+        )
+        == "selected"
+    )
+    assert (
+        refresh_sort_action(
+            active=True,
+            retries_before_attempt=1,
+            restore_succeeded=False,
+        )
+        == "exhausted"
+    )
+    assert (
+        refresh_sort_action(
+            active=True,
+            retries_before_attempt=2,
+            restore_succeeded=False,
+        )
+        == "retry"
+    )
+
+
+def test_settled_scroll_action_covers_retry_outcomes(tmp_path: Path) -> None:
+    pending = tmp_path / "pending.txt"
+
+    assert (
+        settled_scroll_action(
+            pending_path=None,
+            retries_before_attempt=8,
+            path_exists=True,
+            can_apply=True,
+        )
+        == "inactive"
+    )
+    assert (
+        settled_scroll_action(
+            pending_path=pending,
+            retries_before_attempt=0,
+            path_exists=True,
+            can_apply=True,
+        )
+        == "inactive"
+    )
+    assert (
+        settled_scroll_action(
+            pending_path=pending,
+            retries_before_attempt=8,
+            path_exists=False,
+            can_apply=False,
+        )
+        == "path_missing"
+    )
+    assert (
+        settled_scroll_action(
+            pending_path=pending,
+            retries_before_attempt=8,
+            path_exists=True,
+            can_apply=False,
+        )
+        == "blocked"
+    )
+    assert (
+        settled_scroll_action(
+            pending_path=pending,
+            retries_before_attempt=8,
+            path_exists=True,
+            can_apply=True,
+        )
+        == "select"
     )
 
 

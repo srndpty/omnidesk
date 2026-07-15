@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QUrl
+
+logger = logging.getLogger(__name__)
 
 
 def local_paths_from_urls(urls: list[QUrl]) -> list[Path]:
@@ -50,6 +53,12 @@ def blocks_self_move(source: Path, target_dir: Path) -> bool:
         src_resolved = source.resolve()
         dest_resolved = target_dir.resolve()
     except Exception:
+        logger.debug(
+            "自己移動判定のパス解決に失敗しました: source=%s target_dir=%s",
+            source,
+            target_dir,
+            exc_info=True,
+        )
         return False
     return src_resolved == dest_resolved or dest_resolved.is_relative_to(src_resolved)
 

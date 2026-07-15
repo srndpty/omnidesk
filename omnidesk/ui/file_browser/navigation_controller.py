@@ -23,7 +23,9 @@ from ..file_browser_navigation import (
     navigation_history_step,
     navigation_target,
     path_to_focus_after_go_up,
+    refresh_sort_action,
     same_navigation_path,
+    settled_scroll_action,
     should_record_history,
 )
 from ..file_browser_selection import has_selection_path_in_directory, pending_selection_action
@@ -301,24 +303,33 @@ class FileBrowserNavigationMixin:
             self._refresh_sort_timer.start()
 
     def _apply_refresh_sort(self) -> None:
-        if not self._refresh_sort_active or self._refresh_sort_retries <= 0:
+        retries_before_attempt = self._refresh_sort_retries
+        if not self._refresh_sort_active or retries_before_attempt <= 0:
             self._refresh_sort_active = False
             return
         self._refresh_sort_retries -= 1
         self._sort_current_directory(reason="refresh-deferred")
-        if (
+        restore_succeeded = (
             self._refresh_selection_path
             and self._refresh_selection_path.exists()
             and self._can_restore_refresh_selection(self._refresh_selection_path)
             and self._select_path(self._refresh_selection_path)
-        ):
+        )
+        action = refresh_sort_action(
+            active=self._refresh_sort_active,
+            retries_before_attempt=retries_before_attempt,
+            restore_succeeded=bool(restore_succeeded),
+        )
+        if action == "selected":
             self._refresh_selection_path = None
             self._refresh_sort_retries = 0
             self._refresh_sort_active = False
             return
-        if self._refresh_sort_retries <= 0:
+        if action in {"inactive", "exhausted"}:
             self._refresh_sort_active = False
-        self._schedule_refresh_sort()
+            return
+        if action == "retry":
+            self._schedule_refresh_sort()
 
     def _can_restore_refresh_selection(self, path: Path) -> bool:
         current = self._selected_index_path()
@@ -349,13 +360,22 @@ class FileBrowserNavigationMixin:
 
     def _apply_settled_scroll(self) -> None:
         path = self._settled_scroll_path
-        if path is None or self._settled_scroll_retries <= 0:
+        retries_before_attempt = self._settled_scroll_retries
+        if path is None or retries_before_attempt <= 0:
             return
         self._settled_scroll_retries -= 1
-        if not path.exists():
+        path_exists = path.exists()
+        can_apply = path_exists and self._can_apply_settled_scroll(path)
+        action = settled_scroll_action(
+            pending_path=path,
+            retries_before_attempt=retries_before_attempt,
+            path_exists=path_exists,
+            can_apply=can_apply,
+        )
+        if action == "path_missing":
             self._settled_scroll_path = None
             return
-        if not self._can_apply_settled_scroll(path):
+        if action in {"inactive", "blocked"}:
             return
         self._select_path(path, self._settled_scroll_hint, defer_settle=False)
         self._schedule_settled_scroll()
