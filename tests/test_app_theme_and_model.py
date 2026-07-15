@@ -153,10 +153,9 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
     monkeypatch.setattr(
         model._provider,
         "request_thumbnail",
-        lambda path, edge, result_key=None, token=None: started.append(
-            (cast(str, result_key), path, edge)
-        )
-        or True,
+        lambda path, edge, result_key=None, token=None: (
+            started.append((cast(str, result_key), path, edge)) or True
+        ),
     )
 
     model._handle_folder_scan_result(key, generation=99, image_path=image_path)
@@ -650,8 +649,9 @@ def test_media_file_system_model_ensure_thumbnail_skips_memory_pending_failed(
     monkeypatch.setattr(
         model._provider,
         "request_thumbnail",
-        lambda path, edge, result_key=None, token=None: requested.append(cast(str, result_key))
-        or True,
+        lambda path, edge, result_key=None, token=None: (
+            requested.append(cast(str, result_key)) or True
+        ),
     )
 
     model._ensure_thumbnail(Path(key), ".png", key)

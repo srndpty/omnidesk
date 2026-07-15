@@ -1,19 +1,40 @@
 # Changelog
 
+このプロジェクトの注目すべき変更はこのファイルに記録します。
+
+形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に基づき、
+バージョン番号は [Semantic Versioning](https://semver.org/lang/ja/) に従います。
+
 ## Unreleased
 
-- Added a Windows Explorer-style "並べ替え" (sort by) submenu to the file list context menu with mutually exclusive 名前順 / 拡張子順 options, implemented via a sort proxy model so files can be ordered by their true extension.
-- Reorganized the main window features into a proper menu bar (ファイル / 編集 / 表示 / ヘルプ), removed the old toolbar, and pinned only the view-switch button to the top-right corner of the menu bar.
-- Added project metadata, centralized pytest/coverage/Ruff configuration, and local pre-commit hooks.
-- Added GitHub Actions CI for linting, tests, coverage, and Windows PyInstaller smoke builds.
-- Added rotating file logging under the OmniDesk user configuration directory.
-- Introduced typed settings and a file operation service layer while preserving existing behavior.
-- Added per-tab back/forward navigation history for toolbar buttons, shortcuts, and mouse navigation buttons.
-- Replaced tab navigation text buttons with arrow icon buttons and removed the main toolbar Go Up action.
-- Added a tab context menu for pinning and closing tabs, with pinned tabs marked by an orange top accent.
-- Prevented pinned tabs from being closed until they are unpinned.
-- Persisted pinned tab state across app restarts.
-- Added Ctrl+Shift+T to reopen the most recently closed tab.
-- Added Backspace as a back-navigation shortcut and restored focus to the folder left behind when navigating back to its parent.
-- Switched the standard Windows build to PyInstaller onedir output, added a separate onefile spec, and package the onedir build as a zip.
-- Moved PyInstaller specs under packaging, added a PowerShell build script, and added a package module entry point.
+## 0.1.0 - 2026-07-16
+
+### Added
+
+- Windows Explorer風の「並べ替え」サブメニューをファイル一覧のコンテキストメニューへ追加し、名前順 / 拡張子順を排他的に切り替えられるようにしました。
+- ソート用プロキシモデルを追加し、ファイルを実際の拡張子で並べ替えられるようにしました。
+- メインウィンドウ機能をメニューバー（ファイル / 編集 / 表示 / ヘルプ）へ整理しました。
+- 表示切替ボタンをメニューバー右上へ固定しました。
+- プロジェクトメタデータ、pytest / coverage / Ruff の集中設定、ローカル pre-commit hook を追加しました。
+- lint、テスト、カバレッジ、Windows PyInstaller smoke build を実行する GitHub Actions CI を追加しました。
+- OmniDesk のユーザー設定ディレクトリ配下にローテーションログを出力する仕組みを追加しました。
+- 型付き設定とファイル操作サービス層を追加しました。
+- タブごとの戻る / 進むナビゲーション履歴を、ツールバーボタン、ショートカット、マウスナビゲーションボタンに対応させました。
+- タブ固定とタブを閉じるためのタブコンテキストメニューを追加しました。
+- 固定タブをオレンジ色の上部アクセントで表示するようにしました。
+- Ctrl+Shift+T で直近に閉じたタブを復元できるようにしました。
+- Backspace を戻るナビゲーションのショートカットとして追加しました。
+- 標準 Windows ビルドを PyInstaller onedir 出力へ切り替え、onedir ビルドを zip パッケージ化するようにしました。
+- PyInstaller spec を packaging 配下へ移動し、PowerShell ビルドスクリプトとパッケージモジュールエントリポイントを追加しました。
+
+### Changed
+
+- 旧ツールバーを廃止し、Go Up アクションをタブ内の矢印ボタンへ統合しました。
+- タブナビゲーションのテキストボタンを矢印アイコンボタンへ置き換えました。
+
+### Fixed
+
+- 固定タブは固定解除されるまで閉じられないようにしました。
+- 固定タブ状態をアプリ再起動後も保持するようにしました。
+- 親ディレクトリへ戻ったとき、移動元フォルダへフォーカスを復元するようにしました。
+- 既存挙動を保ったままファイル操作サービス層へ移行しました。

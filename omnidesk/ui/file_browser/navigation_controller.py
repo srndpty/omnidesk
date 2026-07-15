@@ -1,23 +1,25 @@
 """Navigation, refresh, selection restore, and view-mode orchestration."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import logging
 from contextlib import suppress
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from PyQt6.QtCore import QItemSelectionModel, QModelIndex, QSize, Qt, QUrl
+from PyQt6.QtCore import QItemSelection, QItemSelectionModel, QModelIndex, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeyEvent
-from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMessageBox
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QLineEdit,
+    QMessageBox,
+    QWidget,
+)
 
 from ..file_browser_helpers import deletion_replacement_path
-from ..file_browser_media_mode import (
-    calculate_grid_size,
-    is_media_heavy_directory,
-    media_mode_button_text,
-)
 from ..file_browser_navigation import (
+    DirectoryFingerprint,
     directory_fingerprint,
     directory_fingerprint_changed,
     navigation_history_step,
@@ -26,12 +28,77 @@ from ..file_browser_navigation import (
     same_navigation_path,
     should_record_history,
 )
-from ..file_browser_selection import has_selection_path_in_directory, pending_selection_action
+from ..file_browser_selection import has_selection_path_in_directory
+from .selection_restore_controller import SelectionRestoreController
+from .settled_scroll_controller import SettledScrollController
+from .sort_model import SortedFileSystemModel
+from .sort_refresh_controller import SortRefreshController
+from .view_mode_controller import ViewModeController
+from .views import _FileTileView, _FileTreeView
 
 logger = logging.getLogger(__name__)
 
 
-class FileBrowserNavigationMixin:
+_NavigationMixinBase = QWidget if TYPE_CHECKING else object
+
+
+class FileBrowserNavigationMixin(_NavigationMixinBase):
+    if TYPE_CHECKING:
+        # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
+        DEFAULT_NAME_COLUMN_WIDTH: ClassVar[int]
+        MEDIA_MIN_COUNT: ClassVar[int]
+        MEDIA_RATIO_THRESHOLD: ClassVar[float]
+        MEDIA_SCAN_LIMIT: ClassVar[int]
+        _bound_selection_model: QItemSelectionModel | None
+        _current_directory_fingerprint: DirectoryFingerprint | None
+        _current_directory_has_local_changes: bool
+        _current_path: Path
+        _deferred_refresh_target: Path | None
+        _deferred_refresh_timer: QTimer
+        _forward_history: list[Path]
+        _has_loaded_root: bool
+        _header: QHeaderView
+        _model: SortedFileSystemModel
+        _navigation_history: list[Path]
+        _path_edit: QLineEdit
+        _preserve_selection_on_refresh: bool
+        _sort_refresh_controller: SortRefreshController
+        _selection_restore_controller: SelectionRestoreController
+        _settled_scroll_controller: SettledScrollController
+        _tile_view: _FileTileView
+        _tree_view: _FileTreeView
+        _view_mode_controller: ViewModeController
+        # pyqtSignalはクラス属性ではデスクリプタ、インスタンスではbound signalになる。
+        directoryChanged: Any
+        nameColumnWidthChanged: Any
+        requestOpenInNewTab: Any
+
+        def _handle_selection_changed(
+            self,
+            selected: QItemSelection | None = None,
+            deselected: QItemSelection | None = None,
+        ) -> None: ...
+
+        def _request_status_item_counts(self, path: Path) -> None: ...
+
+        def _restart_thumbnail_requests(self) -> None: ...
+
+        def _schedule_select_pending_or_first_row(self) -> None: ...
+
+        def _select_path(
+            self,
+            path: Path,
+            scroll_hint: QAbstractItemView.ScrollHint = QAbstractItemView.ScrollHint.EnsureVisible,
+            *,
+            defer_settle: bool = True,
+        ) -> bool: ...
+
+        def _select_pending_path_if_ready(self) -> bool: ...
+
+        def _update_action_states(self) -> None: ...
+
+        def _update_navigation_button_states(self) -> None: ...
+
     def navigate_to(self, path: Path, *, from_history: bool = False) -> bool:
         """Display the given directory as the current root."""
         if not path.exists():
@@ -103,9 +170,7 @@ class FileBrowserNavigationMixin:
         ):
             self._pending_selection_path = selected
             self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-        self._refresh_selection_path = self._pending_selection_path or selected
-        self._refresh_sort_active = True
-        self._refresh_sort_retries = 10
+        self._sort_refresh_controller.begin_refresh_sort(self._pending_selection_path or selected)
         target = self._current_path
         if self._reset_root_before_refresh(target):
             self._deferred_refresh_target = target
@@ -122,8 +187,7 @@ class FileBrowserNavigationMixin:
 
     def _complete_refresh(self, target: Path) -> None:
         if target != self._current_path:
-            self._refresh_sort_active = False
-            self._refresh_sort_retries = 0
+            self._sort_refresh_controller.cancel()
             return
         self.navigate_to(target)
         self._select_pending_path_if_ready()
@@ -196,15 +260,10 @@ class FileBrowserNavigationMixin:
 
     def set_name_column_width(self, width: int | None) -> None:
         """Apply a new preferred width to the name column."""
-        if not width or width <= 0:
-            return
-        if width == self._name_column_width:
-            return
-        self._name_column_width = width
-        self._apply_name_column_width()
+        self._view_mode_controller.set_name_column_width(width)
 
     def name_column_width(self) -> int:
-        return self._name_column_width
+        return self._view_mode_controller.name_column_width
 
     # ------------------------------------------------------------------
 
@@ -212,7 +271,7 @@ class FileBrowserNavigationMixin:
         self._request_status_item_counts(self._current_path)
         self._update_media_mode(self._current_path, select_default=False)
 
-        deferred_selection = self._selection_restore_timer.isActive()
+        deferred_selection = self._selection_restore_controller.is_scheduled()
         if not deferred_selection:
             self._select_pending_or_first_row()
 
@@ -228,14 +287,7 @@ class FileBrowserNavigationMixin:
             self._open_file(target)
 
     def _handle_section_resized(self, logical_index: int, _: int, new_size: int) -> None:
-        if self._media_icon_mode:
-            return
-        if logical_index != 0:
-            return
-        if new_size <= 0 or new_size == self._name_column_width:
-            return
-        self._name_column_width = new_size
-        self.nameColumnWidthChanged.emit(new_size)
+        self._view_mode_controller.handle_section_resized(logical_index, new_size)
 
     # ------------------------------------------------------------------
     # QWidget overrides
@@ -255,130 +307,105 @@ class FileBrowserNavigationMixin:
         super().keyPressEvent(event)
 
     def _active_view(self) -> QAbstractItemView:
-        if self._media_icon_mode:
-            return self._tile_view
-        return self._tree_view
+        return self._view_mode_controller.active_view()
 
     def _apply_name_column_width(self) -> None:
-        if self._media_icon_mode:
-            return
-        if self._name_column_width > 0:
-            self._header.resizeSection(0, self._name_column_width)
+        self._view_mode_controller.apply_name_column_width()
 
     def set_sort_mode(self, mode: str) -> None:
         """名前順/拡張子順を切り替え、選択を見やすい位置へ保つ。"""
-        if mode not in ("name", "extension"):
+        if not self._sort_refresh_controller.set_sort_mode(mode):
             return
-        # 既に同じ方式かつ名前列で並んでいるなら何もしない。ただしサイズ列・更新日時列で
-        # 並べ替えた後は、同じ方式の再選択でも名前列へ戻す必要がある（sort_mode() は
-        # ヘッダー列で並べ替えても保持されたままのため、列も併せて確認する）。
-        if self._model.sort_mode() == mode and self._header.sortIndicatorSection() == 0:
-            return
-        # 直前にサイズ列・更新日時列で並べ替えていても名前列へ戻す。これをしないと、
-        # 以降の refresh が古いヘッダー（_sort_current_directory が参照）で再ソートしてしまう。
-        self._tree_view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
-        self._model.set_sort_mode(mode)
         selected = self._selected_index_path()
         if selected is not None:
             self._select_path(selected, QAbstractItemView.ScrollHint.PositionAtCenter)
 
     def sort_mode(self) -> str:
-        return self._model.sort_mode()
+        return self._sort_refresh_controller.sort_mode()
 
     def _sort_current_directory(self, *, reason: str) -> None:
-        column = self._header.sortIndicatorSection()
-        if column < 0:
-            column = 0
-        order = self._header.sortIndicatorOrder()
-        _ = reason
-        self._model.sort(column, order)
-        self._tile_view.scheduleDelayedItemsLayout()
+        self._sort_refresh_controller.sort_current_directory(reason=reason)
 
     def _schedule_refresh_sort(self) -> None:
-        if not self._refresh_sort_active or self._refresh_sort_retries <= 0:
-            return
-        if not self._refresh_sort_timer.isActive():
-            self._refresh_sort_timer.start()
+        controller = getattr(self, "_sort_refresh_controller", None)
+        if controller is not None:
+            controller.schedule_refresh_sort()
 
     def _apply_refresh_sort(self) -> None:
-        if not self._refresh_sort_active or self._refresh_sort_retries <= 0:
-            self._refresh_sort_active = False
-            return
-        self._refresh_sort_retries -= 1
-        self._sort_current_directory(reason="refresh-deferred")
-        if (
-            self._refresh_selection_path
-            and self._refresh_selection_path.exists()
-            and self._can_restore_refresh_selection(self._refresh_selection_path)
-            and self._select_path(self._refresh_selection_path)
-        ):
-            self._refresh_selection_path = None
-            self._refresh_sort_retries = 0
-            self._refresh_sort_active = False
-            return
-        if self._refresh_sort_retries <= 0:
-            self._refresh_sort_active = False
-        self._schedule_refresh_sort()
+        self._sort_refresh_controller.apply_refresh_sort()
 
     def _can_restore_refresh_selection(self, path: Path) -> bool:
-        current = self._selected_index_path()
-        if current is None:
-            return True
-        if same_navigation_path(current, path):
-            return True
-        self._refresh_selection_path = None
-        self._refresh_sort_retries = 0
-        self._refresh_sort_active = False
-        return False
+        return self._sort_refresh_controller.can_restore_refresh_selection(path)
+
+    @property
+    def _refresh_sort_active(self) -> bool:
+        return self._sort_refresh_controller.active
+
+    @_refresh_sort_active.setter
+    def _refresh_sort_active(self, value: bool) -> None:
+        self._sort_refresh_controller.active = value
+
+    @property
+    def _refresh_sort_retries(self) -> int:
+        return self._sort_refresh_controller.retries
+
+    @_refresh_sort_retries.setter
+    def _refresh_sort_retries(self, value: int) -> None:
+        self._sort_refresh_controller.retries = value
+
+    @property
+    def _refresh_selection_path(self) -> Path | None:
+        return self._sort_refresh_controller.selection_path
+
+    @_refresh_selection_path.setter
+    def _refresh_selection_path(self, value: Path | None) -> None:
+        self._sort_refresh_controller.selection_path = value
 
     def _defer_settled_scroll(
         self,
         path: Path,
         scroll_hint: QAbstractItemView.ScrollHint,
     ) -> None:
-        self._settled_scroll_path = path
-        self._settled_scroll_hint = scroll_hint
-        self._settled_scroll_retries = 8
-        self._schedule_settled_scroll()
+        self._settled_scroll_controller.defer(path, scroll_hint)
 
     def _schedule_settled_scroll(self) -> None:
-        if self._settled_scroll_path is None or self._settled_scroll_retries <= 0:
-            return
-        if not self._settled_scroll_timer.isActive():
-            self._settled_scroll_timer.start()
+        self._settled_scroll_controller.schedule()
 
     def _apply_settled_scroll(self) -> None:
-        path = self._settled_scroll_path
-        if path is None or self._settled_scroll_retries <= 0:
-            return
-        self._settled_scroll_retries -= 1
-        if not path.exists():
-            self._settled_scroll_path = None
-            return
-        if not self._can_apply_settled_scroll(path):
-            return
-        self._select_path(path, self._settled_scroll_hint, defer_settle=False)
-        self._schedule_settled_scroll()
+        self._settled_scroll_controller.apply()
 
     def _can_apply_settled_scroll(self, path: Path) -> bool:
-        current = self._selected_index_path()
-        if current is None:
-            return True
-        if same_navigation_path(current, path):
-            return True
-        self._settled_scroll_path = None
-        self._settled_scroll_retries = 0
-        return False
+        return self._settled_scroll_controller.can_apply(path)
+
+    @property
+    def _settled_scroll_path(self) -> Path | None:
+        """既存API互換のためコントローラの保留パスを公開する。"""
+        return self._settled_scroll_controller.path
+
+    @_settled_scroll_path.setter
+    def _settled_scroll_path(self, path: Path | None) -> None:
+        self._settled_scroll_controller.path = path
+
+    @property
+    def _settled_scroll_hint(self) -> QAbstractItemView.ScrollHint:
+        """既存API互換のためコントローラのスクロール指定を公開する。"""
+        return self._settled_scroll_controller.scroll_hint
+
+    @_settled_scroll_hint.setter
+    def _settled_scroll_hint(self, hint: QAbstractItemView.ScrollHint) -> None:
+        self._settled_scroll_controller.scroll_hint = hint
+
+    @property
+    def _settled_scroll_retries(self) -> int:
+        """既存API互換のためコントローラの残試行回数を公開する。"""
+        return self._settled_scroll_controller.retries
+
+    @_settled_scroll_retries.setter
+    def _settled_scroll_retries(self, retries: int) -> None:
+        self._settled_scroll_controller.retries = retries
 
     def _configure_header_sections(self) -> None:
-        if self._media_icon_mode:
-            return
-        count = self._header.count()
-        if count == 0:
-            return
-        self._header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        for section in range(1, count):
-            self._header.setSectionResizeMode(section, QHeaderView.ResizeMode.ResizeToContents)
+        self._view_mode_controller.configure_header_sections()
 
     def _selected_index_path(self) -> Path | None:
         selection_model = self._active_view().selectionModel()
@@ -406,29 +433,25 @@ class FileBrowserNavigationMixin:
                 )
 
     def _select_pending_or_first_row(self) -> None:
-        pending = self._pending_selection_path
-        pending_scroll_hint = self._pending_selection_scroll_hint
-        pending_exists = bool(pending and pending.exists())
-        selected_pending = bool(
-            pending and pending_exists and self._select_path(pending, pending_scroll_hint)
-        )
-        action = pending_selection_action(
-            pending,
-            pending_exists=pending_exists,
-            selected_in_current_directory=self._has_current_selection_in_current_directory(),
-            pending_select_succeeded=selected_pending,
-        )
-        if action == "selected_pending":
-            self._pending_selection_path = None
-            self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-            return
-        if action == "wait_for_pending":
-            return
-        if action == "keep_current":
-            return
-        self._pending_selection_path = None
-        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-        self._select_first_row()
+        self._selection_restore_controller.select_pending_or_first_row()
+
+    @property
+    def _pending_selection_path(self) -> Path | None:
+        """既存API互換のためコントローラの保留パスを公開する。"""
+        return self._selection_restore_controller.pending_path
+
+    @_pending_selection_path.setter
+    def _pending_selection_path(self, path: Path | None) -> None:
+        self._selection_restore_controller.pending_path = path
+
+    @property
+    def _pending_selection_scroll_hint(self) -> QAbstractItemView.ScrollHint:
+        """既存API互換のためコントローラのスクロール指定を公開する。"""
+        return self._selection_restore_controller.scroll_hint
+
+    @_pending_selection_scroll_hint.setter
+    def _pending_selection_scroll_hint(self, hint: QAbstractItemView.ScrollHint) -> None:
+        self._selection_restore_controller.scroll_hint = hint
 
     def _has_current_selection_in_current_directory(self) -> bool:
         selection_model = self._active_view().selectionModel()
@@ -496,53 +519,46 @@ class FileBrowserNavigationMixin:
 
     # ------------------------------------------------------------------
     def _update_media_mode(self, directory: Path, *, select_default: bool = True) -> None:
-        # should_enable = self._is_media_heavy(directory)
-        # ユーザーが明示的に表示モードを切り替えていれば、その選択を尊重する。
-        # こうしないと、削除後の refresh などで強制的にタイル表示へ戻ってしまう。
-        # 未指定（None）の場合は既定として常にサムネイルモードにする。
-        should_enable = self._manual_media_mode if self._manual_media_mode is not None else True
-        if should_enable != self._media_icon_mode:
-            self._media_icon_mode = should_enable
-            self._apply_media_mode(select_default=select_default)
-        elif self._media_icon_mode:
-            self._apply_media_mode(select_default=select_default)
+        self._view_mode_controller.update_media_mode(
+            directory,
+            select_default=select_default,
+        )
 
     def _apply_media_mode(self, *, select_default: bool = True) -> None:
-        if self._media_icon_mode:
-            icon_edge = 160
-            self._model.set_thumbnail_edge(icon_edge)
-            self._tile_view.setIconSize(QSize(icon_edge, icon_edge))
-            self._tile_view.setGridSize(self._calculate_grid_size(icon_edge))
-            self._view_stack.setCurrentWidget(self._tile_view)
-        else:
-            self._model.set_thumbnail_edge(96)
-            self._tree_view.setIconSize(QSize(32, 32))
-            self._view_stack.setCurrentWidget(self._tree_view)
-        self._update_view_toggle_button()
-        self._connect_selection_signals()
-        if select_default:
-            self._select_pending_or_first_row()
+        self._view_mode_controller.apply_media_mode(select_default=select_default)
 
     def _handle_view_toggle_clicked(self) -> None:
-        target = not self._media_icon_mode
-        self._manual_media_mode = target
-        self._media_icon_mode = target
-        self._apply_media_mode()
+        self._view_mode_controller.handle_view_toggle_clicked()
 
     def _update_view_toggle_button(self) -> None:
-        text, tooltip = media_mode_button_text(self._media_icon_mode)
-        self._toggle_view_button.setText(text)
-        self._toggle_view_button.setToolTip(tooltip)
+        self._view_mode_controller.update_view_toggle_button()
 
     def _calculate_grid_size(self, edge: int) -> QSize:
-        fm = self._tile_view.fontMetrics()
-        return calculate_grid_size(edge, fm.lineSpacing())
+        return self._view_mode_controller.calculate_grid_size(edge)
 
     def _is_media_heavy(self, directory: Path) -> bool:
-        return is_media_heavy_directory(
-            directory,
-            self._model.media_extensions,
-            ratio_threshold=self.MEDIA_RATIO_THRESHOLD,
-            min_count=self.MEDIA_MIN_COUNT,
-            scan_limit=self.MEDIA_SCAN_LIMIT,
-        )
+        return self._view_mode_controller.is_media_heavy(directory)
+
+    @property
+    def _media_icon_mode(self) -> bool:
+        return self._view_mode_controller.media_icon_mode
+
+    @_media_icon_mode.setter
+    def _media_icon_mode(self, value: bool) -> None:
+        self._view_mode_controller.media_icon_mode = value
+
+    @property
+    def _manual_media_mode(self) -> bool | None:
+        return self._view_mode_controller.manual_media_mode
+
+    @_manual_media_mode.setter
+    def _manual_media_mode(self, value: bool | None) -> None:
+        self._view_mode_controller.manual_media_mode = value
+
+    @property
+    def _name_column_width(self) -> int:
+        return self._view_mode_controller.name_column_width
+
+    @_name_column_width.setter
+    def _name_column_width(self, value: int) -> None:
+        self._view_mode_controller.name_column_width = value

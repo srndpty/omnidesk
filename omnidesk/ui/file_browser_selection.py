@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PyQt6.QtCore import QRect
+
+logger = logging.getLogger(__name__)
 
 
 def rubber_band_intersecting_rows(
@@ -64,4 +67,10 @@ def has_selection_path_in_directory(path: Path, directory: Path) -> bool:
     try:
         return path.exists() and path.parent.resolve() == directory.resolve()
     except Exception:
+        logger.debug(
+            "選択パスの所属ディレクトリ判定に失敗しました: path=%s directory=%s",
+            path,
+            directory,
+            exc_info=True,
+        )
         return False

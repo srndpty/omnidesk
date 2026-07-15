@@ -1,14 +1,14 @@
 """File-operation orchestration for the file browser tab."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import logging
 from contextlib import suppress
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QItemSelectionModel, QThreadPool
-from PyQt6.QtWidgets import QAbstractItemView, QInputDialog, QMessageBox
+from PyQt6.QtCore import QThreadPool
+from PyQt6.QtWidgets import QAbstractItemView, QInputDialog, QMessageBox, QWidget
 
 from ..file_browser_drop import has_blocked_self_move
 from ..file_browser_navigation import same_navigation_path
@@ -27,6 +27,9 @@ from ..file_operations import (
     rename_path,
     resolve_destination,
 )
+from .clipboard import _ClipboardPayload
+from .selection_restore_controller import SelectionRestoreController
+from .sort_model import SortedFileSystemModel
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +44,38 @@ def _ellipsize_for_dialog(text: str, limit: int = 300) -> str:
     return f"{text[:head]}\n…\n{text[-tail:]}"
 
 
-class FileBrowserOperationsMixin:
+_OperationsMixinBase = QWidget if TYPE_CHECKING else object
+
+
+class FileBrowserOperationsMixin(_OperationsMixinBase):
+    if TYPE_CHECKING:
+        # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
+        _clipboard: _ClipboardPayload | None
+        _current_directory_has_local_changes: bool
+        _current_path: Path
+        _deferred_refresh_target: Path | None
+        _file_operation_jobs: list[FileOperationJob]
+        _inline_rename_seed: tuple[Path, str | None] | None
+        _model: SortedFileSystemModel
+        _pending_selection_path: Path | None
+        _pending_selection_scroll_hint: QAbstractItemView.ScrollHint
+        _preserve_selection_on_refresh: bool
+        _selection_restore_controller: SelectionRestoreController
+
+        def _active_view(self) -> QAbstractItemView: ...
+
+        def _selected_paths(self) -> list[Path]: ...
+
+        def _selection_path_before_deleted_items(self, paths: list[Path]) -> Path | None: ...
+
+        def _set_clipboard(self, payload: _ClipboardPayload | None) -> None: ...
+
+        def _update_action_states(self) -> None: ...
+
+        def focus_view(self) -> None: ...
+
+        def refresh(self) -> None: ...
+
     def _rename_selected(self) -> None:
         paths = self._selected_paths()
         if len(paths) != 1:
@@ -70,7 +104,7 @@ class FileBrowserOperationsMixin:
             # Editor never opened, so the seed would otherwise leak into a later
             # unrelated rename of the same path.
             self._inline_rename_seed = None
-        return opened
+        return bool(opened)
 
     def _consume_rename_seed(self, path: Path) -> str | None:
         """Return any pending editor seed text for ``path``.
@@ -168,20 +202,11 @@ class FileBrowserOperationsMixin:
         *,
         defer_settle: bool = True,
     ) -> bool:
-        index = self._model.index(str(path))
-        if not index.isValid():
-            return False
-        view = self._active_view()
-        selection_model = view.selectionModel()
-        if selection_model:
-            selection_model.setCurrentIndex(
-                index,
-                QItemSelectionModel.SelectionFlag.ClearAndSelect,
-            )
-        view.scrollTo(index, scroll_hint)
-        if defer_settle and scroll_hint == QAbstractItemView.ScrollHint.PositionAtCenter:
-            self._defer_settled_scroll(path, scroll_hint)
-        return True
+        return self._selection_restore_controller.select_path(
+            path,
+            scroll_hint,
+            defer_settle=defer_settle,
+        )
 
     def _refresh_and_select(
         self,
@@ -189,27 +214,22 @@ class FileBrowserOperationsMixin:
         *,
         preserve_selection: bool = True,
     ) -> None:
-        self._pending_selection_path = path
-        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
+        self._selection_restore_controller.refresh_and_select(
+            path,
+            preserve_selection=preserve_selection,
+        )
+
+    def _refresh_for_selection_restore(self, preserve_selection: bool) -> None:
+        """選択復元中だけrefreshの選択保持方針を差し替える。"""
         old_preserve_selection = self._preserve_selection_on_refresh
         self._preserve_selection_on_refresh = preserve_selection
         try:
             self.refresh()
         finally:
             self._preserve_selection_on_refresh = old_preserve_selection
-        self._select_pending_path_if_ready()
 
     def _select_pending_path_if_ready(self) -> bool:
-        pending = self._pending_selection_path
-        if pending is None:
-            return False
-        if not self._select_path(pending):
-            return False
-        if self._deferred_refresh_target is not None:
-            return True
-        self._pending_selection_path = None
-        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
-        return True
+        return self._selection_restore_controller.select_pending_path_if_ready()
 
     def _paste_into_current(self) -> None:
         if not self._clipboard:
@@ -284,7 +304,9 @@ class FileBrowserOperationsMixin:
 
         job.signals.finished.connect(handle_finished)
         self._file_operation_jobs.append(job)
-        QThreadPool.globalInstance().start(job)
+        pool = QThreadPool.globalInstance()
+        assert pool is not None
+        pool.start(job)
         return job
 
     def _handle_file_operation_finished(
@@ -331,6 +353,12 @@ class FileBrowserOperationsMixin:
         try:
             return path.resolve().is_relative_to(potential_parent.resolve())
         except Exception:
+            logger.debug(
+                "包含判定のパス解決に失敗しました: path=%s potential_parent=%s",
+                path,
+                potential_parent,
+                exc_info=True,
+            )
             return False
 
     def _handle_external_drop(

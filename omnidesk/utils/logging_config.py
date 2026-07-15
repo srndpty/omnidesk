@@ -5,12 +5,37 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOG_ENV_VAR = "OMNIDESK_LOG_LEVEL"
 LOG_FILE_NAME = "omnidesk.log"
 DEFAULT_LOG_LEVEL = logging.INFO
+
+
+class _WindowsSafeRotatingFileHandler(RotatingFileHandler):
+    """他プロセスがログを使用中でも現在のファイルへの記録を継続する。"""
+
+    ROLLOVER_RETRY_SECONDS = 30.0
+    _rollover_retry_at = 0.0
+
+    def shouldRollover(self, record: logging.LogRecord) -> bool:  # noqa: N802
+        if time.monotonic() < self._rollover_retry_at:
+            return False
+        return bool(super().shouldRollover(record))
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except PermissionError:
+            # Windowsでは別プロセスが同じログを開いているとrenameできない。
+            # ローテーションは次回へ延期し、今回のレコードは失わず追記する。
+            self._rollover_retry_at = time.monotonic() + self.ROLLOVER_RETRY_SECONDS
+            if self.stream is None and not self.delay:
+                self.stream = self._open()
+        else:
+            self._rollover_retry_at = 0.0
 
 
 def _default_log_dir() -> Path:
@@ -81,7 +106,7 @@ def configure_logging(
 
 
 def _rotating_file_handler(path: Path) -> RotatingFileHandler:
-    return RotatingFileHandler(
+    return _WindowsSafeRotatingFileHandler(
         path,
         maxBytes=1_000_000,
         backupCount=3,

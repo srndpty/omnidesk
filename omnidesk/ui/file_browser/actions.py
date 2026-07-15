@@ -1,16 +1,67 @@
 """Action and context menu wiring for the file browser tab."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QItemSelectionModel, Qt
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
-from PyQt6.QtWidgets import QAbstractItemView, QMenu, QWidget
+from PyQt6.QtWidgets import QAbstractItemView, QLineEdit, QMenu, QToolButton, QWidget
 
-from ..file_browser_actions import file_action_states
+from ..file_browser_helpers import file_action_states
+from .clipboard import _ClipboardPayload
+
+_ActionsMixinBase = QWidget if TYPE_CHECKING else object
 
 
-class FileBrowserActionsMixin:
+class FileBrowserActionsMixin(_ActionsMixinBase):
+    if TYPE_CHECKING:
+        # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
+        _back_button: QToolButton
+        _clipboard: _ClipboardPayload | None
+        _copy_action: QAction
+        _current_path: Path
+        _cut_action: QAction
+        _delete_action: QAction
+        _forward_button: QToolButton
+        _forward_history: list[Path]
+        _navigation_history: list[Path]
+        _new_file_action: QAction
+        _new_folder_action: QAction
+        _paste_action: QAction
+        _path_edit: QLineEdit
+        _rename_action: QAction
+        _select_all_action: QAction
+
+        def _active_view(self) -> QAbstractItemView: ...
+
+        def _copy_selected(self) -> None: ...
+
+        def _create_new_file(self) -> None: ...
+
+        def _create_new_folder(self) -> None: ...
+
+        def _cut_selected(self) -> None: ...
+
+        def _delete_selected(self) -> None: ...
+
+        def _emit_status_changed(self, selected_paths: list[Path] | None = None) -> None: ...
+
+        def _paste_into_current(self) -> None: ...
+
+        def _rename_selected(self) -> None: ...
+
+        def _selected_paths(self) -> list[Path]: ...
+
+        def go_back(self) -> None: ...
+
+        def go_forward(self) -> None: ...
+
+        def set_sort_mode(self, mode: str) -> None: ...
+
+        def sort_mode(self) -> str: ...
+
     def _create_actions(self) -> None:
         self._copy_action = QAction("Copy", self)
         self._copy_action.setShortcut(QKeySequence.StandardKey.Copy)
@@ -140,7 +191,9 @@ class FileBrowserActionsMixin:
         menu.addAction(self._new_folder_action)
         menu.addSeparator()
         menu.addMenu(self.build_sort_menu(menu))
-        menu.exec(view.viewport().mapToGlobal(point))
+        viewport = view.viewport()
+        assert viewport is not None
+        menu.exec(viewport.mapToGlobal(point))
 
     def build_sort_menu(self, parent: QWidget) -> QMenu:
         """Windows エクスプローラー風の「並べ替え」メニュー（名前順/拡張子順の択一）を作る。
@@ -154,6 +207,7 @@ class FileBrowserActionsMixin:
         current = self.sort_mode()
         for label, mode in (("名前順", "name"), ("拡張子順", "extension")):
             action = menu.addAction(label)
+            assert action is not None
             action.setCheckable(True)
             action.setChecked(current == mode)
             action.triggered.connect(lambda _checked=False, m=mode: self.set_sort_mode(m))

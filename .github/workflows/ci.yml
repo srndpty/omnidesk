@@ -5,6 +5,31 @@ on:
   pull_request:
 
 jobs:
+  runtime-smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Construct runtime widget
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          python -c "import dotenv, natsort, send2trash;
+          from PyQt6.QtWidgets import QApplication;
+          from omnidesk.ui.file_browser_tab import FileBrowserTab;
+          app = QApplication([]); widget = FileBrowserTab();
+          widget.close(); app.processEvents()"
+
   quality:
     runs-on: windows-latest
     steps:
@@ -18,7 +43,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements-dev.txt
 
       - name: Ruff lint
         run: python -m ruff check . --no-cache

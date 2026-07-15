@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTextEdit,
+    QWidget,
 )
 
 _ClipboardVisualMode = Literal["copy", "move"]
@@ -275,6 +276,9 @@ class _InlineRenameDelegateMixin:
 
 
 class _DropTargetItemDelegate(_InlineRenameDelegateMixin, QStyledItemDelegate):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        QStyledItemDelegate.__init__(self, parent)
+
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         view_option = QStyleOptionViewItem(option)
         is_drop_target = self._is_drop_target(view_option, index)
@@ -321,6 +325,9 @@ class _TwoLineTileNameDelegate(_InlineRenameDelegateMixin, QStyledItemDelegate):
     HORIZONTAL_PADDING = 12
     ICON_TOP_PADDING = 4
     LABEL_TOP_PADDING = 8
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        QStyledItemDelegate.__init__(self, parent)
 
     def createEditor(self, parent, option, index):  # noqa: N802
         editor = _InlineRenameTextEdit(parent)

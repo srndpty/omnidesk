@@ -1,20 +1,65 @@
 """Thumbnail scheduling and visible-index helpers for the file browser tab."""
 
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QModelIndex, QPoint
-from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QListView, QTreeView
+from PyQt6.QtGui import QCloseEvent, QResizeEvent
+from PyQt6.QtWidgets import QListView, QTreeView, QWidget
 
+from ..file_browser_background import FileBrowserThumbnailScheduler
 from ..file_browser_visible import index_identity, tile_probe_points, tile_probe_step
+from ..file_operation_jobs import FileOperationJob
+from .selection_restore_controller import SelectionRestoreController
+from .settled_scroll_controller import SettledScrollController
+from .sort_model import SortedFileSystemModel
+from .sort_refresh_controller import SortRefreshController
+
+if TYPE_CHECKING:
+    from PyQt6.QtCore import QTimer
+
+    from .views import _FileTileView, _FileTreeView
 
 logger = logging.getLogger(__name__)
 
 
-class FileBrowserThumbnailMixin:
+_ThumbnailMixinBase = QWidget if TYPE_CHECKING else object
+
+
+class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
+    if TYPE_CHECKING:
+        # FileBrowserTab本体や他Mixinが用意する属性/メソッドの型宣言。
+        _current_path: Path
+        _deferred_refresh_target: Path | None
+        _deferred_refresh_timer: QTimer
+        _file_operation_jobs: list[FileOperationJob]
+        _is_active: bool
+        _is_scrolling_for_thumbnails: bool
+        _model: SortedFileSystemModel
+        _sort_refresh_controller: SortRefreshController
+        _selection_restore_controller: SelectionRestoreController
+        _settled_scroll_controller: SettledScrollController
+        _thumbnail_scheduler: FileBrowserThumbnailScheduler
+        _tile_view: _FileTileView
+        _tree_view: _FileTreeView
+
+        def _active_view(self) -> QListView | QTreeView: ...
+
+        def _request_status_item_counts(self, path: Path) -> None: ...
+
+        def _deactivate_status_item_counts(self) -> None: ...
+
+        def _resume_status_item_counts(self) -> None: ...
+
+        def _shutdown_status_item_counts(self) -> None: ...
+
+        def _schedule_refresh_sort(self) -> None: ...
+
+        def _schedule_settled_scroll(self) -> None: ...
+
     def activate(self) -> None:
         """Start visible-item thumbnail work when this tab becomes active."""
         if self._is_active:
@@ -22,8 +67,7 @@ class FileBrowserThumbnailMixin:
         logger.debug("Activating tab for %s", self._current_path)
         self._is_active = True
         self._restart_thumbnail_requests()
-        if self._status_count_refresh_on_activate:
-            self._request_status_item_counts(self._current_path)
+        self._resume_status_item_counts()
 
     def deactivate(self) -> None:
         """Stop visible-item thumbnail work when this tab becomes inactive."""
@@ -37,16 +81,15 @@ class FileBrowserThumbnailMixin:
         """Cancel work that is only useful while this tab is visible."""
         self._thumbnail_scheduler.cancel()
         self._model.cancel_background_work()
-        if self._status_count_jobs:
-            self._status_count_refresh_on_activate = True
-        self._status_count_generation += 1
+        self._deactivate_status_item_counts()
 
     def cancel_all_work_for_shutdown(self) -> None:
         """Cancel all work owned by this tab during shutdown or disposal."""
         self.cancel_inactive_tab_work()
-        self._selection_restore_timer.stop()
-        self._settled_scroll_timer.stop()
-        self._refresh_sort_timer.stop()
+        self._shutdown_status_item_counts()
+        self._selection_restore_controller.cancel()
+        self._settled_scroll_controller.cancel()
+        self._sort_refresh_controller.cancel()
         self._deferred_refresh_timer.stop()
         self._deferred_refresh_target = None
         for job in self._file_operation_jobs:
@@ -61,7 +104,7 @@ class FileBrowserThumbnailMixin:
         self.cancel_all_work_for_shutdown()
         super().closeEvent(event)
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         """ウィンドウサイズが変更されたときに呼び出される"""
         # 親クラスの元のリサイズ処理を必ず呼び出す
         # スクロール時と同じタイマーを開始し、可視範囲のサムネイル要求をスケジュールする
@@ -128,6 +171,7 @@ class FileBrowserThumbnailMixin:
     def _visible_tree_indexes(self, view: QTreeView) -> list[QModelIndex]:
         indexes: list[QModelIndex] = []
         viewport = view.viewport()
+        assert viewport is not None
         height = max(1, view.sizeHintForRow(0))
         y = 0
         seen_rows: set[int] = set()
@@ -145,6 +189,7 @@ class FileBrowserThumbnailMixin:
     def _visible_tile_indexes(self, view: QListView) -> list[QModelIndex]:
         indexes: list[QModelIndex] = []
         viewport = view.viewport()
+        assert viewport is not None
         rect = viewport.rect()
         # QListView::indexAt only returns an item when the probe point is inside
         # the painted item rect. A tile-sized stride can skip every item if the
@@ -167,4 +212,6 @@ class FileBrowserThumbnailMixin:
         for view in (self._tile_view, self._tree_view):
             rect = view.visualRect(index)
             if rect.isValid():
-                view.viewport().update(rect)
+                viewport = view.viewport()
+                assert viewport is not None
+                viewport.update(rect)
