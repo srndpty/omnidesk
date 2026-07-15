@@ -17,7 +17,8 @@ from PyQt6.QtWidgets import (
 )
 
 from .file_browser.actions import FileBrowserActionsMixin
-from .file_browser.clipboard import FileBrowserClipboardMixin, _ClipboardPayload
+from .file_browser.address_bar_controller import AddressBarController
+from .file_browser.clipboard import ClipboardController, FileBrowserClipboardMixin
 from .file_browser.command_runner import FileBrowserCommandRunnerMixin
 from .file_browser.navigation_controller import FileBrowserNavigationMixin
 from .file_browser.operations_controller import FileBrowserOperationsMixin
@@ -25,7 +26,7 @@ from .file_browser.selection_restore_controller import SelectionRestoreControlle
 from .file_browser.settled_scroll_controller import SettledScrollController
 from .file_browser.sort_model import SortedFileSystemModel
 from .file_browser.sort_refresh_controller import SortRefreshController
-from .file_browser.status_controller import FileBrowserStatusMixin, _DirectoryCountJob
+from .file_browser.status_controller import BrowserStatusController, FileBrowserStatusMixin
 from .file_browser.thumbnail_controller import FileBrowserThumbnailMixin
 from .file_browser.toolbar import _configure_arrow_button
 from .file_browser.view_mode_controller import ViewModeController
@@ -164,14 +165,26 @@ class FileBrowserTab(
             select_path=lambda path: self._select_path(path),
         )
 
-        self._clipboard: _ClipboardPayload | None = None
-        self._clipboard_path_set: set[Path] = set()
-        self._status_folder_count = 0
-        self._status_file_count = 0
-        self._status_count_generation = 0
-        self._status_count_jobs: dict[int, _DirectoryCountJob] = {}
-        self._status_count_refresh_on_activate = False
-        self._status_count_pool = QThreadPool.globalInstance()
+        self._clipboard_controller = ClipboardController(
+            model=self._model,
+            tree_view=self._tree_view,
+            tile_view=self._tile_view,
+            selected_paths=lambda: self._selected_paths(),
+            repaint_paths=lambda paths: self._repaint_clipboard_paths(paths),
+            update_action_states=lambda: self._update_action_states(),
+        )
+        status_count_pool = QThreadPool.globalInstance()
+        assert status_count_pool is not None
+        self._status_controller = BrowserStatusController(
+            current_path=lambda: self._current_path,
+            selected_paths=lambda: self._selected_paths(),
+            active_view=lambda: self._active_view(),
+            tile_view=self._tile_view,
+            update_action_states=lambda: self._update_action_states(),
+            emit_status=lambda status: self.statusChanged.emit(status),
+            selection_restore=self._selection_restore_controller,
+            pool=status_count_pool,
+        )
         self._file_operation_jobs: list[FileOperationJob] = []
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")
@@ -205,6 +218,15 @@ class FileBrowserTab(
 
         self._path_edit = QLineEdit(self)
         self._path_edit.setClearButtonEnabled(True)
+        self._address_bar_controller = AddressBarController(
+            self,
+            current_path=lambda: self._current_path,
+            open_file=lambda path: self._open_file(path),
+            navigate_to=lambda path: self.navigate_to(path),
+            show_warning=lambda title, message: self._show_address_warning(title, message),
+            resolve_program=lambda program: self._resolve_program_for_windows(program),
+            execute_command=lambda command: self._execute_address_command(command),
+        )
         self._path_edit.returnPressed.connect(self._handle_path_entered)
 
         self._back_button = QToolButton(self)

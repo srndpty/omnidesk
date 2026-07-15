@@ -21,6 +21,25 @@ from .file_operations import (
 logger = logging.getLogger(__name__)
 
 
+def file_action_states(
+    selected_count: int,
+    *,
+    clipboard_has_paths: bool,
+    current_path_exists: bool,
+) -> dict[str, bool]:
+    """ファイル操作アクションの有効状態を返す。"""
+    has_selection = selected_count > 0
+    return {
+        "copy": has_selection,
+        "cut": has_selection,
+        "delete": has_selection,
+        "rename": selected_count == 1,
+        "paste": clipboard_has_paths and current_path_exists,
+        "new_file": current_path_exists,
+        "new_folder": current_path_exists,
+    }
+
+
 def deletion_replacement_path(
     ordered_paths: list[Path],
     selected_rows: set[int],
