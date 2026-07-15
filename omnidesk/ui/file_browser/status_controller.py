@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
+from threading import Event
 from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import QItemSelection, QObject, QRunnable, QThreadPool, pyqtSignal
@@ -23,11 +25,19 @@ class _DirectoryCountJob(QRunnable):
         self.setAutoDelete(True)
         self._path = path
         self._generation = generation
+        self._cancelled = Event()
         self.signals = _DirectoryCountSignals()
+
+    def cancel(self) -> None:
+        """完了通知を止め、破棄中のUIへsignalが届かないようにする。"""
+        self._cancelled.set()
+        with suppress(TypeError):
+            self.signals.counted.disconnect()
 
     def run(self) -> None:
         folder_count, file_count = directory_item_counts(self._path)
-        self.signals.counted.emit(str(self._path), self._generation, folder_count, file_count)
+        if not self._cancelled.is_set():
+            self.signals.counted.emit(str(self._path), self._generation, folder_count, file_count)
 
 
 class BrowserStatusController:
@@ -37,6 +47,7 @@ class BrowserStatusController:
         self,
         *,
         current_path: Callable[[], Path],
+        is_active: Callable[[], bool],
         selected_paths: Callable[[], list[Path]],
         active_view: Callable[[], QAbstractItemView],
         tile_view: QAbstractItemView,
@@ -46,6 +57,7 @@ class BrowserStatusController:
         pool: QThreadPool,
     ) -> None:
         self._current_path = current_path
+        self._is_active = is_active
         self._selected_paths = selected_paths
         self._active_view = active_view
         self._tile_view = tile_view
@@ -99,6 +111,9 @@ class BrowserStatusController:
         )
 
     def request_counts(self, path: Path, callback: Callable[[str, int, int, int], None]) -> None:
+        if not self._is_active():
+            self.refresh_on_activate = True
+            return
         self.refresh_on_activate = False
         self.generation += 1
         generation = self.generation
@@ -129,6 +144,7 @@ class BrowserStatusController:
         """進行中の集計を無効化し、次回アクティブ化時の再取得を予約する。"""
         if self.jobs:
             self.refresh_on_activate = True
+        self._cancel_jobs()
         self.generation += 1
 
     def resume(self, callback: Callable[[str, int, int, int], None]) -> None:
@@ -140,6 +156,11 @@ class BrowserStatusController:
         """終了後に集計結果が現在状態へ反映されないよう無効化する。"""
         self.generation += 1
         self.refresh_on_activate = False
+        self._cancel_jobs()
+
+    def _cancel_jobs(self) -> None:
+        for job in self.jobs.values():
+            job.cancel()
         self.jobs.clear()
 
     def schedule_selection_restore(self) -> None:

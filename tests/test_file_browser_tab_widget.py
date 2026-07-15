@@ -2571,6 +2571,7 @@ def test_file_browser_tab_directory_loaded_updates_status_item_counts(
 ) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
+    tab._is_active = True
     monkeypatch.setattr(
         file_browser_status_controller_module, "directory_item_counts", lambda _path: (2, 3)
     )
@@ -2605,6 +2606,7 @@ def test_file_browser_tab_request_status_counts_keeps_previous_counts_until_read
     pool = NoopThreadPool()
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
+    tab._is_active = True
     tab._status_folder_count = 8
     tab._status_file_count = 13
     tab._status_count_pool = cast(QThreadPool, pool)
@@ -2631,7 +2633,8 @@ def test_file_browser_tab_activate_restarts_cancelled_status_count_job(
     tab._current_path = tmp_path
     tab._is_active = True
     tab._status_count_jobs[1] = cast(
-        file_browser_status_controller_module._DirectoryCountJob, object()
+        file_browser_status_controller_module._DirectoryCountJob,
+        type("CancelableJob", (), {"cancel": lambda self: None})(),
     )
     monkeypatch.setattr(
         tab._status_controller,

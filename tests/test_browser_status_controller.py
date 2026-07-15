@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from omnidesk.ui.file_browser.status_controller import BrowserStatusController
+from omnidesk.ui.file_browser import status_controller as status_module
+from omnidesk.ui.file_browser.status_controller import BrowserStatusController, _DirectoryCountJob
 
 
-def _controller(mocker, current_path: Path):
+def _controller(mocker, current_path: Path, *, is_active=lambda: True):
     pool = mocker.Mock()
     emit_status = mocker.Mock()
     controller = BrowserStatusController(
         current_path=lambda: current_path,
+        is_active=is_active,
         selected_paths=lambda: [],
         active_view=mocker.Mock(),
         tile_view=mocker.Mock(),
@@ -44,6 +46,28 @@ def test_inactive_count_is_refreshed_on_resume(mocker, qtbot, tmp_path: Path) ->
     assert controller.generation == 3
     assert controller.refresh_on_activate is False
     assert pool.start.call_count == 2
+
+
+def test_inactive_request_is_deferred_without_starting_job(mocker, tmp_path: Path) -> None:
+    controller, pool, _emit_status = _controller(mocker, tmp_path, is_active=lambda: False)
+
+    controller.request_counts(tmp_path, mocker.Mock())
+
+    assert controller.refresh_on_activate is True
+    assert controller.jobs == {}
+    pool.start.assert_not_called()
+
+
+def test_cancelled_count_job_does_not_emit_completion(mocker, monkeypatch, tmp_path: Path) -> None:
+    callback = mocker.Mock()
+    job = _DirectoryCountJob(tmp_path, 1)
+    job.signals.counted.connect(callback)
+    monkeypatch.setattr(status_module, "directory_item_counts", lambda _path: (2, 3))
+
+    job.cancel()
+    job.run()
+
+    callback.assert_not_called()
 
 
 def test_shutdown_discards_jobs_and_late_results(mocker, qtbot, tmp_path: Path) -> None:

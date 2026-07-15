@@ -177,6 +177,7 @@ class FileBrowserTab(
         assert status_count_pool is not None
         self._status_controller = BrowserStatusController(
             current_path=lambda: self._current_path,
+            is_active=lambda: self._is_active,
             selected_paths=lambda: self._selected_paths(),
             active_view=lambda: self._active_view(),
             tile_view=self._tile_view,
