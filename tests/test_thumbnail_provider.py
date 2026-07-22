@@ -4,7 +4,7 @@ from collections import deque
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QThread, QUrl
 from PyQt6.QtGui import QImage
 
 from omnidesk.ui import media_icon_provider
@@ -269,6 +269,57 @@ def test_cancelled_active_video_thumbnail_does_not_emit(
 
     provider.cancel_thumbnail("next-key")
     qtbot.waitUntil(lambda: not provider._video_threads, timeout=1000)
+
+
+def test_finished_video_job_remains_alive_until_provider_handles_result(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    _install_video_fakes(monkeypatch)
+    provider = MediaThumbnailProvider()
+    video_path = tmp_path / "race.mp4"
+    video_path.write_bytes(b"fake")
+
+    assert provider.request_thumbnail(video_path, 100, result_key="race-key")
+    job = provider._video_jobs["race-key"]
+    thread = provider._video_threads["race-key"]
+    qtbot.waitUntil(lambda: job._player is not None, timeout=1000)
+
+    job.cancel()
+    QThread.msleep(50)
+
+    # メインスレッドの完了処理が遅れていても、破棄済みQObjectにはならない。
+    job.cancel()
+    assert thread.isRunning()
+
+    qtbot.waitUntil(lambda: "race-key" not in provider._video_jobs, timeout=1000)
+    qtbot.waitUntil(lambda: "race-key" not in provider._video_threads, timeout=1000)
+
+
+def test_shutdown_video_jobs_cancels_and_waits_for_threads(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    _install_video_fakes(monkeypatch)
+    provider = MediaThumbnailProvider()
+    video_path = tmp_path / "shutdown.mp4"
+    video_path.write_bytes(b"fake")
+
+    assert provider.request_thumbnail(video_path, 100, result_key="shutdown-key")
+    thread = provider._video_threads["shutdown-key"]
+    qtbot.waitUntil(thread.isRunning, timeout=1000)
+
+    provider.shutdown_video_jobs()
+
+    assert not thread.isRunning()
+    assert provider._video_jobs == {}
+    assert provider._video_threads == {}
+    assert provider._video_tokens == {}
+    assert not provider.request_thumbnail(video_path, 100, result_key="after-shutdown")
+    qtbot.wait(50)
+    assert provider._active_video_jobs == 0
 
 
 def test_on_video_finished_starts_next_queued_job(monkeypatch, qtbot) -> None:

@@ -86,6 +86,7 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
     def cancel_all_work_for_shutdown(self) -> None:
         """Cancel all work owned by this tab during shutdown or disposal."""
         self.cancel_inactive_tab_work()
+        self._model.shutdown_background_work()
         self._shutdown_status_item_counts()
         self._selection_restore_controller.cancel()
         self._settled_scroll_controller.cancel()
