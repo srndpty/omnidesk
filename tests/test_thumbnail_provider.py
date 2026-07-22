@@ -4,8 +4,8 @@ from collections import deque
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QUrl
-from PyQt6.QtGui import QIcon, QImage
+from PyQt6.QtCore import QThread, QUrl
+from PyQt6.QtGui import QImage
 
 from omnidesk.ui import media_icon_provider
 from omnidesk.ui.media_icon_provider import MediaThumbnailProvider, _ImageJob, _VideoJob
@@ -263,10 +263,63 @@ def test_cancelled_active_video_thumbnail_does_not_emit(
     assert "active-key" not in provider._video_jobs
     assert "active-key" not in provider._video_tokens
     assert job._complete
-    assert _FakePlayer.instances[0].stopped
     assert "next-key" in provider._video_jobs
     assert "next-key" in provider._video_tokens
     assert provider._queued_video_keys == set()
+
+    provider.cancel_thumbnail("next-key")
+    qtbot.waitUntil(lambda: not provider._video_threads, timeout=1000)
+
+
+def test_finished_video_job_remains_alive_until_provider_handles_result(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    _install_video_fakes(monkeypatch)
+    provider = MediaThumbnailProvider()
+    video_path = tmp_path / "race.mp4"
+    video_path.write_bytes(b"fake")
+
+    assert provider.request_thumbnail(video_path, 100, result_key="race-key")
+    job = provider._video_jobs["race-key"]
+    thread = provider._video_threads["race-key"]
+    qtbot.waitUntil(lambda: job._player is not None, timeout=1000)
+
+    job.cancel()
+    QThread.msleep(50)
+
+    # メインスレッドの完了処理が遅れていても、破棄済みQObjectにはならない。
+    job.cancel()
+    assert thread.isRunning()
+
+    qtbot.waitUntil(lambda: "race-key" not in provider._video_jobs, timeout=1000)
+    qtbot.waitUntil(lambda: "race-key" not in provider._video_threads, timeout=1000)
+
+
+def test_shutdown_video_jobs_cancels_and_waits_for_threads(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    _install_video_fakes(monkeypatch)
+    provider = MediaThumbnailProvider()
+    video_path = tmp_path / "shutdown.mp4"
+    video_path.write_bytes(b"fake")
+
+    assert provider.request_thumbnail(video_path, 100, result_key="shutdown-key")
+    thread = provider._video_threads["shutdown-key"]
+    qtbot.waitUntil(thread.isRunning, timeout=1000)
+
+    provider.shutdown_video_jobs()
+
+    assert not thread.isRunning()
+    assert provider._video_jobs == {}
+    assert provider._video_threads == {}
+    assert provider._video_tokens == {}
+    assert not provider.request_thumbnail(video_path, 100, result_key="after-shutdown")
+    qtbot.wait(50)
+    assert provider._active_video_jobs == 0
 
 
 def test_on_video_finished_starts_next_queued_job(monkeypatch, qtbot) -> None:
@@ -472,11 +525,9 @@ def test_video_job_cancelled_start_finishes_without_icon(
     with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
         job.start()
 
-    player = _FakePlayer.instances[-1]
     assert blocker.args == ["video-key", None, 22]
-    assert player.stopped
-    assert player.deleted
-    assert _FakeTimer.instances[-1].stopped
+    assert not _FakePlayer.instances
+    assert not _FakeTimer.instances
 
 
 def test_video_job_unavailable_start_emits_none(monkeypatch, qtbot, tmp_path: Path) -> None:
@@ -495,17 +546,17 @@ def test_video_job_handle_frame_emits_scaled_icon(monkeypatch, qtbot, tmp_path: 
     image = QImage(200, 100, QImage.Format.Format_RGB32)
     image.fill(0x00FF00)
     job = _VideoJob("video-key", tmp_path / "movie.mp4", 64, CancellationToken(24))
+    job.start()
 
     with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
         job._handle_frame(_FakeFrame(image))
 
-    key, icon, generation = blocker.args
+    key, image, generation = blocker.args
     assert key == "video-key"
-    assert isinstance(icon, QIcon)
+    assert isinstance(image, QImage)
     assert generation == 24
-    pixmap = icon.pixmap(64, 64)
-    assert pixmap.width() <= 64
-    assert pixmap.height() <= 64
+    assert image.width() <= 64
+    assert image.height() <= 64
     assert _FakePlayer.instances[-1].stopped
 
 

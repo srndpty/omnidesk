@@ -190,12 +190,17 @@ class MediaFileSystemModel(QFileSystemModel):
         self._failed.clear()
 
     def cancel_background_work(self) -> None:
-        """Cancel thumbnail work owned by this model before shutdown or tab disposal."""
+        """非表示中に不要なサムネイル処理をキャンセルする。"""
         self.clear_visible_thumbnail_targets()
         for key in list(self._tokens):
             self._cancel_thumbnail_key(key)
         self._folder_scans.clear()
         self._cache_jobs.clear()
+
+    def shutdown_background_work(self) -> None:
+        """破棄前にバックグラウンド処理を停止し、専用スレッドの終了を待つ。"""
+        self.cancel_background_work()
+        self._provider.shutdown_video_jobs()
 
     def _cache_for_info(self, is_dir: bool):
         return folder_preview_cache if is_dir else file_thumbnail_cache

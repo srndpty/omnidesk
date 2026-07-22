@@ -1295,6 +1295,17 @@ def test_file_browser_tab_shutdown_cancels_file_operation_jobs(qtbot) -> None:
     assert tab._file_operation_jobs == []
 
 
+def test_file_browser_tab_shutdown_waits_for_model_background_work(monkeypatch, qtbot) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    shutdown: list[bool] = []
+    monkeypatch.setattr(tab._model, "shutdown_background_work", lambda: shutdown.append(True))
+
+    tab.cancel_all_work_for_shutdown()
+
+    assert shutdown == [True]
+
+
 def test_file_browser_tab_cancelled_file_operation_result_does_not_update_ui(
     monkeypatch,
     qtbot,

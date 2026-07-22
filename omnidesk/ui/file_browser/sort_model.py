@@ -144,6 +144,9 @@ class SortedFileSystemModel(QSortFilterProxyModel):
     def cancel_background_work(self) -> None:
         self._media_source().cancel_background_work()
 
+    def shutdown_background_work(self) -> None:
+        self._media_source().shutdown_background_work()
+
     def invalidate_folder_thumbnail_preview(self, path: Path) -> None:
         self._media_source().invalidate_folder_thumbnail_preview(path)
 

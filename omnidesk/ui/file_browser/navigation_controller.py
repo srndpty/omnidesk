@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -101,7 +102,10 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
 
     def navigate_to(self, path: Path, *, from_history: bool = False) -> bool:
         """Display the given directory as the current root."""
+        started_at = time.monotonic()
+        logger.info("Navigation started: %s", path)
         if not path.exists():
+            logger.warning("Navigation target does not exist: %s", path)
             QMessageBox.warning(self, "Cannot navigate", f"{path} does not exist.")
             return False
 
@@ -149,7 +153,11 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
 
         self._restart_thumbnail_requests()  # ナビゲート後にサムネイル要求を再開
         self._update_navigation_button_states()
-        logger.debug("Navigated to %s and restarted thumbnail requests", target)
+        logger.info(
+            "Navigation finished: %s elapsed_ms=%d",
+            target,
+            round((time.monotonic() - started_at) * 1000),
+        )
         return True
 
     def current_path(self) -> Path:

@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import (
+    QObject,
+    QRunnable,
+    Qt,
+    QThread,
+    QThreadPool,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtGui import QIcon, QImage, QImageReader, QPixmap
 
 from .thumbnail_jobs import CancellationToken
@@ -32,6 +43,7 @@ class MediaThumbnailProvider(QObject):
     """Coordinates thumbnail extraction and emits results asynchronously."""
 
     thumbnailReady = pyqtSignal(str, object, int)  # path, QIcon | None, generation
+    VIDEO_SHUTDOWN_TIMEOUT_MS = 1000
 
     IMAGE_EXTENSIONS = {
         ".jpg",
@@ -69,10 +81,12 @@ class MediaThumbnailProvider(QObject):
 
         # Video job management
         self._video_jobs: dict[str, _VideoJob] = {}
+        self._video_threads: dict[str, QThread] = {}
         self._video_tokens: dict[str, CancellationToken] = {}
         self._video_queue: deque[tuple[str, Path, int, CancellationToken]] = deque()
         self._queued_video_keys: set[str] = set()
         self._active_video_jobs = 0
+        self._shutting_down = False
         self.MAX_CONCURRENT_VIDEO_JOBS = 1
 
         self._video_support = QMediaPlayer is not None and QVideoSink is not None
@@ -104,6 +118,8 @@ class MediaThumbnailProvider(QObject):
         result_key: str | None = None,
         token: CancellationToken | None = None,
     ) -> bool:
+        if self._shutting_down:
+            return False
         suffix = path.suffix.lower()
 
         # 通知用のキーが指定されていなければ、元のパスをキーとする
@@ -163,11 +179,66 @@ class MediaThumbnailProvider(QObject):
 
     def _start_video_job(self, key: str, path: Path, edge: int, token: CancellationToken) -> None:
         job = _VideoJob(key, path, edge, token, timeout_ms=self._video_timeout_ms)
+        thread = QThread(self)
+        job.moveToThread(thread)
+        thread.started.connect(job.start)
         job.finished.connect(self._on_video_finished)
+        thread.finished.connect(job.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(
+            lambda key=key, thread=thread: self._forget_video_thread(key, thread)
+        )
         self._video_jobs[key] = job
+        self._video_threads[key] = thread
         self._video_tokens[key] = token
         self._active_video_jobs += 1
-        job.start()
+        thread.start()
+
+    def _forget_video_thread(self, key: str, thread: QThread) -> None:
+        if self._video_threads.get(key) is thread:
+            self._video_threads.pop(key, None)
+
+    def shutdown_video_jobs(self, timeout_ms: int | None = None) -> None:
+        """動画ジョブを停止し、所有する専用スレッドの終了を待つ。"""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+
+        for _, _, _, token in self._video_queue:
+            token.cancel()
+        self._video_queue.clear()
+        self._queued_video_keys.clear()
+
+        jobs = list(self._video_jobs.items())
+        threads = list(self._video_threads.items())
+        for key, job in jobs:
+            thread = self._video_threads.get(key)
+            if thread is None or not thread.isRunning():
+                continue
+            if not job._complete:
+                job.cancel()
+            # キャンセルトークンは同期的に設定済み。イベントループへ終了を要求し、
+            # 下の wait() で親QObjectを破棄する前に停止を確認する。
+            thread.quit()
+
+        deadline = time.monotonic() + (
+            (timeout_ms if timeout_ms is not None else self.VIDEO_SHUTDOWN_TIMEOUT_MS) / 1000
+        )
+        for key, thread in threads:
+            if not thread.isRunning():
+                continue
+            remaining_ms = max(0, round((deadline - time.monotonic()) * 1000))
+            if remaining_ms > 0 and thread.wait(remaining_ms):
+                continue
+            logger.error("Video thumbnail thread did not stop in time: %s", key)
+            thread.terminate()
+            # terminate() 後に実行中QThreadを親ごと破棄しないよう、終了を確実に待つ。
+            thread.wait(2**32 - 1)
+
+        self._video_jobs.clear()
+        self._video_tokens.clear()
+        self._video_threads.clear()
+        self._active_video_jobs = 0
 
     # ------------------------------------------------------------------
     def _handle_image_from_worker(
@@ -204,13 +275,15 @@ class MediaThumbnailProvider(QObject):
             logger.warning("Image thumbnail job finished with no image: %s", key)
         self.thumbnailReady.emit(key, icon, generation)
 
-    def _on_video_finished(self, key: str, icon: QIcon | None, generation: int) -> None:
-        job = self._video_jobs.pop(key, None)
+    @pyqtSlot(str, object, int)
+    def _on_video_finished(self, key: str, image: QImage | None, generation: int) -> None:
+        self._video_jobs.pop(key, None)
         token = self._video_tokens.pop(key, None)
-        if job is not None:
-            job.deleteLater()
-        self._active_video_jobs -= 1
+        thread = self._video_threads.get(key)
         try:
+            if self._shutting_down:
+                return
+            self._active_video_jobs -= 1
             if token is not None and token.generation != generation:
                 logger.debug(
                     "Ignoring stale video thumbnail job: %s generation=%s current=%s",
@@ -221,9 +294,17 @@ class MediaThumbnailProvider(QObject):
                 return
             if token is not None and token.cancelled:
                 return
+            icon = (
+                QIcon(QPixmap.fromImage(image))
+                if image is not None and not image.isNull()
+                else None
+            )
             self.thumbnailReady.emit(key, icon, generation)
         finally:
-            self._process_video_queue()
+            if thread is not None:
+                thread.quit()
+            if not self._shutting_down:
+                self._process_video_queue()
 
     def _process_video_queue(self) -> None:
         while self._active_video_jobs < self.MAX_CONCURRENT_VIDEO_JOBS and self._video_queue:
@@ -284,6 +365,7 @@ class _VideoJob(QObject):
     """Captures the first available frame of a video file asynchronously."""
 
     finished = pyqtSignal(str, object, int)
+    cancelRequested = pyqtSignal()
 
     def __init__(
         self,
@@ -304,27 +386,39 @@ class _VideoJob(QObject):
         self._edge = edge
         self._token = token
         self._timeout_ms = timeout_ms
-        self._player = media_player_cls(self)
-        self._audio = QAudioOutput(self) if QAudioOutput is not None else None
-        if self._audio is not None:
-            self._audio.setVolume(0.0)
-            self._player.setAudioOutput(self._audio)
-        self._sink = video_sink_cls(self)
-        self._player.setVideoSink(self._sink)
-        self._sink.videoFrameChanged.connect(self._handle_frame)
-        self._timeout = QTimer(self)
-        self._timeout.setSingleShot(True)
-        self._timeout.timeout.connect(self._handle_timeout)
+        self._media_player_cls = media_player_cls
+        self._video_sink_cls = video_sink_cls
+        self._player = None
+        self._audio = None
+        self._sink = None
+        self._timeout = None
         self._complete = False
+        self._started_at: float | None = None
+        self.cancelRequested.connect(self._cancel_in_worker)
 
+    @pyqtSlot()
     def start(self) -> None:
+        if self._complete:
+            return
         if QMediaPlayer is None or QVideoSink is None:
             self.finished.emit(self._key, None, self._token.generation)
             return
         if self._token.cancelled:
             self._finish(None)
             return
-        logger.debug("Video thumbnail job started: %s", self._path)
+        self._player = self._media_player_cls(self)
+        self._audio = QAudioOutput(self) if QAudioOutput is not None else None
+        if self._audio is not None:
+            self._audio.setVolume(0.0)
+            self._player.setAudioOutput(self._audio)
+        self._sink = self._video_sink_cls(self)
+        self._player.setVideoSink(self._sink)
+        self._sink.videoFrameChanged.connect(self._handle_frame)
+        self._timeout = QTimer(self)
+        self._timeout.setSingleShot(True)
+        self._timeout.timeout.connect(self._handle_timeout)
+        self._started_at = time.monotonic()
+        logger.info("Video thumbnail job started: %s", self._path)
         self._player.setSource(QUrl.fromLocalFile(str(self._path)))
         self._player.setPosition(0)
         self._player.play()
@@ -338,13 +432,13 @@ class _VideoJob(QObject):
             logger.debug("Video thumbnail frame was null: %s", self._path)
             return
         logger.debug("Video thumbnail frame captured: %s", self._path)
-        pixmap = QPixmap.fromImage(image).scaled(
+        image = image.scaled(
             self._edge,
             self._edge,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self._finish(QIcon(pixmap))
+        self._finish(image)
 
     def _handle_timeout(self) -> None:
         if not self._complete:
@@ -353,21 +447,38 @@ class _VideoJob(QObject):
 
     def cancel(self) -> None:
         self._token.cancel()
+        self.cancelRequested.emit()
+
+    @pyqtSlot()
+    def _cancel_in_worker(self) -> None:
         self._finish(None)
 
-    def _finish(self, icon: QIcon | None) -> None:
+    def _finish(self, image: QImage | None) -> None:
         if self._complete:
             return
         self._complete = True
-        with suppress(TypeError, RuntimeError):
-            self._sink.videoFrameChanged.disconnect(self._handle_frame)
-        self._timeout.stop()
-        self._player.stop()
+        if self._sink is not None:
+            with suppress(TypeError, RuntimeError):
+                self._sink.videoFrameChanged.disconnect(self._handle_frame)
+        if self._timeout is not None:
+            self._timeout.stop()
+        if self._player is not None:
+            self._player.stop()
         if self._audio is not None:
             self._audio.deleteLater()
-        self._player.deleteLater()
-        logger.debug("Video thumbnail job finished: %s icon=%s", self._path, bool(icon))
-        self.finished.emit(
-            self._key, None if self._token.cancelled else icon, self._token.generation
+        if self._player is not None:
+            self._player.deleteLater()
+        elapsed_ms = (
+            round((time.monotonic() - self._started_at) * 1000)
+            if self._started_at is not None
+            else 0
         )
-        self.deleteLater()
+        logger.info(
+            "Video thumbnail job finished: %s image=%s elapsed_ms=%d",
+            self._path,
+            image is not None and not image.isNull(),
+            elapsed_ms,
+        )
+        self.finished.emit(
+            self._key, None if self._token.cancelled else image, self._token.generation
+        )
