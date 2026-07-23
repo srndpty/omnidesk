@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
 from typing import cast
 
 from PyQt6.QtCore import (
@@ -38,7 +39,6 @@ from PyQt6.QtWidgets import (
 
 import omnidesk.ui.file_browser.delegates as file_browser_delegates_module
 import omnidesk.ui.file_browser.navigation_controller as file_browser_navigation_controller_module
-import omnidesk.ui.file_browser.operations_controller as file_browser_operations_controller_module
 import omnidesk.ui.file_browser.status_controller as file_browser_status_controller_module
 from omnidesk.ui.file_browser_status import BrowserStatus
 from omnidesk.ui.file_browser_tab import (
@@ -2398,6 +2398,7 @@ def test_file_browser_tab_delete_selected_confirms_deletes_and_refreshes(
     monkeypatch.setattr(tab, "_selected_paths", lambda: [source])
     monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: tmp_path)
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(tab, "_select_pending_path_if_ready", lambda: False)
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
         lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
@@ -2405,9 +2406,66 @@ def test_file_browser_tab_delete_selected_confirms_deletes_and_refreshes(
 
     tab._delete_selected()
 
+    qtbot.waitUntil(lambda: not tab._file_operation_jobs, timeout=3000)
     assert not source.exists()
     assert tab._pending_selection_path == tmp_path
     assert refreshed == [True]
+
+
+def test_file_browser_tab_delete_selected_runs_outside_gui_thread(
+    monkeypatch,
+    qtbot,
+) -> None:
+    started = Event()
+    release = Event()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [Path("source.txt")])
+    monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: None)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    def execute(request, **kwargs):
+        started.set()
+        release.wait(timeout=3)
+        return FileOperationResult([], [])
+
+    monkeypatch.setattr("omnidesk.ui.file_operation_jobs.execute_file_operation", execute)
+
+    tab._delete_selected()
+
+    assert started.wait(timeout=1)
+    assert tab._file_operation_jobs
+    release.set()
+    qtbot.waitUntil(lambda: not tab._file_operation_jobs, timeout=3000)
+
+
+def test_file_browser_tab_delete_selected_ignores_reentrant_confirmation(
+    monkeypatch,
+    qtbot,
+) -> None:
+    questions: list[bool] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [Path("source.txt")])
+    monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: None)
+
+    def question(*args, **kwargs):
+        questions.append(True)
+        tab._delete_selected()
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
+        question,
+    )
+
+    tab._delete_selected()
+
+    assert questions == [True]
+    assert not tab._delete_confirmation_open
 
 
 def test_file_browser_tab_delete_then_go_up_invalidates_folder_preview(
@@ -2438,6 +2496,7 @@ def test_file_browser_tab_delete_then_go_up_invalidates_folder_preview(
     )
 
     tab._delete_selected()
+    qtbot.waitUntil(lambda: not tab._file_operation_jobs, timeout=3000)
     tab.go_up()
 
     assert invalidated == [child]
@@ -2457,7 +2516,8 @@ def test_file_browser_tab_delete_selected_warns_when_delete_reports_errors(
         lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
     )
     monkeypatch.setattr(
-        file_browser_operations_controller_module, "delete_paths", lambda paths: ["delete failed"]
+        "omnidesk.ui.file_operation_jobs.execute_file_operation",
+        lambda request, **kwargs: FileOperationResult(["delete failed"], []),
     )
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
@@ -2466,6 +2526,7 @@ def test_file_browser_tab_delete_selected_warns_when_delete_reports_errors(
 
     tab._delete_selected()
 
+    qtbot.waitUntil(lambda: not tab._file_operation_jobs, timeout=3000)
     assert warnings == [("Move to Trash failed", "delete failed")]
 
 

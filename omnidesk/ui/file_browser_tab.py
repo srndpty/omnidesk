@@ -187,6 +187,7 @@ class FileBrowserTab(
             pool=status_count_pool,
         )
         self._file_operation_jobs: list[FileOperationJob] = []
+        self._delete_confirmation_open = False
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")
         self._toggle_view_button.setToolTip("Toggle between tile and list views")

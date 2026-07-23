@@ -19,7 +19,6 @@ from ..file_operations import (
     clip_child_name,
     create_file,
     create_folder,
-    delete_paths,
     is_plain_child_name,
     name_exceeds_limits,
     perform_copy_or_move,
@@ -53,6 +52,7 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         _clipboard: _ClipboardPayload | None
         _current_directory_has_local_changes: bool
         _current_path: Path
+        _delete_confirmation_open: bool
         _deferred_refresh_target: Path | None
         _file_operation_jobs: list[FileOperationJob]
         _inline_rename_seed: tuple[Path, str | None] | None
@@ -247,27 +247,34 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         self.refresh()
 
     def _delete_selected(self) -> None:
+        if self._delete_confirmation_open:
+            logger.warning("表示中の削除確認に対する重複要求を無視しました")
+            return
         paths = self._selected_paths()
         if not paths:
             return
         select_after_delete = self._selection_path_before_deleted_items(paths)
-        if (
-            QMessageBox.question(
+        logger.info("削除確認を表示します: count=%d", len(paths))
+        self._delete_confirmation_open = True
+        try:
+            answer = QMessageBox.question(
                 self,
                 "Move to Trash",
                 f"Move {len(paths)} item(s) to Trash?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
-            != QMessageBox.StandardButton.Yes
-        ):
+        finally:
+            self._delete_confirmation_open = False
+        logger.info(
+            "削除確認が閉じられました: accepted=%s", answer == QMessageBox.StandardButton.Yes
+        )
+        if answer != QMessageBox.StandardButton.Yes:
             return
-        errors = delete_paths(paths)
-        if errors:
-            QMessageBox.warning(self, "Move to Trash failed", "\n".join(errors))
-        self._mark_changed_directories([path.parent for path in paths if not path.exists()])
-        self._pending_selection_path = select_after_delete
-        self.refresh()
-        self._update_action_states()
+        self._start_file_operation(
+            FileOperationRequest(paths, None, "delete"),
+            select_after=[select_after_delete] if select_after_delete is not None else None,
+            error_title="Move to Trash failed",
+        )
 
     def _perform_copy_or_move(
         self, sources: list[Path], dest_dir: Path, *, move: bool
@@ -290,6 +297,7 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         request: FileOperationRequest,
         *,
         select_after: list[Path] | None = None,
+        error_title: str = "Operation issues",
     ) -> FileOperationJob:
         job = FileOperationJob(request)
 
@@ -300,7 +308,11 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
                 return
             if result.cancelled:
                 return
-            self._handle_file_operation_finished(result, select_after=select_after)
+            self._handle_file_operation_finished(
+                result,
+                select_after=select_after,
+                error_title=error_title,
+            )
 
         job.signals.finished.connect(handle_finished)
         self._file_operation_jobs.append(job)
@@ -314,12 +326,13 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         result: FileOperationResult,
         *,
         select_after: list[Path] | None = None,
+        error_title: str = "Operation issues",
     ) -> None:
         if result.cancelled:
             return
         self._mark_changed_directories(result.changed_dirs)
         if result.errors:
-            QMessageBox.warning(self, "Operation issues", "\n".join(result.errors))
+            QMessageBox.warning(self, error_title, "\n".join(result.errors))
         if not result.errors and select_after:
             self._pending_selection_path = next(
                 (path for path in select_after if path.exists()),
