@@ -1271,6 +1271,27 @@ def test_file_browser_tab_resize_event_restarts_thumbnails_when_active(
     assert restarted == [True]
 
 
+def test_file_browser_tab_row_changes_restart_visible_thumbnail_requests(
+    monkeypatch,
+    qtbot,
+) -> None:
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    settled: list[bool] = []
+    sorted_: list[bool] = []
+    restarted: list[bool] = []
+    monkeypatch.setattr(tab, "_schedule_settled_scroll", lambda: settled.append(True))
+    monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: sorted_.append(True))
+    monkeypatch.setattr(tab, "_restart_thumbnail_requests", lambda: restarted.append(True))
+
+    tab._on_rows_inserted(QModelIndex(), 3, 7)
+    tab._on_rows_removed(QModelIndex(), 3, 7)
+
+    assert settled == [True, True]
+    assert sorted_ == [True, True]
+    assert restarted == [True, True]
+
+
 def test_file_browser_tab_deactivate_does_not_cancel_file_operation_jobs(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)

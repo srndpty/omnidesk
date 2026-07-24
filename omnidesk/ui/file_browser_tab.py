@@ -108,9 +108,10 @@ class FileBrowserTab(
         self._model = SortedFileSystemModel(self)
         self._model.setSourceModel(self._source_model)
 
-        # モデルのレイアウトが変更されたら、サムネイル要求をトリガーする
+        # 並べ替えや行の増減で可視項目が入れ替わったら、サムネイル要求を再評価する。
         self._model.layoutChanged.connect(self._on_layout_changed)
         self._model.rowsInserted.connect(self._on_rows_inserted)
+        self._model.rowsRemoved.connect(self._on_rows_removed)
 
         self._tree_view = _FileTreeView(self)
         self._tree_view.setModel(self._model)

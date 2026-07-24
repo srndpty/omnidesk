@@ -122,8 +122,17 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
 
     def _on_rows_inserted(self, parent: QModelIndex, first: int, last: int) -> None:
         _ = (parent, first, last)
+        self._on_model_rows_changed()
+
+    def _on_rows_removed(self, parent: QModelIndex, first: int, last: int) -> None:
+        _ = (parent, first, last)
+        self._on_model_rows_changed()
+
+    def _on_model_rows_changed(self) -> None:
+        """行の増減後に、現在の描画領域をサムネイル対象として再評価する。"""
         self._schedule_settled_scroll()
         self._schedule_refresh_sort()
+        self._restart_thumbnail_requests()
 
     def _on_scroll(self) -> None:
         if not hasattr(self, "_thumbnail_scheduler"):
