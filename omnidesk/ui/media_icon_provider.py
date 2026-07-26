@@ -168,7 +168,14 @@ class MediaThumbnailProvider(QObject):
         self._queued_video_keys.discard(key)
 
     def _start_video_job(self, key: str, path: Path, edge: int, token: CancellationToken) -> None:
-        job = _VideoJob(key, path, edge, token, timeout_ms=self._video_timeout_ms)
+        job = _VideoJob(
+            key,
+            path,
+            edge,
+            token,
+            timeout_ms=self._video_timeout_ms,
+            parent=self,
+        )
         job.finished.connect(self._on_video_finished)
         self._video_jobs[key] = job
         self._video_tokens[key] = token
@@ -325,8 +332,9 @@ class _VideoJob(QObject):
         token: CancellationToken,
         *,
         timeout_ms: int = 5000,
+        parent: QObject | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(parent)
         self._key = key
         self._path = path
         self._edge = edge
@@ -335,6 +343,7 @@ class _VideoJob(QObject):
         self._process: QProcess | None = None
         self._timeout: QTimer | None = None
         self._complete = False
+        self._timed_out = False
         self._started_at: float | None = None
         output_dir = Path(tempfile.gettempdir()) / "OmniDesk" / "video-thumbnails"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -364,7 +373,12 @@ class _VideoJob(QObject):
         if self._complete:
             return
         image: QImage | None = None
-        if exit_code == 0 and self._output_path.exists():
+        if (
+            exit_code == 0
+            and not self._token.cancelled
+            and not self._timed_out
+            and self._output_path.exists()
+        ):
             candidate = QImage(str(self._output_path))
             if not candidate.isNull():
                 image = candidate
@@ -397,17 +411,25 @@ class _VideoJob(QObject):
     def _handle_timeout(self) -> None:
         if self._complete:
             return
+        self._timed_out = True
         logger.warning("Video thumbnail job timed out: %s", self._path)
         self._stop_process()
-        self._finish(None)
+        if self._process is None or self._process.state() == QProcess.ProcessState.NotRunning:
+            self._finish(None)
 
     def cancel(self) -> None:
+        if self._complete:
+            return
         self._token.cancel()
         self._stop_process()
-        self._finish(None)
+        if self._process is None or self._process.state() == QProcess.ProcessState.NotRunning:
+            self._finish(None)
 
     def _finish(self, image: QImage | None) -> None:
         if self._complete:
+            return
+        if self._process is not None and self._process.state() != QProcess.ProcessState.NotRunning:
+            logger.error("Refusing to finish a running video thumbnail worker: %s", self._path)
             return
         self._complete = True
         if self._timeout is not None:

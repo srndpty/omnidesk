@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sys
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QByteArray, QProcess
+from PyQt6.QtCore import QProcess
 from PyQt6.QtGui import QImage
 
 from omnidesk.ui import media_icon_provider
@@ -288,6 +290,7 @@ def test_video_job_cancel_kills_worker_process(
 
     with qtbot.waitSignal(job.finished, timeout=1000):
         job.cancel()
+        process.finish(1)
 
     assert process.killed
     assert job._complete
@@ -376,17 +379,17 @@ def test_image_job_run_does_not_emit_when_cancelled(qtbot, tmp_path: Path) -> No
 
 class _FakeSignal:
     def __init__(self) -> None:
-        self.callbacks: list[object] = []
+        self.callbacks: list[Callable[..., object]] = []
 
-    def connect(self, callback) -> None:
+    def connect(self, callback: Callable[..., object]) -> None:
         self.callbacks.append(callback)
 
-    def disconnect(self, callback) -> None:
+    def disconnect(self, callback: Callable[..., object]) -> None:
         if callback not in self.callbacks:
             raise TypeError("callback is not connected")
         self.callbacks.remove(callback)
 
-    def emit(self, *args) -> None:
+    def emit(self, *args: object) -> None:
         for callback in list(self.callbacks):
             callback(*args)
 
@@ -409,6 +412,14 @@ class _FakeTimer:
 
     def stop(self) -> None:
         self.stopped = True
+
+
+class _FakeByteArray:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def data(self) -> bytes:
+        return self._data
 
 
 class _FakeProcess:
@@ -436,10 +447,17 @@ class _FakeProcess:
 
     def kill(self) -> None:
         self.killed = True
-        self._state = QProcess.ProcessState.NotRunning
 
-    def readAllStandardError(self) -> QByteArray:
-        return QByteArray(self.stderr)
+    def finish(self, exit_code: int = 0) -> None:
+        self._state = QProcess.ProcessState.NotRunning
+        self.finished.emit(exit_code, QProcess.ExitStatus.NormalExit)
+
+    def fail_to_start(self) -> None:
+        self._state = QProcess.ProcessState.NotRunning
+        self.errorOccurred.emit(QProcess.ProcessError.FailedToStart)
+
+    def readAllStandardError(self) -> _FakeByteArray:
+        return _FakeByteArray(self.stderr)
 
 
 def _install_process_fakes(monkeypatch) -> None:
@@ -491,7 +509,7 @@ def test_video_job_failed_start_emits_none(monkeypatch, qtbot, tmp_path: Path) -
     job.start()
 
     with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
-        _FakeProcess.instances[-1].errorOccurred.emit(QProcess.ProcessError.FailedToStart)
+        _FakeProcess.instances[-1].fail_to_start()
 
     assert blocker.args == ["video-key", None, 23]
 
@@ -505,7 +523,7 @@ def test_video_job_success_loads_worker_output(monkeypatch, qtbot, tmp_path: Pat
     assert image.save(str(job._output_path), "PNG")
 
     with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
-        _FakeProcess.instances[-1].finished.emit(0, QProcess.ExitStatus.NormalExit)
+        _FakeProcess.instances[-1].finish()
 
     key, image, generation = blocker.args
     assert key == "video-key"
@@ -526,6 +544,7 @@ def test_video_job_timeout_finishes_once(monkeypatch, qtbot, tmp_path: Path) -> 
 
     with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
         job._handle_timeout()
+        process.finish(1)
 
     assert blocker.args == ["video-key", None, 27]
     assert emitted == [["video-key", None, 27]]
@@ -534,6 +553,30 @@ def test_video_job_timeout_finishes_once(monkeypatch, qtbot, tmp_path: Path) -> 
     job._handle_timeout()
 
     assert emitted == [["video-key", None, 27]]
+
+
+def test_video_worker_timeout_waits_for_process_exit(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "hung.mp4"
+    video_path.write_bytes(b"fake")
+    monkeypatch.setattr(
+        media_icon_provider,
+        "_video_worker_command",
+        lambda *_args: (sys.executable, ["-c", "import time; time.sleep(60)"]),
+    )
+    provider = MediaThumbnailProvider()
+    provider.set_video_timeout_ms(1000)
+
+    with qtbot.waitSignal(provider.thumbnailReady, timeout=5000) as blocker:
+        assert provider.request_thumbnail(video_path, 96, result_key="hung-key")
+
+    assert blocker.args == ["hung-key", None, 0]
+    assert provider._video_jobs == {}
+    assert provider._video_tokens == {}
+    assert provider._active_video_jobs == 0
 
 
 def test_video_worker_command_uses_module_in_development(monkeypatch, tmp_path: Path) -> None:
