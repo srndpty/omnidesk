@@ -35,6 +35,10 @@ def run(argv: list[str] | None = None) -> int:
 
 
 def main() -> None:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--thumbnail-worker":
+        from .video_thumbnail_worker import run as run_thumbnail_worker
+
+        raise SystemExit(run_thumbnail_worker(sys.argv[2:]))
     raise SystemExit(run())
 
 

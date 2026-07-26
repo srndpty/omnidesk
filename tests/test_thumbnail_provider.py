@@ -4,11 +4,16 @@ from collections import deque
 from pathlib import Path
 from typing import cast
 
-from PyQt6.QtCore import QThread, QUrl
+from PyQt6.QtCore import QByteArray, QProcess
 from PyQt6.QtGui import QImage
 
 from omnidesk.ui import media_icon_provider
-from omnidesk.ui.media_icon_provider import MediaThumbnailProvider, _ImageJob, _VideoJob
+from omnidesk.ui.media_icon_provider import (
+    MediaThumbnailProvider,
+    _ImageJob,
+    _video_worker_command,
+    _VideoJob,
+)
 from omnidesk.ui.thumbnail_jobs import CancellationToken
 
 
@@ -226,7 +231,6 @@ def test_process_video_queue_skips_cancelled_and_duplicate_jobs(monkeypatch) -> 
 
 
 def test_duplicate_queued_video_key_is_rejected(monkeypatch, tmp_path: Path) -> None:
-    _install_video_fakes(monkeypatch)
     provider = MediaThumbnailProvider()
     provider._active_video_jobs = provider.MAX_CONCURRENT_VIDEO_JOBS
     video_path = tmp_path / "queued.mp4"
@@ -244,7 +248,7 @@ def test_cancelled_active_video_thumbnail_does_not_emit(
     qtbot,
     tmp_path: Path,
 ) -> None:
-    _install_video_fakes(monkeypatch)
+    monkeypatch.setattr(_VideoJob, "start", lambda self: None)
     provider = MediaThumbnailProvider()
     provider.MAX_CONCURRENT_VIDEO_JOBS = 1
     video_path = tmp_path / "active.mp4"
@@ -268,54 +272,41 @@ def test_cancelled_active_video_thumbnail_does_not_emit(
     assert provider._queued_video_keys == set()
 
     provider.cancel_thumbnail("next-key")
-    qtbot.waitUntil(lambda: not provider._video_threads, timeout=1000)
 
 
-def test_finished_video_job_remains_alive_until_provider_handles_result(
+def test_video_job_cancel_kills_worker_process(
     monkeypatch,
     qtbot,
     tmp_path: Path,
 ) -> None:
-    _install_video_fakes(monkeypatch)
-    provider = MediaThumbnailProvider()
+    _install_process_fakes(monkeypatch)
     video_path = tmp_path / "race.mp4"
     video_path.write_bytes(b"fake")
+    job = _VideoJob("race-key", video_path, 100, CancellationToken(8))
+    job.start()
+    process = _FakeProcess.instances[-1]
 
-    assert provider.request_thumbnail(video_path, 100, result_key="race-key")
-    job = provider._video_jobs["race-key"]
-    thread = provider._video_threads["race-key"]
-    qtbot.waitUntil(lambda: job._player is not None, timeout=1000)
+    with qtbot.waitSignal(job.finished, timeout=1000):
+        job.cancel()
 
-    job.cancel()
-    QThread.msleep(50)
-
-    # メインスレッドの完了処理が遅れていても、破棄済みQObjectにはならない。
-    job.cancel()
-    assert thread.isRunning()
-
-    qtbot.waitUntil(lambda: "race-key" not in provider._video_jobs, timeout=1000)
-    qtbot.waitUntil(lambda: "race-key" not in provider._video_threads, timeout=1000)
+    assert process.killed
+    assert job._complete
 
 
-def test_shutdown_video_jobs_cancels_and_waits_for_threads(
+def test_shutdown_video_jobs_cancels_workers_without_waiting(
     monkeypatch,
     qtbot,
     tmp_path: Path,
 ) -> None:
-    _install_video_fakes(monkeypatch)
+    monkeypatch.setattr(_VideoJob, "start", lambda self: None)
     provider = MediaThumbnailProvider()
     video_path = tmp_path / "shutdown.mp4"
     video_path.write_bytes(b"fake")
 
     assert provider.request_thumbnail(video_path, 100, result_key="shutdown-key")
-    thread = provider._video_threads["shutdown-key"]
-    qtbot.waitUntil(thread.isRunning, timeout=1000)
-
     provider.shutdown_video_jobs()
 
-    assert not thread.isRunning()
     assert provider._video_jobs == {}
-    assert provider._video_threads == {}
     assert provider._video_tokens == {}
     assert not provider.request_thumbnail(video_path, 100, result_key="after-shutdown")
     qtbot.wait(50)
@@ -395,60 +386,9 @@ class _FakeSignal:
             raise TypeError("callback is not connected")
         self.callbacks.remove(callback)
 
-
-class _FakeAudioOutput:
-    def __init__(self, _parent=None) -> None:
-        self.volume: float | None = None
-        self.deleted = False
-
-    def setVolume(self, volume: float) -> None:
-        self.volume = volume
-
-    def deleteLater(self) -> None:
-        self.deleted = True
-
-
-class _FakePlayer:
-    instances: list[_FakePlayer] = []
-
-    def __init__(self, _parent=None) -> None:
-        self.audio_output = None
-        self.video_sink = None
-        self.source = None
-        self.position: int | None = None
-        self.played = False
-        self.stopped = False
-        self.deleted = False
-        _FakePlayer.instances.append(self)
-
-    def setAudioOutput(self, audio_output) -> None:
-        self.audio_output = audio_output
-
-    def setVideoSink(self, video_sink) -> None:
-        self.video_sink = video_sink
-
-    def setSource(self, source) -> None:
-        self.source = source
-
-    def setPosition(self, position: int) -> None:
-        self.position = position
-
-    def play(self) -> None:
-        self.played = True
-
-    def stop(self) -> None:
-        self.stopped = True
-
-    def deleteLater(self) -> None:
-        self.deleted = True
-
-
-class _FakeVideoSink:
-    instances: list[_FakeVideoSink] = []
-
-    def __init__(self, _parent=None) -> None:
-        self.videoFrameChanged = _FakeSignal()
-        _FakeVideoSink.instances.append(self)
+    def emit(self, *args) -> None:
+        for callback in list(self.callbacks):
+            callback(*args)
 
 
 class _FakeTimer:
@@ -471,43 +411,58 @@ class _FakeTimer:
         self.stopped = True
 
 
-class _FakeFrame:
-    def __init__(self, image: QImage, *, valid: bool = True) -> None:
-        self._image = image
-        self._valid = valid
+class _FakeProcess:
+    instances: list[_FakeProcess] = []
+    ProcessError = QProcess.ProcessError
+    ProcessState = QProcess.ProcessState
 
-    def isValid(self) -> bool:
-        return self._valid
+    def __init__(self, _parent=None) -> None:
+        self.finished = _FakeSignal()
+        self.errorOccurred = _FakeSignal()
+        self.program: str | None = None
+        self.arguments: list[str] = []
+        self.killed = False
+        self._state = QProcess.ProcessState.NotRunning
+        self.stderr = b""
+        _FakeProcess.instances.append(self)
 
-    def toImage(self) -> QImage:
-        return self._image
+    def start(self, program: str, arguments: list[str]) -> None:
+        self.program = program
+        self.arguments = arguments
+        self._state = QProcess.ProcessState.Running
+
+    def state(self) -> QProcess.ProcessState:
+        return self._state
+
+    def kill(self) -> None:
+        self.killed = True
+        self._state = QProcess.ProcessState.NotRunning
+
+    def readAllStandardError(self) -> QByteArray:
+        return QByteArray(self.stderr)
 
 
-def _install_video_fakes(monkeypatch) -> None:
-    _FakePlayer.instances = []
-    _FakeVideoSink.instances = []
+def _install_process_fakes(monkeypatch) -> None:
+    _FakeProcess.instances = []
     _FakeTimer.instances = []
-    monkeypatch.setattr(media_icon_provider, "QAudioOutput", _FakeAudioOutput)
-    monkeypatch.setattr(media_icon_provider, "QMediaPlayer", _FakePlayer)
-    monkeypatch.setattr(media_icon_provider, "QVideoSink", _FakeVideoSink)
+    monkeypatch.setattr(media_icon_provider, "QProcess", _FakeProcess)
     monkeypatch.setattr(media_icon_provider, "QTimer", _FakeTimer)
 
 
-def test_video_job_start_configures_player(monkeypatch, tmp_path: Path) -> None:
-    _install_video_fakes(monkeypatch)
+def test_video_job_start_configures_worker_process(monkeypatch, tmp_path: Path) -> None:
+    _install_process_fakes(monkeypatch)
     video_path = tmp_path / "movie.mp4"
     token = CancellationToken(21)
 
     job = _VideoJob("video-key", video_path, 80, token)
     job.start()
 
-    player = _FakePlayer.instances[-1]
+    process = _FakeProcess.instances[-1]
     timer = _FakeTimer.instances[-1]
-    assert player.source is not None
-    source = cast(QUrl, player.source)
-    assert Path(source.toLocalFile()) == video_path
-    assert player.position == 0
-    assert player.played
+    assert process.program is not None
+    assert str(video_path) in process.arguments
+    assert "80" in process.arguments
+    assert str(job._output_path) in process.arguments
     assert timer.single_shot is True
     assert timer.started_with == 5000
 
@@ -517,7 +472,7 @@ def test_video_job_cancelled_start_finishes_without_icon(
     qtbot,
     tmp_path: Path,
 ) -> None:
-    _install_video_fakes(monkeypatch)
+    _install_process_fakes(monkeypatch)
     token = CancellationToken(22)
     token.cancel()
     job = _VideoJob("video-key", tmp_path / "movie.mp4", 80, token)
@@ -526,78 +481,74 @@ def test_video_job_cancelled_start_finishes_without_icon(
         job.start()
 
     assert blocker.args == ["video-key", None, 22]
-    assert not _FakePlayer.instances
+    assert not _FakeProcess.instances
     assert not _FakeTimer.instances
 
 
-def test_video_job_unavailable_start_emits_none(monkeypatch, qtbot, tmp_path: Path) -> None:
-    _install_video_fakes(monkeypatch)
+def test_video_job_failed_start_emits_none(monkeypatch, qtbot, tmp_path: Path) -> None:
+    _install_process_fakes(monkeypatch)
     job = _VideoJob("video-key", tmp_path / "movie.mp4", 80, CancellationToken(23))
-    monkeypatch.setattr(media_icon_provider, "QVideoSink", None)
+    job.start()
 
     with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
-        job.start()
+        _FakeProcess.instances[-1].errorOccurred.emit(QProcess.ProcessError.FailedToStart)
 
     assert blocker.args == ["video-key", None, 23]
 
 
-def test_video_job_handle_frame_emits_scaled_icon(monkeypatch, qtbot, tmp_path: Path) -> None:
-    _install_video_fakes(monkeypatch)
+def test_video_job_success_loads_worker_output(monkeypatch, qtbot, tmp_path: Path) -> None:
+    _install_process_fakes(monkeypatch)
     image = QImage(200, 100, QImage.Format.Format_RGB32)
     image.fill(0x00FF00)
     job = _VideoJob("video-key", tmp_path / "movie.mp4", 64, CancellationToken(24))
     job.start()
+    assert image.save(str(job._output_path), "PNG")
 
     with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
-        job._handle_frame(_FakeFrame(image))
+        _FakeProcess.instances[-1].finished.emit(0, QProcess.ExitStatus.NormalExit)
 
     key, image, generation = blocker.args
     assert key == "video-key"
     assert isinstance(image, QImage)
     assert generation == 24
-    assert image.width() <= 64
-    assert image.height() <= 64
-    assert _FakePlayer.instances[-1].stopped
-
-
-def test_video_job_ignores_invalid_null_cancelled_and_complete_frames(
-    monkeypatch,
-    qtbot,
-    tmp_path: Path,
-) -> None:
-    _install_video_fakes(monkeypatch)
-    token = CancellationToken(25)
-    job = _VideoJob("video-key", tmp_path / "movie.mp4", 64, token)
-    null_image = QImage()
-    valid_image = QImage(20, 20, QImage.Format.Format_RGB32)
-    valid_image.fill(0x0000FF)
-
-    with qtbot.assertNotEmitted(job.finished, wait=100):
-        job._handle_frame(_FakeFrame(valid_image, valid=False))
-        job._handle_frame(_FakeFrame(null_image))
-        token.cancel()
-        job._handle_frame(_FakeFrame(valid_image))
-
-    token = CancellationToken(26)
-    job = _VideoJob("video-key-2", tmp_path / "movie.mp4", 64, token)
-    job._complete = True
-
-    with qtbot.assertNotEmitted(job.finished, wait=100):
-        job._handle_frame(_FakeFrame(valid_image))
+    assert image.width() == 200
+    assert image.height() == 100
+    assert not job._output_path.exists()
 
 
 def test_video_job_timeout_finishes_once(monkeypatch, qtbot, tmp_path: Path) -> None:
-    _install_video_fakes(monkeypatch)
+    _install_process_fakes(monkeypatch)
     job = _VideoJob("video-key", tmp_path / "movie.mp4", 64, CancellationToken(27))
     emitted: list[list[object]] = []
     job.finished.connect(lambda *args: emitted.append(list(args)))
+    job.start()
+    process = _FakeProcess.instances[-1]
 
     with qtbot.waitSignal(job.finished, timeout=1000) as blocker:
         job._handle_timeout()
 
     assert blocker.args == ["video-key", None, 27]
     assert emitted == [["video-key", None, 27]]
+    assert process.killed
 
     job._handle_timeout()
 
     assert emitted == [["video-key", None, 27]]
+
+
+def test_video_worker_command_uses_module_in_development(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delattr(media_icon_provider.sys, "frozen", raising=False)
+
+    program, arguments = _video_worker_command(tmp_path / "movie.mp4", 96, tmp_path / "output.png")
+
+    assert program == media_icon_provider.sys.executable
+    assert arguments[:2] == ["-m", "omnidesk.video_thumbnail_worker"]
+
+
+def test_video_worker_command_reuses_frozen_executable(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(media_icon_provider.sys, "frozen", True, raising=False)
+
+    program, arguments = _video_worker_command(tmp_path / "movie.mp4", 96, tmp_path / "output.png")
+
+    assert program == media_icon_provider.sys.executable
+    assert arguments[0] == "--thumbnail-worker"
