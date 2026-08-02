@@ -1388,19 +1388,19 @@ def test_file_browser_tab_external_drop_warns_for_missing_destination(
     tmp_path: Path,
 ) -> None:
     warnings: list[tuple[str, str]] = []
-    copied: list[bool] = []
+    started: list[bool] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
-    monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: copied.append(True))
+    monkeypatch.setattr(tab, "_start_copy_or_move", lambda *args, **kwargs: started.append(True))
 
     tab._handle_external_drop([tmp_path / "source.txt"], tmp_path / "missing", move=False)
 
     assert warnings == [("Drop failed", f"Destination {tmp_path / 'missing'} does not exist.")]
-    assert copied == []
+    assert started == []
 
 
 def test_file_browser_tab_external_drop_blocks_moving_folder_into_itself(
@@ -1412,46 +1412,45 @@ def test_file_browser_tab_external_drop_blocks_moving_folder_into_itself(
     nested = source / "nested"
     nested.mkdir(parents=True)
     warnings: list[tuple[str, str]] = []
-    copied: list[bool] = []
+    started: list[bool] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
-    monkeypatch.setattr(tab, "_perform_copy_or_move", lambda *args, **kwargs: copied.append(True))
+    monkeypatch.setattr(tab, "_start_copy_or_move", lambda *args, **kwargs: started.append(True))
 
     tab._handle_external_drop([source], nested, move=True)
 
     assert warnings == []
-    assert copied == []
+    assert started == []
 
 
-def test_file_browser_tab_external_drop_performs_operation_and_refreshes(
+def test_file_browser_tab_external_drop_copies_off_the_gui_thread(
     monkeypatch,
     qtbot,
     tmp_path: Path,
 ) -> None:
+    """ドロップがワーカースレッド経由で完了し、UIが更新されることを確認する。
+
+    以前はGUIスレッドで ``shutil`` を直接呼んでいたため、大きなファイルの
+    ドロップでウィンドウが無応答になっていた。
+    """
     source = tmp_path / "source.txt"
+    source.write_text("payload", encoding="utf-8")
     dest = tmp_path / "dest"
     dest.mkdir()
-    operations: list[tuple[list[Path], Path, bool]] = []
     refreshed: list[bool] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    monkeypatch.setattr(
-        tab,
-        "_perform_copy_or_move_with_result",
-        lambda paths, target_dir, move: (
-            operations.append((paths, target_dir, move)) or FileOperationResult([], [])
-        ),
-    )
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
 
-    tab._handle_external_drop([source], dest, move=False)
-
-    assert operations == [([source], dest, False)]
-    assert refreshed == [True]
+    assert tab._handle_external_drop([source], dest, move=False) is True
+    # 開始時点ではまだ転送されていない（GUIスレッドをブロックしていない）。
+    qtbot.waitUntil(lambda: (dest / "source.txt").exists(), timeout=5000)
+    qtbot.waitUntil(lambda: refreshed == [True], timeout=5000)
+    assert (dest / "source.txt").read_text(encoding="utf-8") == "payload"
 
 
 def test_file_browser_tab_external_drop_into_subfolder_invalidates_target_preview(
@@ -1459,22 +1458,16 @@ def test_file_browser_tab_external_drop_into_subfolder_invalidates_target_previe
     qtbot,
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "source.txt"
     dest = tmp_path / "dest"
     dest.mkdir()
     invalidated: list[Path] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
-    monkeypatch.setattr(
-        tab,
-        "_perform_copy_or_move_with_result",
-        lambda *args, **kwargs: FileOperationResult([], [dest]),
-    )
     monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
     monkeypatch.setattr(tab, "refresh", lambda: None)
 
-    tab._handle_external_drop([source], dest, move=False)
+    tab._handle_file_operation_finished(FileOperationResult([], [dest]))
 
     assert invalidated == [dest]
 
@@ -1488,20 +1481,14 @@ def test_file_browser_tab_external_move_invalidates_source_and_target_previews(
     dest = tmp_path / "dest"
     source_parent.mkdir()
     dest.mkdir()
-    source = source_parent / "source.txt"
     invalidated: list[Path] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
-    monkeypatch.setattr(
-        tab,
-        "_perform_copy_or_move_with_result",
-        lambda *args, **kwargs: FileOperationResult([], [dest, source_parent]),
-    )
     monkeypatch.setattr(tab._model, "invalidate_folder_thumbnail_preview", invalidated.append)
     monkeypatch.setattr(tab, "refresh", lambda: None)
 
-    tab._handle_external_drop([source], dest, move=True)
+    tab._handle_file_operation_finished(FileOperationResult([], [dest, source_parent]))
 
     assert invalidated == [dest, source_parent]
 
@@ -1744,26 +1731,24 @@ def test_file_browser_tab_paste_copy_and_move_updates_clipboard_and_actions(
     copied.write_text("copy", encoding="utf-8")
     moved.write_text("move", encoding="utf-8")
     operations: list[tuple[list[Path], Path, bool]] = []
-    refreshed: list[bool] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(
         tab,
-        "_perform_copy_or_move_with_result",
-        lambda paths, dest_dir, move: (
-            operations.append((paths, dest_dir, move)) or FileOperationResult([], [dest_dir])
-        ),
+        "_start_copy_or_move",
+        lambda paths, dest_dir, *, move, **kwargs: operations.append((paths, dest_dir, move)),
     )
-    monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
 
     tab._clipboard = {"paths": [copied], "mode": "copy"}
     tab._paste_into_current()
+    assert tab._clipboard is not None  # コピーはクリップボードを保持する
+
     tab._clipboard = {"paths": [moved], "mode": "move"}
     tab._paste_into_current()
 
     assert operations == [([copied], tmp_path, False), ([moved], tmp_path, True)]
-    assert refreshed == [True, True]
+    # 切り取りは二重投入を防ぐため、ジョブ投入と同時にクリップボードを空にする。
     assert tab._clipboard is None
 
 
@@ -1772,64 +1757,48 @@ def test_file_browser_tab_paste_marks_partial_success_changed_dirs(
     qtbot,
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "source.txt"
     changed: list[Path] = []
+    warnings: list[tuple[str, str]] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
-    tab._clipboard = {"paths": [source], "mode": "copy"}
-    monkeypatch.setattr(
-        tab,
-        "_perform_copy_or_move_with_result",
-        lambda paths, dest_dir, move: FileOperationResult(["copy failed"], [dest_dir]),
-    )
     monkeypatch.setattr(tab, "_mark_changed_directories", lambda dirs: changed.extend(dirs))
     monkeypatch.setattr(tab, "refresh", lambda: None)
-    monkeypatch.setattr(tab, "_update_action_states", lambda: None)
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
 
-    tab._paste_into_current()
+    # 一部失敗しても、実際に書き換わったディレクトリは変更済みとして扱う。
+    tab._handle_file_operation_finished(FileOperationResult(["copy failed"], [tmp_path]))
 
     assert changed == [tmp_path]
-
-
-def test_file_browser_tab_perform_copy_or_move_warns_on_errors(monkeypatch, qtbot) -> None:
-    warnings: list[tuple[str, str]] = []
-    tab = FileBrowserTab()
-    qtbot.addWidget(tab)
-    monkeypatch.setattr(
-        "omnidesk.ui.file_browser.operations_controller.perform_copy_or_move",
-        lambda sources, dest_dir, move: ["copy failed"],
-    )
-    monkeypatch.setattr(
-        "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
-        lambda _parent, title, message: warnings.append((title, message)),
-    )
-
-    tab._perform_copy_or_move([Path("source.txt")], Path("dest"), move=False)
-
     assert warnings == [("Operation issues", "copy failed")]
 
 
-def test_file_browser_tab_perform_copy_or_move_with_result_warns_on_errors(
-    monkeypatch, qtbot
+def test_file_browser_tab_copy_or_move_reports_errors_after_job(
+    monkeypatch, qtbot, tmp_path: Path
 ) -> None:
+    """転送の失敗が、ジョブ完了後にまとめて通知されることを確認する。"""
     warnings: list[tuple[str, str]] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    result = FileOperationResult(["copy failed"], [Path("dest")])
-    monkeypatch.setattr(
-        "omnidesk.ui.file_browser.operations_controller.perform_copy_or_move_with_result",
-        lambda sources, dest_dir, move: result,
-    )
+    tab.navigate_to(tmp_path)
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
 
-    actual = tab._perform_copy_or_move_with_result([Path("source.txt")], Path("dest"), move=False)
+    # 存在しない元パスなので、ワーカー側で "Missing:" エラーになる。
+    missing = tmp_path / "missing.txt"
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    tab._start_copy_or_move([missing], dest, move=False)
 
-    assert actual is result
-    assert warnings == [("Operation issues", "copy failed")]
+    qtbot.waitUntil(lambda: bool(warnings), timeout=5000)
+    title, message = warnings[0]
+    assert title == "Operation issues"
+    assert "Missing" in message
 
 
 def test_file_browser_tab_section_resize_emits_name_width(monkeypatch, qtbot) -> None:

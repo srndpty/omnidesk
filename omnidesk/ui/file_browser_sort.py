@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal, cast
 
 # QFileSystemModel の列番号。名前列のみ「並べ替え方式」（名前順/拡張子順）の影響を受ける。
@@ -22,6 +23,10 @@ SortMode = Literal["name", "extension"]
 _CHUNK_RE = re.compile(r"(\d+)|(\D+)")
 
 
+# 並べ替えは 1 回で O(N log N) 回の比較を行い、比較ごとに同じ名前のキーを作り直す。
+# 名前からキーへの変換は純粋関数なのでメモ化でき、大量ファイルのフォルダでは
+# 正規表現の実行回数が要素数ぶんまで落ちる。maxsize はフォルダ数件ぶんを想定。
+@lru_cache(maxsize=8192)
 def natural_sort_key(text: str) -> tuple[tuple[int, int, str], ...]:
     """数字を数値として扱う自然順ソート用キーを返す。
 

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QWidget
 
 import omnidesk.ui.tab_container as tab_container_module
 from omnidesk.ui.file_browser_status import BrowserStatus
+from omnidesk.ui.file_operations import FileOperationResult
 from omnidesk.ui.tab_container import TabContainer
 
 
@@ -64,9 +65,15 @@ class FakeBrowserTab(QWidget):
         move: bool,
         *,
         select_after=None,
+        on_finished=None,
     ) -> bool:
         self.calls.append(f"drop:{paths}:{dest_dir}:{move}:{select_after}")
-        return self.drop_result
+        # 本物はワーカースレッドで転送してから on_finished を呼ぶ。ここでは
+        # ジョブが即座に完了したものとして、同じ順序で通知する。
+        if on_finished is not None:
+            errors = [] if self.drop_result else ["failed"]
+            on_finished(FileOperationResult(errors=errors, changed_dirs=[]))
+        return True
 
     def selection_replacement_for_removed_paths(self, paths: list[Path]) -> Path | None:
         self.calls.append(f"replacement:{paths}")

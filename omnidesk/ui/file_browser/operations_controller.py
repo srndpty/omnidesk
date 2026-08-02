@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,11 +22,10 @@ from ..file_operations import (
     create_folder,
     is_plain_child_name,
     name_exceeds_limits,
-    perform_copy_or_move,
-    perform_copy_or_move_with_result,
     rename_path,
     resolve_destination,
 )
+from ..qt_lifetime import is_alive
 from .clipboard import _ClipboardPayload
 from .selection_restore_controller import SelectionRestoreController
 from .sort_model import SortedFileSystemModel
@@ -238,13 +238,14 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         if not paths:
             return
         move = self._clipboard["mode"] == "move"
-        result = self._perform_copy_or_move_with_result(paths, self._current_path, move=move)
-        self._mark_changed_directories(result.changed_dirs)
         if move:
+            # 非同期化により、完了前にもう一度貼り付けられる余地ができた。
+            # 同じ移動を二重に投入しないよう、切り取りのクリップボードは
+            # ジョブ投入と同時に空にする。
             self._set_clipboard(None)
         else:
             self._update_action_states()
-        self.refresh()
+        self._start_copy_or_move(paths, self._current_path, move=move)
 
     def _delete_selected(self) -> None:
         if self._delete_confirmation_open:
@@ -276,21 +277,26 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
             error_title="Move to Trash failed",
         )
 
-    def _perform_copy_or_move(
-        self, sources: list[Path], dest_dir: Path, *, move: bool
-    ) -> list[str]:
-        errors = perform_copy_or_move(sources, dest_dir, move=move)
-        if errors:
-            QMessageBox.warning(self, "Operation issues", "\n".join(errors))
-        return errors
+    def _start_copy_or_move(
+        self,
+        sources: list[Path],
+        dest_dir: Path,
+        *,
+        move: bool,
+        select_after: list[Path] | None = None,
+        on_finished: Callable[[FileOperationResult], None] | None = None,
+    ) -> FileOperationJob:
+        """コピー／移動をワーカースレッドで開始する。
 
-    def _perform_copy_or_move_with_result(
-        self, sources: list[Path], dest_dir: Path, *, move: bool
-    ) -> FileOperationResult:
-        result = perform_copy_or_move_with_result(sources, dest_dir, move=move)
-        if result.errors:
-            QMessageBox.warning(self, "Operation issues", "\n".join(result.errors))
-        return result
+        以前はGUIスレッドで ``shutil`` を直接呼んでいたため、大きなファイルの
+        ドラッグ&ドロップや貼り付けでウィンドウが完全に無応答になっていた。
+        削除と同じジョブ経路へ載せ、完了通知でUIを更新する。
+        """
+        return self._start_file_operation(
+            FileOperationRequest(list(sources), dest_dir, "move" if move else "copy"),
+            select_after=select_after,
+            on_finished=on_finished,
+        )
 
     def _start_file_operation(
         self,
@@ -298,10 +304,16 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         *,
         select_after: list[Path] | None = None,
         error_title: str = "Operation issues",
+        on_finished: Callable[[FileOperationResult], None] | None = None,
     ) -> FileOperationJob:
         job = FileOperationJob(request)
 
         def handle_finished(result: object) -> None:
+            # ジョブ実行中にタブが閉じられていると、ここへ届く頃には
+            # C++側のウィジェットが破棄されている。触れると RuntimeError に
+            # なるため、生存を確認してから状態を更新する。
+            if not is_alive(self):
+                return
             with suppress(ValueError):
                 self._file_operation_jobs.remove(job)
             if not isinstance(result, FileOperationResult):
@@ -313,6 +325,8 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
                 select_after=select_after,
                 error_title=error_title,
             )
+            if on_finished is not None:
+                on_finished(result)
 
         job.signals.finished.connect(handle_finished)
         self._file_operation_jobs.append(job)
@@ -381,7 +395,13 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         move: bool,
         *,
         select_after: list[Path] | None = None,
+        on_finished: Callable[[FileOperationResult], None] | None = None,
     ) -> bool:
+        """ドロップされたパスのコピー／移動を開始する。
+
+        転送はワーカースレッドで行うため、戻り値は「ジョブを開始できたか」で
+        あって成否ではない。完了後の処理が必要な場合は ``on_finished`` を使う。
+        """
         if not target_dir.exists():
             QMessageBox.warning(self, "Drop failed", f"Destination {target_dir} does not exist.")
             return False
@@ -390,16 +410,14 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
                 "Blocked moving a folder into itself: paths=%s target=%s", paths, target_dir
             )
             return False
-        result = self._perform_copy_or_move_with_result(paths, target_dir, move=move)
-        self._mark_changed_directories(result.changed_dirs)
-        if not result.errors and select_after:
-            self._pending_selection_path = next(
-                (path for path in select_after if path.exists()),
-                None,
-            )
-        self.refresh()
-        self._select_pending_path_if_ready()
-        return not bool(result.errors)
+        self._start_copy_or_move(
+            paths,
+            target_dir,
+            move=move,
+            select_after=select_after,
+            on_finished=on_finished,
+        )
+        return True
 
     def selection_replacement_for_removed_paths(self, paths: list[Path]) -> Path | None:
         return self._selection_path_before_deleted_items(paths)

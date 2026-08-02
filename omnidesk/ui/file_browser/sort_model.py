@@ -31,6 +31,10 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         # sort() では常に昇順で親クラスを呼び、昇順/降順は lessThan 内で自前処理する。
         # こうするとフォルダ優先が降順でも崩れない。
         self._descending = False
+        # 比較のたびに QFileInfo を作り直すと、大量ファイルのフォルダで GUI スレッドが
+        # 固まる（1 回の並べ替えで O(N log N) 回の比較 × 2 個の QFileInfo）。
+        # ソース行ごとのメタdataをキャッシュし、実体の生成を要素数ぶんに抑える。
+        self._meta_cache: dict[int, EntryMeta] = {}
         self.setDynamicSortFilter(True)
 
     # ------------------------------------------------------------------
@@ -40,9 +44,47 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         previous = self.sourceModel()
         if isinstance(previous, MediaFileSystemModel):
             previous.directoryLoaded.disconnect(self.directoryLoaded)
+            previous.modelReset.disconnect(self._clear_meta_cache)
+            previous.rowsAboutToBeRemoved.disconnect(self._handle_source_rows_removed)
+            previous.dataChanged.disconnect(self._handle_source_data_changed)
+        self._clear_meta_cache()
         super().setSourceModel(source)
         if isinstance(source, MediaFileSystemModel):
             source.directoryLoaded.connect(self.directoryLoaded)
+            source.modelReset.connect(self._clear_meta_cache)
+            source.rowsAboutToBeRemoved.connect(self._handle_source_rows_removed)
+            source.dataChanged.connect(self._handle_source_data_changed)
+
+    # ------------------------------------------------------------------
+    # 並べ替え用メタdataのキャッシュ
+    # ------------------------------------------------------------------
+    def _clear_meta_cache(self) -> None:
+        self._meta_cache.clear()
+
+    def _handle_source_rows_removed(self, parent, first: int, last: int) -> None:
+        # ノードが消えると internalId が別のエントリへ再利用され得るため、
+        # 行単位ではなく全体を捨てる（行の削除はソートに比べて頻度が低い）。
+        _ = (parent, first, last)
+        self._clear_meta_cache()
+
+    def _handle_source_data_changed(self, top_left, bottom_right, roles=None) -> None:
+        """名前・サイズ・更新日時が変わり得る通知だけキャッシュを捨てる。
+
+        サムネイル完成時の ``DecorationRole`` だけの通知は並べ替えに影響しない。
+        これを無視しないと、サムネイル生成のたびにキャッシュが飛んでしまう。
+        """
+        _ = (top_left, bottom_right)
+        if roles and all(role == Qt.ItemDataRole.DecorationRole for role in roles):
+            return
+        self._clear_meta_cache()
+
+    def _entry_meta(self, source: MediaFileSystemModel, index: QModelIndex) -> EntryMeta:
+        key = index.internalId()
+        meta = self._meta_cache.get(key)
+        if meta is None:
+            meta = _build_entry_meta(source, index)
+            self._meta_cache[key] = meta
+        return meta
 
     def _media_source(self) -> MediaFileSystemModel:
         source = self.sourceModel()
@@ -81,8 +123,8 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         if not isinstance(source, MediaFileSystemModel):
             return super().lessThan(left, right)
         return entry_is_before(
-            _entry_meta(source, left),
-            _entry_meta(source, right),
+            self._entry_meta(source, left),
+            self._entry_meta(source, right),
             column=left.column(),
             mode=self._sort_mode,
             descending=self._descending,
@@ -112,6 +154,7 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         return self._media_source().isDir(self.mapToSource(index))
 
     def setRootPath(self, path: str) -> QModelIndex:  # noqa: N802 - Qt-style API
+        self._clear_meta_cache()
         return self.mapFromSource(self._media_source().setRootPath(path))
 
     def rootPath(self) -> str:  # noqa: N802 - Qt-style API
@@ -154,7 +197,7 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         self._media_source().forget_failed_thumbnails()
 
 
-def _entry_meta(source: MediaFileSystemModel, index: QModelIndex) -> EntryMeta:
+def _build_entry_meta(source: MediaFileSystemModel, index: QModelIndex) -> EntryMeta:
     """元モデルのインデックスから並べ替え用メタdataを作る。"""
     info = source.fileInfo(index)
     modified = info.lastModified()

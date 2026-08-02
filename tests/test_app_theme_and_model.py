@@ -99,6 +99,37 @@ def test_media_file_system_model_small_helpers(tmp_path: Path) -> None:
     assert model.supportedDragActions() == supported_actions
 
 
+def test_normalise_key_resolves_each_path_once(tmp_path: Path, mocker) -> None:
+    """描画経路から呼ばれるパス正規化がファイルシステムを叩き直さないことを固定する。
+
+    ``_normalise_key`` は ``data(DecorationRole)`` から呼ばれるため、キャッシュが
+    失われるとスクロールのたびに ``Path.resolve()`` の同期I/OがGUIスレッドで走る。
+    """
+    model = MediaFileSystemModel()
+    target = tmp_path / "target.txt"
+    target.write_text("x", encoding="utf-8")
+    spy = mocker.spy(MediaFileSystemModel, "_resolve_key")
+
+    first = model._normalise_key(target)
+    for _ in range(5):
+        assert model._normalise_key(target) == first
+    assert model._normalise_key(str(target)) == first
+
+    assert spy.call_count == 1
+
+
+def test_normalise_key_cache_is_cleared_on_navigation(tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    target = tmp_path / "target.txt"
+    target.write_text("x", encoding="utf-8")
+
+    model._normalise_key(target)
+    assert model._key_cache
+
+    model.setRootPath(str(tmp_path))
+    assert not model._key_cache
+
+
 def test_thumbnail_change_only_notifies_item_data(qtbot, tmp_path: Path) -> None:
     model = MediaFileSystemModel()
     model.setRootPath(str(tmp_path))

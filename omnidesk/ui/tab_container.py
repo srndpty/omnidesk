@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .file_browser_tab import FileBrowserTab
+from .qt_lifetime import is_alive, single_shot_if_alive
 from .tab_bar_helpers import local_paths_from_urls, tab_drop_action, wheel_scroll_request
 
 logger = logging.getLogger(__name__)
@@ -259,20 +260,27 @@ class TabContainer(QWidget):
         )
         dest_dir = target_tab.current_path()
         select_after = [dest_dir / path.name for path in paths] if move and select_in_target else []
-        succeeded = target_tab._handle_external_drop(
+
+        def handle_finished(result) -> None:
+            # 転送はワーカースレッドで走るため、フォーカスと選択復元は
+            # 完了後に行う。その間にタブが閉じられている可能性があるので、
+            # 生存を確認してから触る。
+            if not move:
+                return
+            if select_in_target:
+                if not result.errors and is_alive(target_tab):
+                    target_tab.focus_view()
+                return
+            if source_tab is not None and source_tab is not target_tab and is_alive(source_tab):
+                source_tab.restore_selection_after_removed_paths(paths, source_replacement)
+
+        target_tab._handle_external_drop(
             paths,
             dest_dir,
             move,
             select_after=select_after,
+            on_finished=handle_finished,
         )
-        if not move:
-            return
-        if select_in_target:
-            if succeeded:
-                target_tab.focus_view()
-            return
-        if source_tab is not None and source_tab is not target_tab and not select_in_target:
-            source_tab.restore_selection_after_removed_paths(paths, source_replacement)
 
     def _scroll_tabstrip(self, *, go_left: bool, count: int = 1) -> None:
         """内部スクローラーボタンを擬似クリックして帯だけをスクロール"""
@@ -383,7 +391,8 @@ class TabContainer(QWidget):
                 widget.cancel_all_work_for_shutdown()
 
     def _focus_current_tab_later(self) -> None:
-        QTimer.singleShot(0, self.focus_current)
+        # 発火までにコンテナ自体が破棄されている場合があるため、生存確認を挟む。
+        single_shot_if_alive(0, self.focus_current, self)
 
     def navigate_current_to(self, path: Path) -> None:
         tab = self.current_tab()

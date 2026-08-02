@@ -89,8 +89,13 @@ class MediaFileSystemModel(QFileSystemModel):
 
     # thumbnailUpdated = pyqtSignal(QModelIndex)
 
+    # パス正規化キャッシュの上限。フォルダ数件ぶんを保持できれば十分で、
+    # 超えたらまとめて捨てる（LRUにするほどの効果はない）。
+    KEY_CACHE_LIMIT = 20_000
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._key_cache: dict[str, str] = {}
         self._thumbnail_edge = 96
         self._provider = MediaThumbnailProvider(self)
         self._provider.thumbnailReady.connect(self._handle_thumbnail_ready)
@@ -121,6 +126,12 @@ class MediaFileSystemModel(QFileSystemModel):
     @property
     def media_extensions(self) -> set[str]:
         return self._provider.media_extensions
+
+    def setRootPath(self, path: str) -> QModelIndex:  # noqa: N802 - Qt override
+        # シンボリックリンクの張り替えなどで正規化結果が古くなり得るため、
+        # ディレクトリを移動するたびにキャッシュを捨てる。
+        self._key_cache.clear()
+        return super().setRootPath(path)
 
     def set_thumbnail_edge(self, edge: int) -> None:
         self._thumbnail_edge = max(16, edge)
@@ -606,8 +617,26 @@ class MediaFileSystemModel(QFileSystemModel):
         return default_flags
 
     # ------------------------------------------------------------------
+    def _normalise_key(self, path: Path | str) -> str:
+        """サムネイルキー用にパスを正規化する（結果をキャッシュする）。
+
+        ``Path.resolve()`` は Windows では実ファイルシステムアクセスを伴う。
+        このメソッドは ``data()`` の描画経路からも呼ばれるため、キャッシュしないと
+        スクロールのたびに可視アイテム数ぶんの同期I/OがGUIスレッドで走る。
+        ネットワークドライブや低速メディアでは体感できるフリーズになる。
+        """
+        raw = str(path)
+        cached = self._key_cache.get(raw)
+        if cached is not None:
+            return cached
+        key = self._resolve_key(path)
+        if len(self._key_cache) >= self.KEY_CACHE_LIMIT:
+            self._key_cache.clear()
+        self._key_cache[raw] = key
+        return key
+
     @staticmethod
-    def _normalise_key(path: Path | str) -> str:
+    def _resolve_key(path: Path | str) -> str:
         candidate = path if isinstance(path, Path) else Path(path)
         try:
             return str(candidate.resolve(strict=False))

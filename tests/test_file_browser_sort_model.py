@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt
 
+from omnidesk.ui.file_browser import sort_model as sort_model_module
 from omnidesk.ui.file_browser_tab import FileBrowserTab
 
 
@@ -130,6 +131,56 @@ def test_build_sort_menu_reflects_current_mode(qtbot, tmp_path: Path) -> None:
     actions = menu.actions()
     labels = {action.text(): action.isChecked() for action in actions}
     assert labels == {"名前順": False, "拡張子順": True}
+
+
+def test_entry_meta_is_built_once_per_row_during_sort(qtbot, tmp_path: Path, mocker) -> None:
+    """並べ替えのメタdata生成が要素数に比例することを固定する。
+
+    キャッシュが失われると比較のたびに ``QFileInfo`` を作り直し、大量ファイルの
+    フォルダで GUI スレッドが固まる。比較回数は O(N log N) なので、生成回数が
+    要素数を超えたらキャッシュが効いていない。
+    """
+    entry_count = 60
+    for index in range(entry_count):
+        (tmp_path / f"f{index:03d}.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, entry_count)
+
+    tab._model._clear_meta_cache()
+    spy = mocker.spy(sort_model_module, "_build_entry_meta")
+    # invalidate() は set_sort_mode と同じく全件の再比較を強制する。
+    tab._model.invalidate()
+    tab._model.invalidate()
+
+    assert spy.call_count > 0  # 実際に比較が走っていること
+    assert spy.call_count <= entry_count
+
+
+def test_thumbnail_only_data_changed_keeps_sort_cache(qtbot, tmp_path: Path) -> None:
+    """サムネイル完成通知では並べ替えキャッシュを捨てない。
+
+    ``DecorationRole`` だけの ``dataChanged`` でキャッシュを捨てると、
+    サムネイル生成のたびにキャッシュが無効化されて意味がなくなる。
+    """
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+
+    tab._model.sort(0, Qt.SortOrder.AscendingOrder)
+    assert tab._model._meta_cache
+
+    source = tab._source_model
+    index = source.index(str(tmp_path / "a.png"))
+    source.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+    assert tab._model._meta_cache
+
+    # 名前やサイズが変わり得る通知（ロール指定なし）では捨てる。
+    source.dataChanged.emit(index, index, [])
+    assert not tab._model._meta_cache
 
 
 def test_file_path_and_file_info_map_through_proxy(qtbot, tmp_path: Path) -> None:
