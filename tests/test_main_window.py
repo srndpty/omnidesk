@@ -265,6 +265,26 @@ def test_main_window_f1_shows_shortcuts_dialog(monkeypatch, qtbot, tmp_path: Pat
     assert window._shortcuts_dialog is None
 
 
+def test_main_window_opens_active_log_folder(monkeypatch, qtbot, tmp_path: Path) -> None:
+    saved: list[dict] = []
+    opened_urls = []
+    log_directory = tmp_path / "logs"
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    monkeypatch.setattr(main_window_module, "active_log_dir", lambda: log_directory)
+    monkeypatch.setattr(
+        main_window_module.QDesktopServices,
+        "openUrl",
+        lambda url: opened_urls.append(url) or True,
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window._open_log_folder_action.trigger()
+
+    assert len(opened_urls) == 1
+    assert Path(opened_urls[0].toLocalFile()) == log_directory
+
+
 def test_main_window_has_menu_bar_without_toolbar(monkeypatch, qtbot, tmp_path: Path) -> None:
     saved: list[dict] = []
     _patch_main_window(monkeypatch, {}, tmp_path, saved)

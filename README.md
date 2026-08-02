@@ -45,7 +45,25 @@ python -m pip install -r requirements-dev.txt
 python -m omnidesk
 ```
 
-ログは既定で `~/.omnidesk/logs/omnidesk.log` に保存されます。詳細ログが必要な場合は `OMNIDESK_LOG_LEVEL=DEBUG` を設定してください。
+## ログとクラッシュ調査
+
+Windowsでは、ログは既定で `%LOCALAPPDATA%\OmniDesk\logs` に保存されます。「ヘルプ」→「ログフォルダーを開く」から実際の出力先を開けます。
+
+- `omnidesk.log`: 操作、警告、Python例外などの通常ログ
+- `omnidesk-crash.log`: 未処理例外、Qtメッセージ、ネイティブ障害時のスレッドスタック
+
+`LOCALAPPDATA` がない環境では `~/.omnidesk/logs`、既定ディレクトリへ書き込めない場合は `%TEMP%\OmniDesk\logs` を使用します。詳細ログが必要な場合は `OMNIDESK_LOG_LEVEL=DEBUG` を設定してください。
+
+Windowsでアプリが突然終了した場合は、ログに加えてイベントID 1000（Application Error）と1001（Windows Error Reporting）を確認します。
+
+```powershell
+Get-WinEvent -FilterHashtable @{
+    LogName = 'Application'
+    StartTime = (Get-Date).Date
+    Id = 1000, 1001
+} | Where-Object { $_.Message -match 'OmniDesk' } |
+    Format-List TimeCreated, Id, ProviderName, Message
+```
 
 すでに `.venv` を作成済みで `python -m pyright` が見つからない場合は、依存を更新してください。
 

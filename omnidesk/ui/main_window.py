@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThreadPool
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtCore import Qt, QThreadPool, QUrl
+from PyQt6.QtGui import QAction, QDesktopServices, QKeySequence
 from PyQt6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..utils.config import AppSettings, load_settings, save_settings
+from ..utils.logging_config import active_log_dir
 from ..utils.paths import get_default_start_path
 from ..utils.windows_theme import apply_dark_title_bar
 from .column_browser import ColumnBrowser
@@ -139,6 +140,9 @@ class MainWindow(QMainWindow):
         self._shortcuts_action.setShortcut(QKeySequence("F1"))
         self._shortcuts_action.triggered.connect(self._show_shortcuts_dialog)
 
+        self._open_log_folder_action = QAction("ログフォルダーを開く", self)
+        self._open_log_folder_action.triggered.connect(self._open_log_folder)
+
         for action in (
             self._new_tab_action,
             self._close_tab_action,
@@ -151,6 +155,7 @@ class MainWindow(QMainWindow):
             self._next_tab_action,
             self._previous_tab_action,
             self._shortcuts_action,
+            self._open_log_folder_action,
         ):
             self.addAction(action)
 
@@ -179,6 +184,7 @@ class MainWindow(QMainWindow):
 
         help_menu = menu_bar.addMenu("ヘルプ(&H)")
         help_menu.addAction(self._shortcuts_action)
+        help_menu.addAction(self._open_log_folder_action)
 
         toggle_button = QToolButton(menu_bar)
         toggle_button.setDefaultAction(self._toggle_view_action)
@@ -295,6 +301,9 @@ class MainWindow(QMainWindow):
         self._shortcuts_dialog.show()
         self._shortcuts_dialog.raise_()
         self._shortcuts_dialog.activateWindow()
+
+    def _open_log_folder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(active_log_dir())))
 
     def _clear_shortcuts_dialog(self, _result: int | None = None) -> None:
         self._shortcuts_dialog = None
