@@ -220,7 +220,10 @@ class MediaThumbnailProvider(QObject):
                 "Video thumbnail jobs did not finish during shutdown: count=%d", len(remaining)
             )
             for job in remaining:
-                job.deleteLater()
+                # 子プロセスがまだ動いているジョブは破棄しない（破棄すると
+                # 実行中の QProcess をデストラクタで壊すことになる）。
+                if not job.detach_until_finished():
+                    job.deleteLater()
         self._video_jobs.clear()
         self._video_tokens.clear()
         self._active_video_jobs = 0
@@ -435,23 +438,61 @@ class _VideoJob(QObject):
     # "Destroyed while process is still running" を出してクラッシュし得る。
     KILL_WAIT_MS = 2000
 
-    def _stop_process(self) -> None:
+    def _stop_process(self) -> bool:
         """子プロセスを強制終了し、終了が確定するまで待つ。
 
         ``kill()`` は非同期なので、直後の ``state()`` はまだ ``Running`` を返す。
         待たずに親を破棄すると実行中の ``QProcess`` が破棄され、ネイティブ側の
         クラッシュや終了時のブロッキングにつながる。
+
+        終了を確認できたら ``True``。``kill()`` に応じないプロセスが残っている
+        場合は ``False`` を返し、呼び出し側が破棄を避けられるようにする。
         """
         process = self._process
         if process is None or process.state() == QProcess.ProcessState.NotRunning:
-            return
+            return True
         process.kill()
-        if not process.waitForFinished(self.KILL_WAIT_MS):
-            logger.error(
-                "Video thumbnail worker did not exit after kill: %s pid=%s",
-                self._path,
-                process.processId(),
-            )
+        if process.waitForFinished(self.KILL_WAIT_MS):
+            return True
+        logger.error(
+            "Video thumbnail worker did not exit after kill: %s pid=%s",
+            self._path,
+            process.processId(),
+        )
+        return False
+
+    def process_is_running(self) -> bool:
+        process = self._process
+        return process is not None and process.state() != QProcess.ProcessState.NotRunning
+
+    def detach_until_finished(self) -> bool:
+        """終了しなかったワーカーを、破棄せずアプリ寿命へ退避する。
+
+        ``kill()`` に応じないプロセスを抱えたまま ``deleteLater()`` すると、
+        実行中の ``QProcess`` がデストラクタで破棄され、Qt の
+        "Destroyed while process is still running" とクラッシュにつながる。
+        この経路を塞ぐため、終了していないジョブは破棄せず ``QApplication`` の
+        子として残し、実際に終了したときに解放する。
+
+        退避した場合は ``True``（呼び出し側は破棄してはならない）。
+        """
+        process = self._process
+        if process is None or process.state() == QProcess.ProcessState.NotRunning:
+            return False
+        logger.error(
+            "終了しない動画サムネイルワーカーを破棄せず保持します: %s pid=%s",
+            self._path,
+            process.processId(),
+        )
+        own_by_application(self)
+        # 実際に終了したら、GUIスレッド上で安全に解放する。
+        process.finished.connect(self._release_detached)
+        return True
+
+    def _release_detached(self, *_args: object) -> None:
+        """退避したジョブを、子プロセスの終了後に解放する。"""
+        logger.info("終了しなかった動画サムネイルワーカーを解放します: %s", self._path)
+        self.deleteLater()
 
     def _remove_output(self) -> None:
         try:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import cast
 
+import pytest
 from PyQt6.QtCore import QMimeData, QSize, Qt, QUrl
 from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication
@@ -141,6 +143,39 @@ def test_normalise_key_does_not_touch_the_filesystem(tmp_path: Path, monkeypatch
     assert Path(key).is_absolute()
 
 
+def test_normalise_key_is_case_insensitive_on_windows(tmp_path: Path) -> None:
+    """大文字小文字だけが違うパスが、同じキーになること。
+
+    Windowsでは ``F:\\Folder\\File.PNG`` と ``f:\\folder\\file.png`` が同じ
+    ファイルを指す。別キーになると、サムネイルキャッシュや ``_pending`` が
+    同じファイルを二重に扱ってしまう。
+    """
+    if os.name != "nt":
+        pytest.skip("パスの大文字小文字を無視するのはWindowsの挙動")
+    model = MediaFileSystemModel()
+    upper = tmp_path / "Folder" / "File.PNG"
+    lower = Path(str(upper).lower())
+
+    assert model._normalise_key(upper) == model._normalise_key(lower)
+
+
+def test_normalised_key_still_resolves_to_a_model_index(qtbot, tmp_path: Path) -> None:
+    """正規化したキーから、モデルのインデックスを引き直せること。
+
+    ``_emit_thumbnail_changed`` は ``self.index(key)`` で再描画対象を探す。
+    ``normcase`` でキーを小文字化しても、ここが引けなくなるとサムネイルが
+    表示されないまま残る。
+    """
+    target = tmp_path / "Picture.PNG"
+    target.write_bytes(b"x")
+    model = MediaFileSystemModel()
+    model.setRootPath(str(tmp_path))
+    qtbot.waitUntil(lambda: model.index(str(target)).isValid(), timeout=5000)
+
+    key = model._normalise_key(target)
+    assert model.index(key).isValid()
+
+
 def test_normalise_key_cache_is_cleared_on_navigation(tmp_path: Path) -> None:
     model = MediaFileSystemModel()
     target = tmp_path / "target.txt"
@@ -218,7 +253,7 @@ def test_media_file_system_model_cache_for_info_and_rejections(tmp_path: Path) -
 
 def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_path: Path) -> None:
     model = MediaFileSystemModel()
-    key = str(tmp_path)
+    key = model._normalise_key(tmp_path)
     image_path = tmp_path / "image.jpg"
     image_path.write_text("fake", encoding="utf-8")
     started: list[tuple[str, Path, int]] = []
@@ -240,7 +275,7 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
     model._handle_folder_scan_result(key, token.generation, image_path)
     assert started == [(key, image_path, 96)]
 
-    empty_key = str(tmp_path / "empty")
+    empty_key = model._normalise_key(tmp_path / "empty")
     token = model._new_token(empty_key)
     model._visible_keys.add(empty_key)
     model._pending.add(empty_key)
@@ -252,7 +287,7 @@ def test_media_file_system_model_folder_scan_result_branches(monkeypatch, tmp_pa
 
 def test_media_file_system_model_cache_loaded_branches(monkeypatch, tmp_path: Path) -> None:
     model = MediaFileSystemModel()
-    key = str(tmp_path / "image.png")
+    key = model._normalise_key(tmp_path / "image.png")
     started: list[str] = []
     monkeypatch.setattr(
         model, "_ensure_thumbnail", lambda path, suffix, key=None: started.append(str(path))
@@ -286,7 +321,7 @@ def test_media_file_system_model_thumbnail_ready_failure_and_file_success(
     monkeypatch, tmp_path: Path
 ) -> None:
     model = MediaFileSystemModel()
-    key = str(tmp_path / "image.png")
+    key = model._normalise_key(tmp_path / "image.png")
     emitted: list[str] = []
     monkeypatch.setattr(model, "_save_cache_async", lambda cache, key, pixmap, **kwargs: None)
     monkeypatch.setattr(
@@ -316,7 +351,7 @@ def test_media_file_system_model_thumbnail_ready_saves_with_request_edge(
     monkeypatch, tmp_path: Path
 ) -> None:
     model = MediaFileSystemModel()
-    key = str(tmp_path / "image.png")
+    key = model._normalise_key(tmp_path / "image.png")
     saved_edges: list[int | None] = []
     requested_edges: list[int] = []
     monkeypatch.setattr(
@@ -712,7 +747,7 @@ def test_media_file_system_model_ensure_thumbnail_skips_memory_pending_failed(
     tmp_path: Path,
 ) -> None:
     model = MediaFileSystemModel()
-    key = str(tmp_path / "image.png")
+    key = model._normalise_key(tmp_path / "image.png")
     pixmap = QPixmap(16, 16)
     icon = QIcon(pixmap)
     fake_cache = _FakeCache(tmp_path / "unused.png", memory_icon=icon)
@@ -741,7 +776,7 @@ def test_media_file_system_model_ensure_thumbnail_marks_not_started(
     tmp_path: Path,
 ) -> None:
     model = MediaFileSystemModel()
-    key = str(tmp_path / "image.png")
+    key = model._normalise_key(tmp_path / "image.png")
     monkeypatch.setattr(
         model._provider,
         "request_thumbnail",
@@ -759,7 +794,7 @@ def test_media_file_system_model_cache_loaded_dir_miss_restarts_folder_scan(
     tmp_path: Path,
 ) -> None:
     model = MediaFileSystemModel()
-    key = str(tmp_path)
+    key = model._normalise_key(tmp_path)
     token = model._new_token(key)
     model._visible_keys.add(key)
     model._pending.add(key)
@@ -778,7 +813,7 @@ def test_media_file_system_model_rejects_undersized_disk_cache(
 ) -> None:
     model = MediaFileSystemModel()
     model.set_thumbnail_edge(160)
-    key = str(tmp_path / "image.png")
+    key = model._normalise_key(tmp_path / "image.png")
     cache_path = tmp_path / "cache.png"
     cache_path.write_bytes(b"stale")
     fake_cache = _FakeCache(cache_path)
@@ -810,7 +845,7 @@ def test_media_file_system_model_rejects_non_square_disk_cache(
 ) -> None:
     model = MediaFileSystemModel()
     model.set_thumbnail_edge(160)
-    key = str(tmp_path / "image.png")
+    key = model._normalise_key(tmp_path / "image.png")
     cache_path = tmp_path / "cache.png"
     cache_path.write_bytes(b"stale")
     fake_cache = _FakeCache(cache_path)

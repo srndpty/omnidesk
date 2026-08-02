@@ -51,7 +51,14 @@ class EventLoopWatchdog(QObject):
         self._timer.timeout.connect(self._beat)
         self._thread: threading.Thread | None = None
 
+    # 監視スレッドの終了を待つ上限。ちょうどスタックダンプを書いている最中に
+    # 終了処理が進むと、クラッシュログのクローズやPython終了と競合するため待つ。
+    JOIN_TIMEOUT_SECONDS = 1.0
+
     def start(self) -> None:
+        if self._thread is not None:
+            # 二重に呼ばれても監視スレッドを増やさない。
+            return
         self._timer.start()
         self._thread = threading.Thread(
             target=self._watch,
@@ -63,6 +70,14 @@ class EventLoopWatchdog(QObject):
     def stop(self) -> None:
         self._stop.set()
         self._timer.stop()
+
+        thread = self._thread
+        self._thread = None
+        if thread is None or thread is threading.current_thread():
+            return
+        thread.join(timeout=self.JOIN_TIMEOUT_SECONDS)
+        if thread.is_alive():
+            logger.warning("ウォッチドッグの監視スレッドが時間内に終了しませんでした")
 
     # ------------------------------------------------------------------
     def _beat(self) -> None:

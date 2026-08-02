@@ -96,6 +96,38 @@ def test_stall_dump_reaches_a_real_crash_log_file(qtbot, tmp_path) -> None:
     assert "Thread" in written
 
 
+def test_stop_joins_the_monitor_thread(qtbot) -> None:
+    """終了時に監視スレッドの終了まで見届ける。
+
+    スタックダンプの書き込み中にPython終了へ進むと、クラッシュログの
+    クローズと競合し得る。
+    """
+    watchdog = _watchdog()
+    watchdog.start()
+    thread = watchdog._thread
+    assert thread is not None and thread.is_alive()
+
+    watchdog.stop()
+
+    assert not thread.is_alive()
+    assert watchdog._thread is None
+
+
+def test_start_twice_does_not_spawn_a_second_monitor(qtbot) -> None:
+    watchdog = _watchdog()
+    watchdog.start()
+    first = watchdog._thread
+
+    watchdog.start()
+
+    assert watchdog._thread is first
+    watchdog.stop()
+
+
+def test_stop_without_start_is_safe(qtbot) -> None:
+    _watchdog().stop()
+
+
 def test_missing_stream_does_not_raise(qtbot, caplog) -> None:
     """クラッシュログを開けなかった環境でも、ウォッチドッグは落ちない。"""
     watchdog = _watchdog(None, stall_seconds=2.0)

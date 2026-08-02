@@ -183,6 +183,74 @@ def test_thumbnail_only_data_changed_keeps_sort_cache(qtbot, tmp_path: Path) -> 
     assert not tab._model._meta_cache
 
 
+def test_externally_added_file_lands_in_the_right_position(qtbot, tmp_path: Path) -> None:
+    """並べ替え済みのフォルダへ外部からファイルが増えても、位置が正しいこと。
+
+    メタdata/ソートキーは ``internalId()`` で引くキャッシュに載せているため、
+    行の増減で取り違えが起きないことを固定しておく。
+    """
+    for name in ("a.txt", "c.txt", "e.txt"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 3)
+    assert _visible_names(tab) == ["a.txt", "c.txt", "e.txt"]
+
+    (tmp_path / "b.txt").write_text("x", encoding="utf-8")
+
+    qtbot.waitUntil(
+        lambda: _visible_names(tab) == ["a.txt", "b.txt", "c.txt", "e.txt"],
+        timeout=10000,
+    )
+
+
+def test_deleting_then_adding_files_does_not_mix_up_metadata(qtbot, tmp_path: Path) -> None:
+    """削除直後に別ファイルを追加しても、メタdataが取り違えられないこと。
+
+    ``internalId()`` はノード破棄後に再利用され得るため、行削除ではキャッシュを
+    まとめて捨てている。その前提が崩れていないかを確認する。
+    """
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 3)
+
+    (tmp_path / "b.txt").unlink()
+    qtbot.waitUntil(lambda: _visible_names(tab) == ["a.txt", "c.txt"], timeout=10000)
+
+    (tmp_path / "bb.txt").write_text("x", encoding="utf-8")
+
+    qtbot.waitUntil(
+        lambda: _visible_names(tab) == ["a.txt", "bb.txt", "c.txt"],
+        timeout=10000,
+    )
+    # 名前とファイル情報の対応がずれていないこと。
+    for name in ("a.txt", "bb.txt", "c.txt"):
+        index = tab._model.index(str(tmp_path / name))
+        assert index.isValid()
+        assert tab._model.fileInfo(index).fileName() == name
+
+
+def test_renaming_a_file_reorders_it(qtbot, tmp_path: Path) -> None:
+    """リネームでも並び順とメタdataが追従すること。"""
+    for name in ("a.txt", "m.txt", "z.txt"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 3)
+
+    (tmp_path / "m.txt").rename(tmp_path / "zz.txt")
+
+    qtbot.waitUntil(
+        lambda: _visible_names(tab) == ["a.txt", "z.txt", "zz.txt"],
+        timeout=10000,
+    )
+
+
 def test_file_path_and_file_info_map_through_proxy(qtbot, tmp_path: Path) -> None:
     target = tmp_path / "a.png"
     _make_files(tmp_path)

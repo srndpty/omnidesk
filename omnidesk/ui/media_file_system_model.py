@@ -648,12 +648,16 @@ class MediaFileSystemModel(QFileSystemModel):
         実際にウォッチドッグが ``paint`` → ``data`` → ``resolve`` の経路で
         12秒のGUI停止を記録している。
 
-        キーに必要なのは「同じファイルが同じ文字列になること」だけで、
-        シンボリックリンクの解決は要らない。``abspath`` はパス文字列の正規化と
-        カレントディレクトリの解決だけを行い、ディスクへ触らない。
+        ここでのキー契約は「同じ**字句的絶対パス**が同じ文字列になること」。
+        シンボリックリンク経由と実体パスは別キーになるが、これは実I/Oを避ける
+        ための意図的な割り切りで、キャッシュが二重に載る以外の実害はない。
+
+        ``abspath`` はパス文字列の正規化とカレントディレクトリの解決だけを行い、
+        ディスクへ触らない。``normcase`` はWindowsで大文字小文字と区切り文字を
+        揃えるため、``F:\\A.PNG`` と ``f:\\a.png`` が同じキーになる。
         """
         try:
-            return os.path.abspath(str(path))
+            return os.path.normcase(os.path.abspath(str(path)))
         except (OSError, ValueError):
             logger.debug("パスを正規化できません: %s", path, exc_info=True)
             return str(path)

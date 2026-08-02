@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
+from PyQt6 import sip
 from PyQt6.QtCore import QProcess
 from PyQt6.QtGui import QImage
 
@@ -337,24 +338,53 @@ def test_cancel_waits_for_the_child_process_to_exit(monkeypatch, tmp_path: Path)
     assert job._complete
 
 
-def test_shutdown_deletes_jobs_even_when_process_ignores_kill(
-    monkeypatch, qtbot, tmp_path: Path
-) -> None:
-    """kill() に応じないプロセスが居ても、ジョブを取り残さない。"""
+def test_shutdown_keeps_jobs_whose_process_ignores_kill(monkeypatch, qtbot, tmp_path: Path) -> None:
+    """kill() に応じないプロセスを抱えたジョブは破棄しない。
+
+    破棄すると実行中の QProcess がデストラクタで壊され、Qt の
+    "Destroyed while process is still running" とクラッシュにつながる。
+    ここで守りたい契約は「辞書が空になること」ではなく
+    「Running のまま破棄しないこと」。
+    """
     _install_process_fakes(monkeypatch)
     provider = MediaThumbnailProvider()
     video_path = tmp_path / "stubborn.mp4"
     video_path.write_bytes(b"fake")
 
     assert provider.request_thumbnail(video_path, 100, result_key="stubborn-key")
-    _FakeProcess.instances[-1].ignores_kill = True
+    job = provider._video_jobs["stubborn-key"]
+    process = _FakeProcess.instances[-1]
+    process.ignores_kill = True
 
     provider.shutdown_video_jobs()
 
     assert provider._video_jobs == {}
     assert provider._video_tokens == {}
-    qtbot.wait(50)
-    assert provider._active_video_jobs == 0
+    qtbot.wait(100)  # deleteLater が処理される猶予
+    # 子プロセスが生きている間は、ジョブもプロセスも破棄されていない。
+    assert not sip.isdeleted(job)
+    assert job.process_is_running()
+    assert process.state() != QProcess.ProcessState.NotRunning
+
+    # 実際に終了したら解放される。
+    process.finish(1)
+    qtbot.waitUntil(lambda: sip.isdeleted(job), timeout=5000)
+
+
+def test_shutdown_deletes_jobs_whose_process_already_exited(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """終了済みのジョブは、その場で破棄して溜め込まない。"""
+    _install_process_fakes(monkeypatch)
+    provider = MediaThumbnailProvider()
+    video_path = tmp_path / "normal.mp4"
+    video_path.write_bytes(b"fake")
+
+    assert provider.request_thumbnail(video_path, 100, result_key="normal-key")
+    job = provider._video_jobs["normal-key"]
+
+    provider.shutdown_video_jobs()
+    qtbot.waitUntil(lambda: sip.isdeleted(job), timeout=5000)
 
 
 def test_shutdown_releases_jobs_that_finish_during_cancel(

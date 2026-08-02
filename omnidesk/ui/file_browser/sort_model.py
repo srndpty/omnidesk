@@ -85,6 +85,17 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         _ = (parent, first, last)
         self._clear_meta_cache()
 
+    # ``rowsInserted`` は意図的に接続していない。キャッシュのキーである
+    # ``internalId()`` は ``QFileSystemModel`` の内部ノードのアドレスで、
+    # 生存中のノードのアドレスが別のエントリへ割り当てられることはない。
+    # したがって、
+    #   * ノードが消える経路（rowsAboutToBeRemoved / modelReset / setRootPath）
+    #   * 中身が変わる経路（dataChanged）
+    # を押さえておけば、新規行が既存エントリのキャッシュを踏むことはない。
+    # 大量ファイルの増分ロード中は rowsInserted が何度も飛ぶため、ここで
+    # 毎回クリアすると並べ替えキャッシュがまったく効かなくなる。
+    # （追加・削除・リネーム後の整合性は test_file_browser_sort_model.py で固定）
+
     def _handle_source_data_changed(self, top_left, bottom_right, roles=None) -> None:
         """名前・サイズ・更新日時が変わり得る通知だけキャッシュを捨てる。
 
