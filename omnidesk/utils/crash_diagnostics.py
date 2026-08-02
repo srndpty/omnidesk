@@ -47,6 +47,14 @@ def install_crash_diagnostics(log_directory: Path) -> Path:
     return crash_path
 
 
+def crash_stream() -> TextIO | None:
+    """クラッシュ診断ログの出力先を返す（未初期化なら ``None``）。
+
+    ウォッチドッグなど、同じログへ追記したい仕組みが使う。
+    """
+    return _crash_stream
+
+
 def _write_session_header(stream: TextIO) -> None:
     stream.write(
         "\n=== OmniDesk session "

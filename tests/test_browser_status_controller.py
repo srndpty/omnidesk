@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from omnidesk.ui.file_browser import status_controller as status_module
-from omnidesk.ui.file_browser.status_controller import BrowserStatusController, _DirectoryCountJob
+from omnidesk.ui.file_browser.status_controller import (
+    BrowserStatusController,
+    _DirectoryCountJob,
+    _DirectoryCountSignals,
+)
 
 
 def _controller(mocker, current_path: Path, *, is_active=lambda: True):
@@ -60,8 +64,9 @@ def test_inactive_request_is_deferred_without_starting_job(mocker, tmp_path: Pat
 
 def test_cancelled_count_job_does_not_emit_completion(mocker, monkeypatch, tmp_path: Path) -> None:
     callback = mocker.Mock()
-    job = _DirectoryCountJob(tmp_path, 1)
-    job.signals.counted.connect(callback)
+    signals = _DirectoryCountSignals()
+    signals.counted.connect(callback)
+    job = _DirectoryCountJob(tmp_path, 1, signals)
     monkeypatch.setattr(status_module, "directory_item_counts", lambda _path: (2, 3))
 
     job.cancel()

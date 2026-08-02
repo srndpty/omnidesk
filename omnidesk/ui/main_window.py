@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThreadPool, QUrl
@@ -20,10 +21,19 @@ from ..utils.logging_config import active_log_dir
 from ..utils.paths import get_default_start_path
 from ..utils.windows_theme import apply_dark_title_bar
 from .column_browser import ColumnBrowser
-from .file_browser_status import BrowserStatus, browser_status_for, format_browser_details
+from .file_browser.status_controller import _DirectoryCountJob, _DirectoryCountSignals
+from .file_browser_status import (
+    BrowserStatus,
+    browser_status_for,
+    browser_status_from_counts,
+    format_browser_details,
+)
 from .icons import application_icon
+from .qt_lifetime import own_by_application
 from .shortcuts_dialog import ShortcutHelpDialog
 from .tab_container import TabContainer
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +49,9 @@ class MainWindow(QMainWindow):
         name_column_width = self._settings.name_column_width()
         self._status_path = get_default_start_path()
         self._status_summary = BrowserStatus()
+        self._status_count_generation = 0
+        self._status_count_signals = own_by_application(_DirectoryCountSignals())
+        self._status_count_signals.counted.connect(self._handle_column_status_counts)
         self._status_path_label = QLabel(self)
         self._status_detail_label = QLabel(self)
         self._shortcuts_dialog: ShortcutHelpDialog | None = None
@@ -349,9 +362,37 @@ class MainWindow(QMainWindow):
             if path == self._current_active_path():
                 self._status_summary = BrowserStatus()
         else:
-            self._status_summary = browser_status_for(path)
+            # カラム表示の件数集計は、以前ここでGUIスレッドから iterdir() して
+            # いた。大量ファイルのフォルダやネットワークドライブでは、この同期I/Oが
+            # そのままウィンドウの無応答になるため、ワーカースレッドへ回す。
+            self._status_summary = BrowserStatus()
+            self._request_column_status_counts(path)
         self._show_status()
         self.setWindowTitle(f"OmniDesk - {path}")
+
+    def _request_column_status_counts(self, path: Path) -> None:
+        self._status_count_generation += 1
+        generation = self._status_count_generation
+        pool = QThreadPool.globalInstance()
+        if pool is None:
+            self._status_summary = browser_status_for(path)
+            return
+        pool.start(_DirectoryCountJob(path, generation, self._status_count_signals))
+
+    def _handle_column_status_counts(
+        self,
+        path_text: str,
+        generation: int,
+        folder_count: int,
+        file_count: int,
+    ) -> None:
+        # 集計中に別のフォルダへ移動していたら、古い結果は捨てる。
+        if generation != self._status_count_generation:
+            return
+        if Path(path_text) != self._status_path or self._is_tab_mode():
+            return
+        self._status_summary = browser_status_from_counts(folder_count, file_count)
+        self._show_status()
 
     def _update_status_summary(self, path: Path, status: object) -> None:
         if not isinstance(status, BrowserStatus):
@@ -408,8 +449,22 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._show_status()
 
+    SHUTDOWN_WAIT_MS = 5000
+
     def closeEvent(self, event) -> None:  # noqa: N802
         self._tab_container.cancel_all_background_work()
-        QThreadPool.globalInstance().waitForDone(3000)
+        pool = QThreadPool.globalInstance()
+        if pool is not None:
+            # 待機中のジョブを先に捨てないと、キャンセル済みの処理が順に走るのを
+            # 待つことになる。clear() 後に、実行中のものだけを待つ。
+            pool.clear()
+            if not pool.waitForDone(self.SHUTDOWN_WAIT_MS):
+                # 待ち切れないまま Python インタプリタの終了へ進むと、実行中の
+                # runnable が壊れたオブジェクトへ触れて終了時クラッシュになる。
+                # 原因究明のため、その事実をログに残す。
+                logger.error(
+                    "終了時にバックグラウンド処理が完了しませんでした: active=%d",
+                    pool.activeThreadCount(),
+                )
         self._persist_settings()
         super().closeEvent(event)

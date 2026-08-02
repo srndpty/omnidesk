@@ -14,7 +14,14 @@ from PyQt6.QtWidgets import QFileIconProvider
 
 from ..utils.thumbnail_cache import file_thumbnail_cache, folder_preview_cache
 from .media_icon_provider import MediaThumbnailProvider
-from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
+from .qt_lifetime import own_by_application
+from .thumbnail_jobs import (
+    CacheLoadJob,
+    CacheSaveJob,
+    CancellationToken,
+    FolderScanJob,
+    ThumbnailJobSignals,
+)
 
 logger = logging.getLogger(__name__)
 FOLDER_PREVIEW_DISK_EDGES = frozenset({96, 160})
@@ -89,8 +96,13 @@ class MediaFileSystemModel(QFileSystemModel):
 
     # thumbnailUpdated = pyqtSignal(QModelIndex)
 
+    # パス正規化キャッシュの上限。フォルダ数件ぶんを保持できれば十分で、
+    # 超えたらまとめて捨てる（LRUにするほどの効果はない）。
+    KEY_CACHE_LIMIT = 20_000
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._key_cache: dict[str, str] = {}
         self._thumbnail_edge = 96
         self._provider = MediaThumbnailProvider(self)
         self._provider.thumbnailReady.connect(self._handle_thumbnail_ready)
@@ -103,6 +115,12 @@ class MediaFileSystemModel(QFileSystemModel):
         self._allow_folder_preview_for_visible_targets = True
         self.setReadOnly(False)
         self._icon_provider = QFileIconProvider()
+        # ジョブはワーカースレッドで破棄されるため、シグナル用QObjectはジョブに
+        # 持たせず1つだけ用意して共有する。寿命はモデルではなく QApplication に
+        # 預ける（サムネイル生成中にタブを閉じても壊れないようにするため）。
+        self._job_signals = own_by_application(ThumbnailJobSignals())
+        self._job_signals.folder_scanned.connect(self._handle_folder_scan_result)
+        self._job_signals.cache_loaded.connect(self._handle_cache_loaded)
         self._folder_scans: dict[str, FolderScanJob] = {}
         scan_pool = QThreadPool.globalInstance()
         assert scan_pool is not None
@@ -121,6 +139,12 @@ class MediaFileSystemModel(QFileSystemModel):
     @property
     def media_extensions(self) -> set[str]:
         return self._provider.media_extensions
+
+    def setRootPath(self, path: str) -> QModelIndex:  # noqa: N802 - Qt override
+        # シンボリックリンクの張り替えなどで正規化結果が古くなり得るため、
+        # ディレクトリを移動するたびにキャッシュを捨てる。
+        self._key_cache.clear()
+        return super().setRootPath(path)
 
     def set_thumbnail_edge(self, edge: int) -> None:
         self._thumbnail_edge = max(16, edge)
@@ -270,15 +294,7 @@ class MediaFileSystemModel(QFileSystemModel):
         if disk_path.exists():
             self._debug("disk-load", key, disk_path)
             token = self._new_token(key)
-            job = CacheLoadJob(key, disk_path, token)
-            job.signals.loaded.connect(
-                lambda loaded_key, generation, image, is_dir=is_dir: self._handle_cache_loaded(
-                    loaded_key,
-                    generation,
-                    image,
-                    is_dir,
-                )
-            )
+            job = CacheLoadJob(key, disk_path, token, self._job_signals, is_dir=is_dir)
             self._cache_jobs[key] = job
             self._pending.add(key)
             self._scan_pool.start(job)
@@ -307,8 +323,7 @@ class MediaFileSystemModel(QFileSystemModel):
         token = self._new_token(key)
         self._pending.add(key)
 
-        job = FolderScanJob(key, path, self.media_extensions, token)
-        job.signals.found.connect(self._handle_folder_scan_result)
+        job = FolderScanJob(key, path, self.media_extensions, token, self._job_signals)
         self._folder_scans[key] = job
         self._scan_pool.start(job)
 
@@ -606,13 +621,46 @@ class MediaFileSystemModel(QFileSystemModel):
         return default_flags
 
     # ------------------------------------------------------------------
+    def _normalise_key(self, path: Path | str) -> str:
+        """サムネイルキー用にパスを正規化する（結果をキャッシュする）。
+
+        ``Path.resolve()`` は Windows では実ファイルシステムアクセスを伴う。
+        このメソッドは ``data()`` の描画経路からも呼ばれるため、キャッシュしないと
+        スクロールのたびに可視アイテム数ぶんの同期I/OがGUIスレッドで走る。
+        ネットワークドライブや低速メディアでは体感できるフリーズになる。
+        """
+        raw = str(path)
+        cached = self._key_cache.get(raw)
+        if cached is not None:
+            return cached
+        key = self._resolve_key(path)
+        if len(self._key_cache) >= self.KEY_CACHE_LIMIT:
+            self._key_cache.clear()
+        self._key_cache[raw] = key
+        return key
+
     @staticmethod
-    def _normalise_key(path: Path | str) -> str:
-        candidate = path if isinstance(path, Path) else Path(path)
+    def _resolve_key(path: Path | str) -> str:
+        """パスを、ファイルシステムへ問い合わせずに正規化する。
+
+        以前は ``Path.resolve()`` を使っていたが、これはシンボリックリンクを
+        辿るため実I/Oを伴い、低速ドライブでは1回でも描画スレッドを止める。
+        実際にウォッチドッグが ``paint`` → ``data`` → ``resolve`` の経路で
+        12秒のGUI停止を記録している。
+
+        ここでのキー契約は「同じ**字句的絶対パス**が同じ文字列になること」。
+        シンボリックリンク経由と実体パスは別キーになるが、これは実I/Oを避ける
+        ための意図的な割り切りで、キャッシュが二重に載る以外の実害はない。
+
+        ``abspath`` はパス文字列の正規化とカレントディレクトリの解決だけを行い、
+        ディスクへ触らない。``normcase`` はWindowsで大文字小文字と区切り文字を
+        揃えるため、``F:\\A.PNG`` と ``f:\\a.png`` が同じキーになる。
+        """
         try:
-            return str(candidate.resolve(strict=False))
-        except OSError:
-            return str(candidate)
+            return os.path.normcase(os.path.abspath(str(path)))
+        except (OSError, ValueError):
+            logger.debug("パスを正規化できません: %s", path, exc_info=True)
+            return str(path)
 
     def dropMimeData(
         self, data: QMimeData, action: Qt.DropAction, row: int, column: int, parent: QModelIndex

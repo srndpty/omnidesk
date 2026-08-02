@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal, cast
 
 # QFileSystemModel の列番号。名前列のみ「並べ替え方式」（名前順/拡張子順）の影響を受ける。
@@ -22,6 +23,10 @@ SortMode = Literal["name", "extension"]
 _CHUNK_RE = re.compile(r"(\d+)|(\D+)")
 
 
+# 並べ替えは 1 回で O(N log N) 回の比較を行い、比較ごとに同じ名前のキーを作り直す。
+# 名前からキーへの変換は純粋関数なのでメモ化でき、大量ファイルのフォルダでは
+# 正規表現の実行回数が要素数ぶんまで落ちる。maxsize はフォルダ数件ぶんを想定。
+@lru_cache(maxsize=8192)
 def natural_sort_key(text: str) -> tuple[tuple[int, int, str], ...]:
     """数字を数値として扱う自然順ソート用キーを返す。
 
@@ -72,6 +77,35 @@ def entry_sort_key(meta: EntryMeta, *, column: int, mode: SortMode):
     return (name_key,)
 
 
+def prepared_entry(meta: EntryMeta, *, column: int, mode: SortMode) -> tuple[bool, Any]:
+    """比較で使う ``(フォルダか, 副キー)`` を1回だけ組み立てる。
+
+    並べ替え1回につき比較は O(N log N) 回走るため、比較のたびに副キーを
+    作り直すと大量ファイルのフォルダで無視できないコストになる。呼び出し側は
+    この結果を要素ごとにキャッシュして :func:`prepared_is_before` へ渡す。
+    """
+    return (meta.is_dir, entry_sort_key(meta, column=column, mode=mode))
+
+
+def prepared_is_before(
+    left: tuple[bool, Any],
+    right: tuple[bool, Any],
+    *,
+    descending: bool,
+) -> bool:
+    """組み立て済みのキー同士を比較する（:func:`entry_is_before` の実体）。"""
+    left_is_dir, left_key = left
+    right_is_dir, right_key = right
+    if left_is_dir != right_is_dir:
+        return left_is_dir
+    if left_key == right_key:
+        return False
+    # 同じcolumn/modeから生成したキー同士なので、実行時のタプル形状は一致する。
+    # 戻り値のunionをPyrightが列値に応じて絞れないため、比較地点だけ境界を明示する。
+    before = cast(Any, left_key) < cast(Any, right_key)
+    return (not before) if descending else before
+
+
 def entry_is_before(
     left: EntryMeta,
     right: EntryMeta,
@@ -85,16 +119,11 @@ def entry_is_before(
     Windows Explorer に倣い、フォルダは常にファイルより前へ置く（この判定は
     昇順/降順の影響を受けない）。同種同士の比較だけが ``descending`` で反転する。
     """
-    if left.is_dir != right.is_dir:
-        return left.is_dir
-    left_key = entry_sort_key(left, column=column, mode=mode)
-    right_key = entry_sort_key(right, column=column, mode=mode)
-    if left_key == right_key:
-        return False
-    # 同じcolumn/modeから生成したキー同士なので、実行時のタプル形状は一致する。
-    # 戻り値のunionをPyrightが列値に応じて絞れないため、比較地点だけ境界を明示する。
-    before = cast(Any, left_key) < cast(Any, right_key)
-    return (not before) if descending else before
+    return prepared_is_before(
+        prepared_entry(left, column=column, mode=mode),
+        prepared_entry(right, column=column, mode=mode),
+        descending=descending,
+    )
 
 
 def toggled_sort_mode(mode: SortMode) -> SortMode:

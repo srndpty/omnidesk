@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from PyQt6.QtCore import QModelIndex, QRect, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QModelIndex, QRect, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QPainter, QTextCursor, QTextOption
 from PyQt6.QtWidgets import (
     QApplication,
@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QWidget,
 )
+
+from ..qt_lifetime import single_shot_if_alive
 
 _ClipboardVisualMode = Literal["copy", "move"]
 
@@ -271,8 +273,8 @@ class _InlineRenameDelegateMixin:
         new_name = editor.rename_value()
         # Defer the rename so it runs after the view finishes tearing down the
         # editor; the subsequent refresh would otherwise re-enter the view while
-        # it is still committing.
-        QTimer.singleShot(0, lambda: tab._apply_rename(original, new_name))
+        # it is still committing. タブが先に破棄されている場合は何もしない。
+        single_shot_if_alive(0, lambda: tab._apply_rename(original, new_name), tab)
 
 
 class _DropTargetItemDelegate(_InlineRenameDelegateMixin, QStyledItemDelegate):

@@ -9,6 +9,11 @@ from PyQt6.QtCore import QObject, Qt, QTimer, QUrl
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
 from PyQt6.QtWidgets import QApplication
 
+EXIT_TIMED_OUT = 4
+# 親プロセスが持つ既定のタイムアウト（5秒）より十分長く、かつ無限には
+# ならない値。親が異常終了しても、このワーカーが孤児として残り続けない。
+SELF_TIMEOUT_MS = 30_000
+
 
 class VideoThumbnailWorker(QObject):
     """動画の最初の有効フレームをPNGとして保存する。"""
@@ -29,9 +34,20 @@ class VideoThumbnailWorker(QObject):
 
     def start(self) -> None:
         """動画の読み込みを開始する。"""
+        # 有効なフレームが永遠に来ない動画（破損・未対応コーデックなど）でも
+        # 必ず終了するよう、自前のタイムアウトを張る。親が先に落ちた場合に
+        # 子プロセスが残り続けるのを防ぐ意味もある。
+        QTimer.singleShot(SELF_TIMEOUT_MS, self._handle_timeout)
         self._player.setSource(QUrl.fromLocalFile(str(self._source)))
         self._player.setPosition(0)
         self._player.play()
+
+    def _handle_timeout(self) -> None:
+        if self._complete:
+            return
+        self._complete = True
+        self._player.stop()
+        QApplication.exit(EXIT_TIMED_OUT)
 
     def _handle_frame(self, frame) -> None:  # type: ignore[no-untyped-def]
         if self._complete or not frame.isValid():

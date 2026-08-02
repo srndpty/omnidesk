@@ -58,6 +58,7 @@ python_files = ["test_*.py"]
 qt_api = "pyqt6"
 markers = [
     "coverage: tests that exercise coverage-focused helper behavior",
+    "stress: large-directory tests that guard against GUI-thread stalls",
 ]
 filterwarnings = [
     "ignore:.*sipPyTypeDict.*:DeprecationWarning",

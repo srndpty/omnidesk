@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import cast
 
@@ -360,23 +361,68 @@ def test_main_window_close_cancels_background_work_before_bounded_wait(
     tmp_path: Path,
 ) -> None:
     saved: list[dict] = []
-    waits: list[int] = []
+    calls: list[str] = []
     _patch_main_window(monkeypatch, {}, tmp_path, saved)
 
     class FakePool:
-        def waitForDone(self, timeout: int) -> None:  # noqa: N802
-            waits.append(timeout)
+        def clear(self) -> None:
+            calls.append("clear")
+
+        def waitForDone(self, timeout: int) -> bool:  # noqa: N802
+            calls.append(f"wait:{timeout}")
+            return True
+
+        def start(self, _job) -> None:
+            calls.append("start")
+
+        def activeThreadCount(self) -> int:  # noqa: N802
+            return 0
 
     monkeypatch.setattr(main_window_module.QThreadPool, "globalInstance", lambda: FakePool())
     window = MainWindow()
     qtbot.addWidget(window)
+    calls.clear()
 
     window.close()
 
     tab_container = cast(FakeTabContainer, window._tab_container)
     assert "cancel" in tab_container.calls
-    assert waits == [3000]
+    # 待機中のキューを捨ててから、実行中のものだけを待つ。
+    assert calls == ["clear", f"wait:{MainWindow.SHUTDOWN_WAIT_MS}"]
     assert saved
+
+
+def test_main_window_logs_when_background_work_outlives_shutdown(
+    monkeypatch,
+    qtbot,
+    caplog,
+    tmp_path: Path,
+) -> None:
+    """待ち切れなかった事実をログに残す（終了時クラッシュの手掛かりになる）。"""
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+
+    class StuckPool:
+        def clear(self) -> None:
+            pass
+
+        def waitForDone(self, _timeout: int) -> bool:  # noqa: N802
+            return False
+
+        def start(self, _job) -> None:
+            pass
+
+        def activeThreadCount(self) -> int:  # noqa: N802
+            return 2
+
+    monkeypatch.setattr(main_window_module.QThreadPool, "globalInstance", lambda: StuckPool())
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    with caplog.at_level(logging.ERROR, logger="omnidesk.ui.main_window"):
+        window.close()
+
+    assert any("バックグラウンド処理が完了しません" in record.message for record in caplog.records)
 
 
 def test_main_window_status_bar_shows_counts_and_selection(
@@ -463,7 +509,13 @@ def test_main_window_status_path_counts_items_in_column_mode(
     window._view_mode = "columns"
     window._update_status_path(tmp_path)
 
-    assert window._status_detail_label.text() == "2個の項目（フォルダ1個/ファイル1個）"
+    # 集計はワーカースレッドで行うため、結果は少し遅れて反映される。
+    # 以前はここでGUIスレッドから iterdir() しており、大量ファイルの
+    # フォルダやネットワークドライブでウィンドウが無応答になっていた。
+    qtbot.waitUntil(
+        lambda: window._status_detail_label.text() == "2個の項目（フォルダ1個/ファイル1個）",
+        timeout=5000,
+    )
 
 
 def test_main_window_status_path_elides_when_space_is_limited(

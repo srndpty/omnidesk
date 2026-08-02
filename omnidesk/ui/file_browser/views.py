@@ -36,6 +36,7 @@ from ..file_browser_drop import (
     should_move_from_drop_action,
 )
 from ..file_browser_selection import rubber_band_intersecting_rows, rubber_band_target_rows
+from ..file_browser_visible import visible_row_range
 from .delegates import _DropTargetItemDelegate, _TwoLineTileNameDelegate
 from .sort_model import SortedFileSystemModel
 
@@ -462,6 +463,25 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
 
         super().mouseReleaseEvent(event)  # Mixinの処理
 
+    def _visible_row_range(self) -> range:
+        """ビューポートに現れている行の範囲を返す。
+
+        ラバーバンド判定は ``viewport_rect`` と交差する行しか選ばないため、
+        走査対象を可視範囲へ絞っても選択結果は変わらない。数万件のフォルダで
+        マウス移動のたびに全行を走査するとGUIスレッドが固まるため、ここで絞る。
+        """
+        model = self.model()
+        assert model is not None
+        row_count = model.rowCount(self.rootIndex())
+        viewport = self.viewport()
+        assert viewport is not None
+        rect = viewport.rect()
+        return visible_row_range(
+            self.indexAt(rect.topLeft()).row(),
+            self.indexAt(rect.bottomLeft()).row(),
+            row_count,
+        )
+
     def _update_rubber_band_selection(self, modifiers: Qt.KeyboardModifier) -> None:
         """ラバーバンド内のアイテムをリアルタイムで選択するメソッド"""
         selection_rect = self._rubber_band.geometry()
@@ -471,7 +491,7 @@ class _FileTreeView(_BaseFileViewMixin, QTreeView):
         column_count = model.columnCount()
         row_rects: list[tuple[int, QRect]] = []
 
-        for row in range(model.rowCount(root)):
+        for row in self._visible_row_range():
             first_col_index = model.index(row, 0, root)
             if not first_col_index.isValid():
                 continue

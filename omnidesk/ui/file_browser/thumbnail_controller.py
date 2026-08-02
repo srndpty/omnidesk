@@ -35,6 +35,7 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         _current_path: Path
         _deferred_refresh_target: Path | None
         _deferred_refresh_timer: QTimer
+        _file_operation_completions: dict[int, object]
         _file_operation_jobs: list[FileOperationJob]
         _is_active: bool
         _is_scrolling_for_thumbnails: bool
@@ -96,6 +97,8 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         for job in self._file_operation_jobs:
             job.cancel()
         self._file_operation_jobs.clear()
+        # 完了通知が遅れて届いても、破棄中のタブへ反映しない。
+        self._file_operation_completions.clear()
 
     def cancel_background_work(self) -> None:
         """Deprecated: shutdown-only cancellation. Do not use for tab deactivation."""
