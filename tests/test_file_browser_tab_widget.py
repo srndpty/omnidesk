@@ -50,6 +50,22 @@ from omnidesk.ui.file_operation_jobs import FileOperationJob
 from omnidesk.ui.file_operations import FileOperationRequest, FileOperationResult
 
 
+def _quiesce(qtbot, tab: FileBrowserTab) -> None:
+    """タブが生きているうちに、バックグラウンド処理を止めて完了通知を捌く。
+
+    実ジョブを走らせたままテストを終えると、完了通知が次のテストの最中に届く。
+    そのころには pytest-qt の例外捕捉が外れているため、スロット内で例外が起きると
+    PyQt6 が ``qFatal()`` を呼び、トレースバックもテストサマリも出ないまま
+    プロセスごと落ちる（CIで実際に発生した）。
+    """
+    tab.cancel_all_work_for_shutdown()
+    pool = QThreadPool.globalInstance()
+    assert pool is not None
+    pool.clear()
+    assert pool.waitForDone(10000)
+    qtbot.wait(50)  # 積み残したキュー配送を捌く
+
+
 class _MouseMoveStub:
     def __init__(self, position: QPointF) -> None:
         self._position = position
@@ -1451,6 +1467,7 @@ def test_file_browser_tab_external_drop_copies_off_the_gui_thread(
     qtbot.waitUntil(lambda: (dest / "source.txt").exists(), timeout=5000)
     qtbot.waitUntil(lambda: refreshed == [True], timeout=5000)
     assert (dest / "source.txt").read_text(encoding="utf-8") == "payload"
+    _quiesce(qtbot, tab)
 
 
 def test_file_browser_tab_external_drop_into_subfolder_invalidates_target_preview(
@@ -1788,6 +1805,8 @@ def test_file_browser_tab_copy_or_move_reports_errors_after_job(
         "omnidesk.ui.file_browser.operations_controller.QMessageBox.warning",
         lambda _parent, title, message: warnings.append((title, message)),
     )
+    # 完了通知に続く refresh がテスト境界をまたがないよう、ここで止めておく。
+    monkeypatch.setattr(tab, "refresh", lambda: None)
 
     # 存在しない元パスなので、ワーカー側で "Missing:" エラーになる。
     missing = tmp_path / "missing.txt"
@@ -1799,6 +1818,7 @@ def test_file_browser_tab_copy_or_move_reports_errors_after_job(
     title, message = warnings[0]
     assert title == "Operation issues"
     assert "Missing" in message
+    _quiesce(qtbot, tab)
 
 
 def test_file_browser_tab_section_resize_emits_name_width(monkeypatch, qtbot) -> None:

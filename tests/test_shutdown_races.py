@@ -10,9 +10,18 @@ import time
 from pathlib import Path
 
 from PyQt6 import sip
+from PyQt6.QtCore import QThreadPool
 
 from omnidesk.ui.file_browser_tab import FileBrowserTab
 from omnidesk.ui.file_operations import FileOperationResult
+
+
+def _wait_for_background_work(qtbot) -> None:
+    """走らせたジョブの完了と、その通知の配送までを見届ける。"""
+    pool = QThreadPool.globalInstance()
+    assert pool is not None
+    assert pool.waitForDone(10000)
+    qtbot.wait(100)  # 積み残したキュー配送を捌く
 
 
 def _slow_operation(delay: float = 0.2):
@@ -54,7 +63,9 @@ def test_file_operation_completion_after_tab_deletion_does_not_raise(
     qtbot.waitUntil(lambda: sip.isdeleted(tab), timeout=5000)
 
     # 完了通知が届くまで待つ。ガードが無いとここで例外が上がる。
-    qtbot.wait(500)
+    # ここで待ち切らないと、通知が次のテストの最中に届いてしまう
+    # （その頃には pytest-qt の例外捕捉が外れており、プロセスごと落ちる）。
+    _wait_for_background_work(qtbot)
 
 
 def test_tab_disposal_during_thumbnail_work_is_quiet(qtbot, tmp_path: Path) -> None:
@@ -70,4 +81,4 @@ def test_tab_disposal_during_thumbnail_work_is_quiet(qtbot, tmp_path: Path) -> N
     tab.cancel_all_work_for_shutdown()
     tab.deleteLater()
     qtbot.waitUntil(lambda: sip.isdeleted(tab), timeout=5000)
-    qtbot.wait(500)
+    _wait_for_background_work(qtbot)
