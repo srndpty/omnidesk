@@ -10,14 +10,19 @@ from PyQt6.QtWidgets import QApplication
 from .theme import apply_dark_theme
 from .ui.icons import application_icon
 from .ui.main_window import MainWindow
-from .utils.crash_diagnostics import install_crash_diagnostics
+from .utils.crash_diagnostics import crash_stream, install_crash_diagnostics
+from .utils.event_loop_watchdog import EventLoopWatchdog
 from .utils.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
+# ウォッチドッグはアプリ全体で1つだけ動かす。GCで止まらないよう参照を保持する。
+_watchdog: EventLoopWatchdog | None = None
+
 
 def create_app(argv: list[str] | None = None) -> QApplication:
     """Create a QApplication instance and apply the shared theme."""
+    global _watchdog
     if argv is None:
         argv = sys.argv
     existing = QApplication.instance()
@@ -29,6 +34,13 @@ def create_app(argv: list[str] | None = None) -> QApplication:
     app.setOrganizationName("OmniDesk")
     apply_dark_theme(app)
     app.setWindowIcon(application_icon())
+    if _watchdog is None:
+        # フリーズは落ちないぶん手掛かりが残らない。GUIスレッドが止まったら
+        # 全スレッドのスタックをクラッシュログへ出しておく。
+        watchdog = EventLoopWatchdog(crash_stream(), parent=app)
+        watchdog.start()
+        app.aboutToQuit.connect(watchdog.stop)
+        _watchdog = watchdog
     logger.info("QApplicationの初期化が完了しました")
     return app
 
