@@ -112,7 +112,7 @@ class MainWindow(QMainWindow):
 
         self._quit_action = QAction("終了", self)
         self._quit_action.setShortcut(QKeySequence("Ctrl+Q"))
-        self._quit_action.triggered.connect(self.close)
+        self._quit_action.triggered.connect(self._handle_quit)
 
         self._refresh_action = QAction("再読み込み", self)
         self._refresh_action.setShortcut(QKeySequence(Qt.Key.Key_F5))
@@ -267,6 +267,9 @@ class MainWindow(QMainWindow):
             self._tab_container.navigate_current_to(target)
         else:
             self._column_browser.set_root_path(target)
+
+    def _handle_quit(self) -> None:
+        self.close()
 
     def _handle_refresh(self) -> None:
         if self._is_tab_mode():

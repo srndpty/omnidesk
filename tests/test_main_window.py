@@ -228,6 +228,18 @@ def test_main_window_handlers_delegate_by_mode(monkeypatch, qtbot, tmp_path: Pat
     assert window._toggle_view_action.text() == "Switch to Column View"
 
 
+def test_main_window_quit_action_closes_window(monkeypatch, qtbot, tmp_path: Path) -> None:
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    window._quit_action.trigger()
+
+    assert not window.isVisible()
+
+
 def test_main_window_alt_up_action_delegates_after_switching_to_columns(
     monkeypatch, qtbot, tmp_path: Path
 ) -> None:
