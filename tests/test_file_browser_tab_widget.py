@@ -1295,7 +1295,7 @@ def test_file_browser_tab_row_changes_restart_visible_thumbnail_requests(
 def test_file_browser_tab_deactivate_does_not_cancel_file_operation_jobs(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    job = FileOperationJob(FileOperationRequest([], None, "delete"))
+    job = FileOperationJob(FileOperationRequest([], None, "delete"), tab._file_operation_signals, 1)
     tab._file_operation_jobs.append(job)
 
     tab.activate()
@@ -1307,7 +1307,7 @@ def test_file_browser_tab_deactivate_does_not_cancel_file_operation_jobs(qtbot) 
 def test_file_browser_tab_shutdown_cancels_file_operation_jobs(qtbot) -> None:
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    job = FileOperationJob(FileOperationRequest([], None, "delete"))
+    job = FileOperationJob(FileOperationRequest([], None, "delete"), tab._file_operation_signals, 1)
     tab._file_operation_jobs.append(job)
 
     tab.cancel_all_work_for_shutdown()

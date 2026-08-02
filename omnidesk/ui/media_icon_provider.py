@@ -21,13 +21,20 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import QIcon, QImage, QImageReader, QPixmap
 
+from .qt_lifetime import own_by_application
 from .thumbnail_jobs import CancellationToken
 
 logger = logging.getLogger(__name__)
 
 
 class WorkerSignals(QObject):
-    """Signals emitted by background thumbnail jobs."""
+    """Signals emitted by background thumbnail jobs.
+
+    ``QRunnable`` ごとに生成せず、プロバイダ（GUIスレッド常駐）が1つだけ所有する。
+    ジョブは ``setAutoDelete(True)`` によりワーカースレッドで破棄されるため、
+    シグナル用 ``QObject`` を持たせると、生成したスレッド以外で ``QObject`` を
+    破棄することになり、Qt のスレッド規約に反してクラッシュし得る。
+    """
 
     finished = pyqtSignal(str, object, int, int)  # key, QImage | None, edge, generation
 
@@ -66,6 +73,9 @@ class MediaThumbnailProvider(QObject):
         self._thread_pool: QThreadPool = thread_pool
         # これにより、メインスレッドへのシグナルの殺到を防ぎ、UIの応答性を保つ
         self._thread_pool.setMaxThreadCount(4)
+        # 画像ジョブが共有する長寿命のシグナル置き場（詳細は WorkerSignals）。
+        self._image_signals = own_by_application(WorkerSignals())
+        self._image_signals.finished.connect(self._handle_image_from_worker)
         self._image_jobs: dict[str, _ImageJob] = {}
         self._image_tokens: dict[str, CancellationToken] = {}
         self._default_generations: dict[str, int] = {}
@@ -120,8 +130,7 @@ class MediaThumbnailProvider(QObject):
                 if existing_token is None or not existing_token.cancelled:
                     return False
             token = token or self._new_default_token(final_key)
-            job = _ImageJob(final_key, path, edge, token)
-            job.signals.finished.connect(self._handle_image_from_worker)
+            job = _ImageJob(final_key, path, edge, token, self._image_signals)
             self._image_jobs[final_key] = job
             self._image_tokens[final_key] = token
             self._thread_pool.start(job)
@@ -183,7 +192,14 @@ class MediaThumbnailProvider(QObject):
         job.start()
 
     def shutdown_video_jobs(self, timeout_ms: int | None = None) -> None:
-        """動画ワーカーを停止する。子プロセスの終了待ちでUIをブロックしない。"""
+        """動画ワーカーを停止し、子プロセスの終了を確定させる。
+
+        以前はここで ``_video_jobs`` を先に空にしていたため、``cancel()`` 後に
+        届く完了通知が自分のジョブを見つけられず ``deleteLater()`` されなかった。
+        その結果、実行中の ``QProcess`` を持ったままプロバイダごと破棄され、
+        Qt の "Destroyed while process is still running" とクラッシュを招いていた。
+        """
+        _ = timeout_ms  # 互換のため受け取るが、待ち時間は _VideoJob 側が持つ
         if self._shutting_down:
             return
         self._shutting_down = True
@@ -193,9 +209,18 @@ class MediaThumbnailProvider(QObject):
         self._video_queue.clear()
         self._queued_video_keys.clear()
 
+        # cancel() は子プロセスの終了を待ってから finished を発火するため、
+        # この時点で _on_video_finished が各ジョブを取り除き deleteLater する。
         for job in list(self._video_jobs.values()):
             job.cancel()
 
+        remaining = list(self._video_jobs.values())
+        if remaining:
+            logger.error(
+                "Video thumbnail jobs did not finish during shutdown: count=%d", len(remaining)
+            )
+            for job in remaining:
+                job.deleteLater()
         self._video_jobs.clear()
         self._video_tokens.clear()
         self._active_video_jobs = 0
@@ -241,7 +266,7 @@ class MediaThumbnailProvider(QObject):
         try:
             if self._shutting_down:
                 return
-            self._active_video_jobs -= 1
+            self._active_video_jobs = max(0, self._active_video_jobs - 1)
             if token is not None and token.generation != generation:
                 logger.debug(
                     "Ignoring stale video thumbnail job: %s generation=%s current=%s",
@@ -278,14 +303,21 @@ class MediaThumbnailProvider(QObject):
 class _ImageJob(QRunnable):
     """Runs thumbnail generation for still images in a background thread."""
 
-    def __init__(self, result_key: str, path: Path, edge: int, token: CancellationToken) -> None:
+    def __init__(
+        self,
+        result_key: str,
+        path: Path,
+        edge: int,
+        token: CancellationToken,
+        signals: WorkerSignals,
+    ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._result_key = result_key  # 内部変数名も変更
         self._path = path
         self._edge = edge
         self._token = token
-        self.signals = WorkerSignals()
+        self.signals = signals
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
         if self._token.cancelled:
@@ -398,9 +430,28 @@ class _VideoJob(QObject):
             return ""
         return self._process.readAllStandardError().data().decode("utf-8", errors="replace").strip()
 
+    # kill() したプロセスが NotRunning になるまで待つ上限。ここで待ち切らないと
+    # 実行中の QProcess をデストラクタで破棄することになり、Qt が
+    # "Destroyed while process is still running" を出してクラッシュし得る。
+    KILL_WAIT_MS = 2000
+
     def _stop_process(self) -> None:
-        if self._process is not None and self._process.state() != QProcess.ProcessState.NotRunning:
-            self._process.kill()
+        """子プロセスを強制終了し、終了が確定するまで待つ。
+
+        ``kill()`` は非同期なので、直後の ``state()`` はまだ ``Running`` を返す。
+        待たずに親を破棄すると実行中の ``QProcess`` が破棄され、ネイティブ側の
+        クラッシュや終了時のブロッキングにつながる。
+        """
+        process = self._process
+        if process is None or process.state() == QProcess.ProcessState.NotRunning:
+            return
+        process.kill()
+        if not process.waitForFinished(self.KILL_WAIT_MS):
+            logger.error(
+                "Video thumbnail worker did not exit after kill: %s pid=%s",
+                self._path,
+                process.processId(),
+            )
 
     def _remove_output(self) -> None:
         try:

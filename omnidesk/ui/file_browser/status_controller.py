@@ -12,27 +12,37 @@ from PyQt6.QtCore import QItemSelection, QObject, QRunnable, QThreadPool, pyqtSi
 from PyQt6.QtWidgets import QAbstractItemView
 
 from ..file_browser_status import BrowserStatus, browser_status_from_counts, directory_item_counts
+from ..qt_lifetime import own_by_application
 from .selection_restore_controller import SelectionRestoreController
 
 
 class _DirectoryCountSignals(QObject):
+    """件数集計ジョブが共有する、GUIスレッド常駐のシグナル置き場。
+
+    ``QRunnable`` ごとに ``QObject`` を作ると、``setAutoDelete(True)`` により
+    ワーカースレッドで破棄されてしまう。生成スレッド以外での ``QObject`` 破棄は
+    Qt が禁じており、まれにネイティブクラッシュを起こす。
+    """
+
     counted = pyqtSignal(str, int, int, int)
 
 
 class _DirectoryCountJob(QRunnable):
-    def __init__(self, path: Path, generation: int) -> None:
+    def __init__(self, path: Path, generation: int, signals: _DirectoryCountSignals) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._path = path
         self._generation = generation
         self._cancelled = Event()
-        self.signals = _DirectoryCountSignals()
+        self.signals = signals
 
     def cancel(self) -> None:
-        """完了通知を止め、破棄中のUIへsignalが届かないようにする。"""
+        """完了通知を止め、破棄中のUIへsignalが届かないようにする。
+
+        シグナルは他のジョブと共有しているため切断できない。世代番号による
+        stale 判定と、このフラグの二段で古い結果を捨てる。
+        """
         self._cancelled.set()
-        with suppress(TypeError):
-            self.signals.counted.disconnect()
 
     def run(self) -> None:
         folder_count, file_count = directory_item_counts(self._path)
@@ -70,6 +80,10 @@ class BrowserStatusController:
         self.jobs: dict[int, _DirectoryCountJob] = {}
         self.refresh_on_activate = False
         self.pool = pool
+        # 全ジョブで共有する長寿命のシグナル置き場（詳細は _DirectoryCountSignals）。
+        # 集計中にタブが閉じられても壊れないよう、寿命は QApplication に預ける。
+        self._signals = own_by_application(_DirectoryCountSignals())
+        self._connected_callback: Callable[[str, int, int, int], None] | None = None
 
     def summary(self) -> BrowserStatus:
         return browser_status_from_counts(
@@ -117,10 +131,20 @@ class BrowserStatusController:
         self.refresh_on_activate = False
         self.generation += 1
         generation = self.generation
-        job = _DirectoryCountJob(path, generation)
-        job.signals.counted.connect(callback)
+        self._ensure_callback_connected(callback)
+        job = _DirectoryCountJob(path, generation, self._signals)
         self.jobs[generation] = job
         self.pool.start(job)
+
+    def _ensure_callback_connected(self, callback: Callable[[str, int, int, int], None]) -> None:
+        """共有シグナルへの接続を1回だけ張る。"""
+        if self._connected_callback is callback:
+            return
+        if self._connected_callback is not None:
+            with suppress(TypeError):
+                self._signals.counted.disconnect(self._connected_callback)
+        self._signals.counted.connect(callback)
+        self._connected_callback = callback
 
     def handle_counts_ready(
         self,

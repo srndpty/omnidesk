@@ -15,9 +15,29 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from PyQt6 import sip
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QObject, QTimer
+from PyQt6.QtWidgets import QApplication
 
 T = TypeVar("T")
+_SignalsT = TypeVar("_SignalsT", bound=QObject)
+
+
+def own_by_application(obj: _SignalsT) -> _SignalsT:
+    """``QObject`` の寿命を ``QApplication`` に預ける。
+
+    ワーカースレッドで動くジョブが参照するシグナル用 ``QObject`` は、
+    ジョブより先に壊れてはならない。タブやモデルの子にすると、タブを閉じた
+    瞬間にシグナルが破棄され、実行中のジョブが emit した時点で
+    ``RuntimeError: wrapped C/C++ object ... has been deleted`` になる。
+
+    ``QApplication`` を親にすると、GUIスレッド上でアプリ終了時にまとめて
+    破棄されるため、この競合が起きない。オブジェクト自体はシグナル定義だけの
+    軽量なもので、受け手が破棄された接続はQtが自動で外すため、残っても無害。
+    """
+    app = QApplication.instance()
+    if app is not None:
+        obj.setParent(app)
+    return obj
 
 
 def is_alive(*objects: Any) -> bool:

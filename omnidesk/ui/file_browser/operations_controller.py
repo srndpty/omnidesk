@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,7 +12,7 @@ from PyQt6.QtWidgets import QAbstractItemView, QInputDialog, QMessageBox, QWidge
 
 from ..file_browser_drop import has_blocked_self_move
 from ..file_browser_navigation import same_navigation_path
-from ..file_operation_jobs import FileOperationJob
+from ..file_operation_jobs import FileOperationJob, FileOperationSignals
 from ..file_operations import (
     FileOperationRequest,
     FileOperationResult,
@@ -54,7 +53,13 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         _current_path: Path
         _delete_confirmation_open: bool
         _deferred_refresh_target: Path | None
+        _file_operation_completions: dict[
+            int,
+            tuple[list[Path] | None, str, Callable[[FileOperationResult], None] | None],
+        ]
         _file_operation_jobs: list[FileOperationJob]
+        _file_operation_job_seq: int
+        _file_operation_signals: FileOperationSignals
         _inline_rename_seed: tuple[Path, str | None] | None
         _model: SortedFileSystemModel
         _pending_selection_path: Path | None
@@ -306,34 +311,41 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         error_title: str = "Operation issues",
         on_finished: Callable[[FileOperationResult], None] | None = None,
     ) -> FileOperationJob:
-        job = FileOperationJob(request)
-
-        def handle_finished(result: object) -> None:
-            # ジョブ実行中にタブが閉じられていると、ここへ届く頃には
-            # C++側のウィジェットが破棄されている。触れると RuntimeError に
-            # なるため、生存を確認してから状態を更新する。
-            if not is_alive(self):
-                return
-            with suppress(ValueError):
-                self._file_operation_jobs.remove(job)
-            if not isinstance(result, FileOperationResult):
-                return
-            if result.cancelled:
-                return
-            self._handle_file_operation_finished(
-                result,
-                select_after=select_after,
-                error_title=error_title,
-            )
-            if on_finished is not None:
-                on_finished(result)
-
-        job.signals.finished.connect(handle_finished)
+        self._file_operation_job_seq += 1
+        job_id = self._file_operation_job_seq
+        job = FileOperationJob(request, self._file_operation_signals, job_id)
+        self._file_operation_completions[job_id] = (select_after, error_title, on_finished)
         self._file_operation_jobs.append(job)
         pool = QThreadPool.globalInstance()
         assert pool is not None
         pool.start(job)
         return job
+
+    def _handle_file_operation_job_finished(self, job_id: int, result: object) -> None:
+        """共有シグナルから届いた完了通知を、対応するジョブへ振り分ける。
+
+        ジョブ実行中にタブが閉じられていると、ここへ届く頃にはC++側の
+        ウィジェットが破棄されている。触れると ``RuntimeError`` になるため、
+        生存を確認してから状態を更新する。
+        """
+        if not is_alive(self):
+            return
+        completion = self._file_operation_completions.pop(job_id, None)
+        self._file_operation_jobs = [
+            job for job in self._file_operation_jobs if job.job_id != job_id
+        ]
+        if completion is None:
+            return
+        if not isinstance(result, FileOperationResult) or result.cancelled:
+            return
+        select_after, error_title, on_finished = completion
+        self._handle_file_operation_finished(
+            result,
+            select_after=select_after,
+            error_title=error_title,
+        )
+        if on_finished is not None:
+            on_finished(result)
 
     def _handle_file_operation_finished(
         self,

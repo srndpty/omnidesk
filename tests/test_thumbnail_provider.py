@@ -12,6 +12,7 @@ from PyQt6.QtGui import QImage
 from omnidesk.ui import media_icon_provider
 from omnidesk.ui.media_icon_provider import (
     MediaThumbnailProvider,
+    WorkerSignals,
     _ImageJob,
     _video_worker_command,
     _VideoJob,
@@ -316,6 +317,66 @@ def test_shutdown_video_jobs_cancels_workers_without_waiting(
     assert provider._active_video_jobs == 0
 
 
+def test_cancel_waits_for_the_child_process_to_exit(monkeypatch, tmp_path: Path) -> None:
+    """kill() したあと、終了が確定するまで待ってから完了扱いにする。
+
+    待たずに親を破棄すると、実行中の QProcess がデストラクタで破棄され
+    "Destroyed while process is still running" とクラッシュにつながる。
+    """
+    _install_process_fakes(monkeypatch)
+    video_path = tmp_path / "movie.mp4"
+    job = _VideoJob("video-key", video_path, 80, CancellationToken(31))
+    job.start()
+    process = _FakeProcess.instances[-1]
+
+    job.cancel()
+
+    assert process.killed
+    assert process.wait_calls  # 終了待ちを行っている
+    assert process.state() == QProcess.ProcessState.NotRunning
+    assert job._complete
+
+
+def test_shutdown_deletes_jobs_even_when_process_ignores_kill(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """kill() に応じないプロセスが居ても、ジョブを取り残さない。"""
+    _install_process_fakes(monkeypatch)
+    provider = MediaThumbnailProvider()
+    video_path = tmp_path / "stubborn.mp4"
+    video_path.write_bytes(b"fake")
+
+    assert provider.request_thumbnail(video_path, 100, result_key="stubborn-key")
+    _FakeProcess.instances[-1].ignores_kill = True
+
+    provider.shutdown_video_jobs()
+
+    assert provider._video_jobs == {}
+    assert provider._video_tokens == {}
+    qtbot.wait(50)
+    assert provider._active_video_jobs == 0
+
+
+def test_shutdown_releases_jobs_that_finish_during_cancel(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """終了停止の途中で完了したジョブも、辞書から取り除かれる。"""
+    _install_process_fakes(monkeypatch)
+    provider = MediaThumbnailProvider()
+    video_path = tmp_path / "normal.mp4"
+    video_path.write_bytes(b"fake")
+
+    assert provider.request_thumbnail(video_path, 100, result_key="normal-key")
+    job = provider._video_jobs["normal-key"]
+
+    provider.shutdown_video_jobs()
+
+    assert job._complete
+    assert provider._video_jobs == {}
+    qtbot.wait(50)
+    assert provider._active_video_jobs == 0
+
+
 def test_on_video_finished_starts_next_queued_job(monkeypatch, qtbot) -> None:
     provider = MediaThumbnailProvider()
     started: list[str] = []
@@ -353,9 +414,10 @@ def test_image_job_run_emits_scaled_image(qtbot, tmp_path: Path) -> None:
     image_path = tmp_path / "image.png"
     _save_image(image_path, size=200)
     token = CancellationToken(11)
-    job = _ImageJob("job-key", image_path, 40, token)
+    signals = WorkerSignals()
+    job = _ImageJob("job-key", image_path, 40, token, signals)
 
-    with qtbot.waitSignal(job.signals.finished, timeout=1000) as blocker:
+    with qtbot.waitSignal(signals.finished, timeout=1000) as blocker:
         job.run()
 
     key, image, edge, generation = blocker.args
@@ -371,9 +433,10 @@ def test_image_job_run_does_not_emit_when_cancelled(qtbot, tmp_path: Path) -> No
     _save_image(image_path, size=200)
     token = CancellationToken(12)
     token.cancel()
-    job = _ImageJob("job-key", image_path, 40, token)
+    signals = WorkerSignals()
+    job = _ImageJob("job-key", image_path, 40, token, signals)
 
-    with qtbot.assertNotEmitted(job.signals.finished, wait=100):
+    with qtbot.assertNotEmitted(signals.finished, wait=100):
         job.run()
 
 
@@ -433,6 +496,9 @@ class _FakeProcess:
         self.program: str | None = None
         self.arguments: list[str] = []
         self.killed = False
+        self.wait_calls: list[int] = []
+        # True にすると kill() 後も終了しない「死なないプロセス」を再現できる。
+        self.ignores_kill = False
         self._state = QProcess.ProcessState.NotRunning
         self.stderr = b""
         _FakeProcess.instances.append(self)
@@ -446,7 +512,20 @@ class _FakeProcess:
         return self._state
 
     def kill(self) -> None:
+        # 本物の kill() は非同期で、直後の state() はまだ Running を返す。
         self.killed = True
+
+    def waitForFinished(self, msecs: int = 30000) -> bool:  # noqa: N802 - Qt-style API
+        self.wait_calls.append(msecs)
+        if self.ignores_kill:
+            return False
+        if self._state == QProcess.ProcessState.NotRunning:
+            return True
+        self.finish(1)
+        return True
+
+    def processId(self) -> int:  # noqa: N802 - Qt-style API
+        return 4242
 
     def finish(self, exit_code: int = 0) -> None:
         self._state = QProcess.ProcessState.NotRunning

@@ -38,8 +38,9 @@ from .file_browser.views import (
 )
 from .file_browser_background import FileBrowserThumbnailScheduler
 from .file_browser_navigation import DirectoryFingerprint
-from .file_operation_jobs import FileOperationJob
+from .file_operation_jobs import FileOperationJob, FileOperationSignals
 from .media_file_system_model import MediaFileSystemModel
+from .qt_lifetime import own_by_application
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,14 @@ class FileBrowserTab(
             selection_restore=self._selection_restore_controller,
             pool=status_count_pool,
         )
+        # ファイル操作ジョブはワーカースレッドで破棄されるため、シグナル用の
+        # QObject はジョブに持たせず1つだけ用意する。寿命はタブではなく
+        # QApplication に預ける（転送中にタブを閉じても壊れないようにするため）。
+        self._file_operation_signals = own_by_application(FileOperationSignals())
+        self._file_operation_signals.finished.connect(self._handle_file_operation_job_finished)
         self._file_operation_jobs: list[FileOperationJob] = []
+        self._file_operation_job_seq = 0
+        self._file_operation_completions: dict = {}
         self._delete_confirmation_open = False
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")

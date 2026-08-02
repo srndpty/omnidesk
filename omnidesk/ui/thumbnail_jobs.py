@@ -29,8 +29,18 @@ class CancellationToken:
         return self._cancelled
 
 
-class FolderScanSignals(QObject):
-    found = pyqtSignal(str, int, object)  # key, generation, Path | None
+class ThumbnailJobSignals(QObject):
+    """サムネイル系ジョブが共有する、GUIスレッド常駐のシグナル置き場。
+
+    以前は ``QRunnable`` ごとに ``QObject`` を持たせていたが、
+    ``setAutoDelete(True)`` のジョブはワーカースレッドで破棄されるため、
+    GUIスレッドで生成した ``QObject`` を別スレッドで壊すことになっていた。
+    Qt が禁じている操作で、接続解除とキュー配送が競合したときに
+    ネイティブクラッシュを起こす。所有者が1つだけ持つ形にして経路ごと無くす。
+    """
+
+    folder_scanned = pyqtSignal(str, int, object)  # key, generation, Path | None
+    cache_loaded = pyqtSignal(str, int, object, bool)  # key, generation, QImage|None, is_dir
 
 
 class FolderScanJob(QRunnable):
@@ -42,6 +52,7 @@ class FolderScanJob(QRunnable):
         path: Path,
         extensions: set[str],
         token: CancellationToken,
+        signals: ThumbnailJobSignals,
         *,
         scan_limit: int = 128,
     ) -> None:
@@ -52,7 +63,7 @@ class FolderScanJob(QRunnable):
         self._extensions = extensions
         self._token = token
         self._scan_limit = max(1, scan_limit)
-        self.signals = FolderScanSignals()
+        self.signals = signals
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
         image_path: Path | None = None
@@ -69,23 +80,28 @@ class FolderScanJob(QRunnable):
             logger.exception("Failed to scan folder for thumbnail: %s", self._path)
             image_path = None
         if not self._token.cancelled:
-            self.signals.found.emit(self._key, self._token.generation, image_path)
-
-
-class CacheLoadSignals(QObject):
-    loaded = pyqtSignal(str, int, object)  # key, generation, QImage | None
+            self.signals.folder_scanned.emit(self._key, self._token.generation, image_path)
 
 
 class CacheLoadJob(QRunnable):
     """Load a cached PNG into QImage outside the UI thread."""
 
-    def __init__(self, key: str, cache_path: Path, token: CancellationToken) -> None:
+    def __init__(
+        self,
+        key: str,
+        cache_path: Path,
+        token: CancellationToken,
+        signals: ThumbnailJobSignals,
+        *,
+        is_dir: bool = False,
+    ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._key = key
         self._cache_path = cache_path
         self._token = token
-        self.signals = CacheLoadSignals()
+        self._is_dir = is_dir
+        self.signals = signals
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
         image: QImage | None = None
@@ -98,7 +114,12 @@ class CacheLoadJob(QRunnable):
             else:
                 logger.warning("Failed to load thumbnail cache image: %s", self._cache_path)
         if not self._token.cancelled:
-            self.signals.loaded.emit(self._key, self._token.generation, image)
+            self.signals.cache_loaded.emit(
+                self._key,
+                self._token.generation,
+                image,
+                self._is_dir,
+            )
 
 
 class CacheSaveJob(QRunnable):

@@ -14,7 +14,14 @@ from PyQt6.QtWidgets import QFileIconProvider
 
 from ..utils.thumbnail_cache import file_thumbnail_cache, folder_preview_cache
 from .media_icon_provider import MediaThumbnailProvider
-from .thumbnail_jobs import CacheLoadJob, CacheSaveJob, CancellationToken, FolderScanJob
+from .qt_lifetime import own_by_application
+from .thumbnail_jobs import (
+    CacheLoadJob,
+    CacheSaveJob,
+    CancellationToken,
+    FolderScanJob,
+    ThumbnailJobSignals,
+)
 
 logger = logging.getLogger(__name__)
 FOLDER_PREVIEW_DISK_EDGES = frozenset({96, 160})
@@ -108,6 +115,12 @@ class MediaFileSystemModel(QFileSystemModel):
         self._allow_folder_preview_for_visible_targets = True
         self.setReadOnly(False)
         self._icon_provider = QFileIconProvider()
+        # ジョブはワーカースレッドで破棄されるため、シグナル用QObjectはジョブに
+        # 持たせず1つだけ用意して共有する。寿命はモデルではなく QApplication に
+        # 預ける（サムネイル生成中にタブを閉じても壊れないようにするため）。
+        self._job_signals = own_by_application(ThumbnailJobSignals())
+        self._job_signals.folder_scanned.connect(self._handle_folder_scan_result)
+        self._job_signals.cache_loaded.connect(self._handle_cache_loaded)
         self._folder_scans: dict[str, FolderScanJob] = {}
         scan_pool = QThreadPool.globalInstance()
         assert scan_pool is not None
@@ -281,15 +294,7 @@ class MediaFileSystemModel(QFileSystemModel):
         if disk_path.exists():
             self._debug("disk-load", key, disk_path)
             token = self._new_token(key)
-            job = CacheLoadJob(key, disk_path, token)
-            job.signals.loaded.connect(
-                lambda loaded_key, generation, image, is_dir=is_dir: self._handle_cache_loaded(
-                    loaded_key,
-                    generation,
-                    image,
-                    is_dir,
-                )
-            )
+            job = CacheLoadJob(key, disk_path, token, self._job_signals, is_dir=is_dir)
             self._cache_jobs[key] = job
             self._pending.add(key)
             self._scan_pool.start(job)
@@ -318,8 +323,7 @@ class MediaFileSystemModel(QFileSystemModel):
         token = self._new_token(key)
         self._pending.add(key)
 
-        job = FolderScanJob(key, path, self.media_extensions, token)
-        job.signals.found.connect(self._handle_folder_scan_result)
+        job = FolderScanJob(key, path, self.media_extensions, token, self._job_signals)
         self._folder_scans[key] = job
         self._scan_pool.start(job)
 
