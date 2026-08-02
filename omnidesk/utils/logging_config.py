@@ -12,6 +12,7 @@ from pathlib import Path
 LOG_ENV_VAR = "OMNIDESK_LOG_LEVEL"
 LOG_FILE_NAME = "omnidesk.log"
 DEFAULT_LOG_LEVEL = logging.INFO
+_active_log_path: Path | None = None
 
 
 class _WindowsSafeRotatingFileHandler(RotatingFileHandler):
@@ -55,6 +56,11 @@ def log_file_path() -> Path:
     return log_dir() / LOG_FILE_NAME
 
 
+def active_log_dir() -> Path:
+    """実際に構成されたログディレクトリを返す。"""
+    return (_active_log_path or log_file_path()).parent
+
+
 def log_level_from_environment(environ: dict[str, str] | None = None) -> int:
     """Resolve the configured log level from OMNIDESK_LOG_LEVEL."""
     env = environ if environ is not None else os.environ
@@ -72,6 +78,8 @@ def configure_logging(
     force: bool = False,
 ) -> Path:
     """Configure file logging and return the log file path."""
+    global _active_log_path
+
     target = path or log_file_path()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -87,7 +95,7 @@ def configure_logging(
             handler.close()
     elif any(getattr(handler, "_omnidesk_handler", False) for handler in root_logger.handlers):
         root_logger.setLevel(level if level is not None else log_level_from_environment())
-        return target
+        return _active_log_path or target
 
     resolved_level = level if level is not None else log_level_from_environment()
     try:
@@ -101,6 +109,7 @@ def configure_logging(
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
     root_logger.addHandler(handler)
     root_logger.setLevel(resolved_level)
+    _active_log_path = target
     logging.getLogger(__name__).debug("Logging configured at %s", target)
     return target
 

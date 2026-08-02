@@ -42,7 +42,9 @@
 
 ## ログとエラー処理
 - デバッグ用の `print()` は追加しないでください。`logging.getLogger(__name__)` を使ってください。
-- ログは `omnidesk/utils/logging_config.py` で設定され、既定では `~/.omnidesk/logs/omnidesk.log` に出力されます。
+- ログは `omnidesk/utils/logging_config.py` で設定されます。Windowsの既定出力先は `%LOCALAPPDATA%\OmniDesk\logs` です。`LOCALAPPDATA` がない場合は `~/.omnidesk/logs`、既定出力先へ書き込めない場合は `%TEMP%\OmniDesk\logs` を使います。
+- 通常ログは `omnidesk.log`、ネイティブ障害を含むクラッシュ診断は `omnidesk-crash.log` です。クラッシュ調査では両方を確認してください。
+- Windowsで突然終了した場合は、ApplicationイベントログのイベントID 1000（Application Error）と1001（Windows Error Reporting）も発生時刻付近で確認してください。
 - ログレベルは `OMNIDESK_LOG_LEVEL` で変更できます。
 - 例外を握りつぶす場合でも、ユーザー操作やファイル操作に関係する失敗はログに残してください。
 - UIに出すメッセージは短く、詳細はログへ寄せてください。

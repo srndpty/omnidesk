@@ -25,6 +25,14 @@ def test_log_dir_prefers_local_app_data(monkeypatch, tmp_path: Path) -> None:
     assert logging_config.log_dir() == tmp_path / "OmniDesk" / "logs"
 
 
+def test_active_log_dir_uses_configured_fallback_path(monkeypatch, tmp_path: Path) -> None:
+    log_file = tmp_path / "configured" / "omnidesk.log"
+
+    logging_config.configure_logging(path=log_file, force=True)
+
+    assert logging_config.active_log_dir() == log_file.parent
+
+
 @freeze_time("2030-01-02 03:04:05")
 def test_configure_logging_writes_rotating_log_file(tmp_path: Path) -> None:
     log_file = tmp_path / "logs" / "omnidesk.log"

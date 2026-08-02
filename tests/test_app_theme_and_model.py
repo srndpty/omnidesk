@@ -99,6 +99,24 @@ def test_media_file_system_model_small_helpers(tmp_path: Path) -> None:
     assert model.supportedDragActions() == supported_actions
 
 
+def test_thumbnail_change_only_notifies_item_data(qtbot, tmp_path: Path) -> None:
+    model = MediaFileSystemModel()
+    model.setRootPath(str(tmp_path))
+    qtbot.waitUntil(lambda: model.index(str(tmp_path)).isValid())
+    data_changes: list[tuple[object, object, list[int]]] = []
+    header_changes: list[tuple[Qt.Orientation, int, int]] = []
+    model.dataChanged.connect(lambda first, last, roles: data_changes.append((first, last, roles)))
+    model.headerDataChanged.connect(
+        lambda orientation, first, last: header_changes.append((orientation, first, last))
+    )
+
+    model._emit_thumbnail_changed(str(tmp_path))
+
+    assert len(data_changes) == 1
+    assert data_changes[0][2] == [Qt.ItemDataRole.DecorationRole]
+    assert header_changes == []
+
+
 def test_media_file_system_model_token_and_cancel_state(monkeypatch) -> None:
     model = MediaFileSystemModel()
     cancelled: list[str] = []

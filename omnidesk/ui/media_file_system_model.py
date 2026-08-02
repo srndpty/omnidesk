@@ -571,7 +571,6 @@ class MediaFileSystemModel(QFileSystemModel):
         index = self.index(key)
         if index.isValid():
             self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
-            self.headerDataChanged.emit(Qt.Orientation.Vertical, index.row(), index.row())
 
     def supportedDropActions(self) -> Qt.DropAction:
         """このモデルがサポートするドロップアクションを宣言します。"""
