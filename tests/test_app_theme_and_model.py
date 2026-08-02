@@ -118,6 +118,29 @@ def test_normalise_key_resolves_each_path_once(tmp_path: Path, mocker) -> None:
     assert spy.call_count == 1
 
 
+def test_normalise_key_does_not_touch_the_filesystem(tmp_path: Path, monkeypatch) -> None:
+    """描画経路のパス正規化がディスクへ触らないことを固定する。
+
+    ``Path.resolve()`` はシンボリックリンクを辿るため実I/Oを伴い、低速ドライブでは
+    1回でもGUIスレッドを止める。実際にウォッチドッグが paint→data→resolve の
+    経路で12秒のGUI停止を記録している。
+    """
+    model = MediaFileSystemModel()
+    target = tmp_path / "target.txt"
+    target.write_text("x", encoding="utf-8")
+
+    def fail(*args, **kwargs):
+        raise AssertionError("正規化がファイルシステムへ問い合わせました")
+
+    monkeypatch.setattr(Path, "resolve", fail)
+    monkeypatch.setattr(Path, "stat", fail)
+
+    key = model._normalise_key(target)
+
+    assert key.endswith("target.txt")
+    assert Path(key).is_absolute()
+
+
 def test_normalise_key_cache_is_cleared_on_navigation(tmp_path: Path) -> None:
     model = MediaFileSystemModel()
     target = tmp_path / "target.txt"

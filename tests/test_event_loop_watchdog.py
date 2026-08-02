@@ -7,8 +7,25 @@
 from __future__ import annotations
 
 import io
+import logging
+
+import pytest
 
 from omnidesk.utils.event_loop_watchdog import EventLoopWatchdog
+
+
+@pytest.fixture(autouse=True)
+def _quiet_watchdog_logger():
+    """停止検出のERRORログを実アプリのログへ書き出さない。
+
+    ``omnidesk.log`` はクラッシュ調査で最初に見るファイルなので、テストが
+    作った偽の停止記録を混ぜない。
+    """
+    logger = logging.getLogger("omnidesk.utils.event_loop_watchdog")
+    previous = logger.propagate
+    logger.propagate = False
+    yield
+    logger.propagate = previous
 
 
 def _watchdog(stream=None, *, stall_seconds: float = 5.0) -> EventLoopWatchdog:

@@ -641,11 +641,22 @@ class MediaFileSystemModel(QFileSystemModel):
 
     @staticmethod
     def _resolve_key(path: Path | str) -> str:
-        candidate = path if isinstance(path, Path) else Path(path)
+        """パスを、ファイルシステムへ問い合わせずに正規化する。
+
+        以前は ``Path.resolve()`` を使っていたが、これはシンボリックリンクを
+        辿るため実I/Oを伴い、低速ドライブでは1回でも描画スレッドを止める。
+        実際にウォッチドッグが ``paint`` → ``data`` → ``resolve`` の経路で
+        12秒のGUI停止を記録している。
+
+        キーに必要なのは「同じファイルが同じ文字列になること」だけで、
+        シンボリックリンクの解決は要らない。``abspath`` はパス文字列の正規化と
+        カレントディレクトリの解決だけを行い、ディスクへ触らない。
+        """
         try:
-            return str(candidate.resolve(strict=False))
-        except OSError:
-            return str(candidate)
+            return os.path.abspath(str(path))
+        except (OSError, ValueError):
+            logger.debug("パスを正規化できません: %s", path, exc_info=True)
+            return str(path)
 
     def dropMimeData(
         self, data: QMimeData, action: Qt.DropAction, row: int, column: int, parent: QModelIndex
