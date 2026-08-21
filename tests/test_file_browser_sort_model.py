@@ -313,10 +313,10 @@ def test_file_path_and_file_info_map_through_proxy(qtbot, tmp_path: Path) -> Non
 
 
 def test_removed_paths_are_hidden_before_the_source_model_catches_up(qtbot, tmp_path: Path) -> None:
-    """削除済みの行を、QFileSystemModel の再走査を待たずに消すこと。
+    """削除済みの行を、元モデルの再走査を待たずに消すこと。
 
-    QFileSystemModel は QFileSystemWatcher の通知を受けてからディレクトリを
-    再走査するため、行が実際に消えるまで待たされる（7,500件のフォルダで実測950ms）。
+    元モデルはディレクトリの変更通知を受けてから走査し直すため、行が実際に消える
+    までは待ちが入る（旧実装の QFileSystemModel では7,500件のフォルダで実測950ms）。
     ユーザーから見ると「OKを押したのに反映されない」ラグになる。
     """
     _make_files(tmp_path)
@@ -396,8 +396,6 @@ def test_reconciliation_timeout_asks_for_a_rescan_instead_of_unhiding(
 
     # 走査をやり直させるだけで、伏せた行は戻さない。
     assert scans == [True]
-    assert "b.txt" not in _visible_names(tab)
-    assert tab._model._hidden_keys
     assert "b.txt" not in _visible_names(tab)
     assert tab._model._hidden_keys
 

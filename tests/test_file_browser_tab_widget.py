@@ -2870,9 +2870,10 @@ def test_file_browser_tab_delete_hides_rows_without_waiting_for_the_watcher(
 ) -> None:
     """削除完了時に、モデルの再走査を待たずに行を伏せること。
 
-    QFileSystemModel は QFileSystemWatcher の通知を受けてからディレクトリ全体を
-    再走査するため、行が消えるまで件数に比例した待ちが入る（7,500件で実測950ms）。
-    削除はこちらが実行して結果も確認できるので、待つ理由がない。
+    元モデルはディレクトリの変更通知を受けてから走査し直すため、行が消えるまでは
+    待ちが入る（旧実装の QFileSystemModel では全体を作り直すため、7,500件で
+    実測950ms かかっていた）。削除はこちらが実行して結果も確認できるので、
+    待つ理由がない。
     """
     target = tmp_path / "gone.txt"
     target.write_text("x", encoding="utf-8")

@@ -198,7 +198,7 @@ def test_surviving_rows_keep_their_entry_id_across_refreshes(qtbot, tmp_path: Pa
 def test_entry_ids_are_never_reused(qtbot, tmp_path: Path) -> None:
     """消えた行のIDを別のエントリへ割り当てないこと。
 
-    ``QFileSystemModel`` の ``internalId()`` は内部ノードのアドレスで、
+    旧実装（``QFileSystemModel``）の ``internalId()`` は内部ノードのアドレスで、
     ノードが消えると別のエントリへ再利用され得た。
     """
     _make_tree(tmp_path)

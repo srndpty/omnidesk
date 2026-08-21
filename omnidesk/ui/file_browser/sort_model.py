@@ -46,8 +46,9 @@ class SortedFileSystemModel(QSortFilterProxyModel):
     directoryLoaded = pyqtSignal(str)
 
     # ``dataChanged`` がこれより広い範囲を指したら、行単位で引くより
-    # まとめて捨てたほうが安い。
-    ROW_SCOPED_INVALIDATION_LIMIT = 512
+    # まとめて捨てたほうが安い。テストがインスタンス単位で下げるので、
+    # ``Literal[512]`` ではなく ``int`` として宣言する（``ClassVar`` にはしない）。
+    ROW_SCOPED_INVALIDATION_LIMIT: int = 512
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
