@@ -45,6 +45,7 @@ from omnidesk.ui.file_browser_status import BrowserStatus
 from omnidesk.ui.file_browser_tab import (
     FileBrowserTab,
     navigation_cursor_action,
+    navigation_edge_row,
     navigation_event_without_control,
 )
 from omnidesk.ui.file_operation_jobs import FileOperationJob
@@ -526,8 +527,8 @@ def test_file_browser_tab_refresh_preserves_selection_and_resorts(
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(tab, "_selected_index_path", lambda: selected_path)
-    monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
-    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
+    rescans: list[bool] = []
+    monkeypatch.setattr(tab._model, "rescan", lambda: rescans.append(True))
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(
         tab._model,
@@ -537,8 +538,10 @@ def test_file_browser_tab_refresh_preserves_selection_and_resorts(
 
     tab.refresh(force=True)
 
-    qtbot.waitUntil(lambda: bool(navigated), timeout=1000)
-    assert navigated == [tmp_path]
+    qtbot.waitUntil(lambda: bool(sorted_columns), timeout=1000)
+    # 明示的な再読込は走査のやり直し。モデルは作り直さない。
+    assert rescans == [True]
+    assert navigated == []
     assert tab._refresh_selection_path == selected_path
     assert tab._pending_selection_scroll_hint == QAbstractItemView.ScrollHint.EnsureVisible
     assert sorted_columns == [(0, Qt.SortOrder.AscendingOrder)]
@@ -566,9 +569,7 @@ def test_file_browser_tab_refresh_without_force_does_not_rebuild_model(
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(tab, "_selected_index_path", lambda: selected_path)
     monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
-    monkeypatch.setattr(
-        tab, "_reset_root_before_refresh", lambda target: reset_roots.append(target) or True
-    )
+    monkeypatch.setattr(tab._model, "rescan", lambda: reset_roots.append(tab._current_path))
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(
         tab._model,
@@ -595,7 +596,6 @@ def test_file_browser_tab_refresh_retries_failed_thumbnails(
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(tab, "navigate_to", lambda path: True)
-    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(tab._model, "sort", lambda column, order: None)
     tab._source_model._failed.add(str(tmp_path / "locked.png"))
@@ -623,13 +623,13 @@ def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
     tab._pending_selection_path = pending_selection
     monkeypatch.setattr(tab, "_selected_index_path", lambda: old_selection)
     monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
-    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
+    monkeypatch.setattr(tab._model, "rescan", lambda: None)
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or False)
 
     tab.refresh(force=True)
 
-    qtbot.waitUntil(lambda: bool(navigated), timeout=1000)
+    qtbot.waitUntil(lambda: bool(selected), timeout=1000)
     assert tab._pending_selection_path == pending_selection
     assert tab._refresh_selection_path == pending_selection
     assert selected == [pending_selection]
@@ -717,10 +717,23 @@ def test_file_browser_tab_deferred_refresh_clears_pending_selection_after_ready(
     assert tab._pending_selection_scroll_hint == QAbstractItemView.ScrollHint.EnsureVisible
 
 
-def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
+def _visible_names(tab: FileBrowserTab) -> list[str]:
+    """タブに見えているエントリ名を返す。"""
+    model = tab._model
+    return [
+        model.index(row, 0).data(Qt.ItemDataRole.DisplayRole) for row in range(model.rowCount())
+    ]
+
+
+def test_file_browser_tab_refresh_keeps_the_model_on_the_current_directory(
     qtbot,
     tmp_path: Path,
 ) -> None:
+    """refresh 後もモデルが同じディレクトリを見ていること。
+
+    フラットなモデルなので、ビューのルートインデックスは常に不正値。
+    どのディレクトリを見ているかは rootPath() が持つ。
+    """
     current = tmp_path / "current"
     current.mkdir()
     (current / "a.txt").write_text("a", encoding="utf-8")
@@ -730,14 +743,11 @@ def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
 
     tab.refresh()
 
-    qtbot.waitUntil(
-        lambda: (
-            Path(tab._model.filePath(tab._tree_view.rootIndex())) == current
-            and Path(tab._model.filePath(tab._tile_view.rootIndex())) == current
-        ),
-        timeout=1000,
-    )
+    qtbot.waitUntil(lambda: "a.txt" in _visible_names(tab), timeout=3000)
+    assert Path(tab._model.rootPath()) == current
     assert tab.current_path() == current
+    assert not tab._tree_view.rootIndex().isValid()
+    assert not tab._tile_view.rootIndex().isValid()
 
 
 def test_file_browser_tab_shutdown_cancels_deferred_refresh(
@@ -748,7 +758,7 @@ def test_file_browser_tab_shutdown_cancels_deferred_refresh(
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab._current_path = tmp_path
-    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: True)
+    monkeypatch.setattr(tab._model, "rescan", lambda: None)
 
     tab.refresh(force=True)
 
@@ -2891,3 +2901,49 @@ def test_file_browser_tab_copy_does_not_hide_source_rows(qtbot, tmp_path: Path) 
     )
 
     assert hidden == []
+
+
+def test_navigation_edge_row_maps_home_and_end() -> None:
+    assert navigation_edge_row(Qt.Key.Key_Home, 10) == 0
+    assert navigation_edge_row(Qt.Key.Key_End, 10) == 9
+    # 対象外のキーと空のビューでは何も返さない。
+    assert navigation_edge_row(Qt.Key.Key_Down, 10) is None
+    assert navigation_edge_row(Qt.Key.Key_End, 0) is None
+
+
+def test_end_key_reaches_the_last_row_before_layout_finishes(qtbot, tmp_path: Path) -> None:
+    """レイアウトが終わる前でも End が最終行へ届くこと。
+
+    タイル表示（``QListView`` の ``Batched`` レイアウト）では、``moveCursor`` に
+    任せると「レイアウト済みの最終行」＝バッチ境界（既定128行目）で止まる。
+    大きなフォルダを開いた直後に End を押すと末尾へ行けなかった。
+    """
+    entry_count = tile_layout_batch_size() * 3
+    for index in range(entry_count):
+        (tmp_path / f"f{index:05d}.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    tab.navigate_to(tmp_path)
+    qtbot.waitUntil(lambda: tab._model.rowCount() == entry_count, timeout=5000)
+
+    view = tab._active_view()
+    view.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_End, Qt.KeyboardModifier.NoModifier)
+    )
+
+    assert view.currentIndex().row() == entry_count - 1
+
+    view.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Home, Qt.KeyboardModifier.NoModifier)
+    )
+
+    assert view.currentIndex().row() == 0
+
+
+def tile_layout_batch_size() -> int:
+    """タイル表示のレイアウトバッチ幅（テストの意図を読みやすくするための別名）。"""
+    from omnidesk.ui.file_browser.views import _FileTileView
+
+    return _FileTileView.LAYOUT_BATCH_SIZE

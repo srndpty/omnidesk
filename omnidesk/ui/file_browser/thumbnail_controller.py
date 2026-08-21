@@ -71,6 +71,9 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
             return
         logger.debug("Activating tab for %s", self._current_path)
         self._is_active = True
+        # 非アクティブ中に外で変わっているかもしれないので、監視を戻して読み直す。
+        self._model.resume_watching()
+        self._model.rescan()
         self._restart_thumbnail_requests()
         self._resume_status_item_counts()
 
@@ -86,6 +89,8 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         """Cancel work that is only useful while this tab is visible."""
         self._thumbnail_scheduler.cancel()
         self._model.cancel_background_work()
+        # 見えていないタブのディレクトリを監視し続ける理由はない。再走査も止まる。
+        self._model.stop_watching()
         self._deactivate_status_item_counts()
 
     def cancel_all_work_for_shutdown(self) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import QDir, QItemSelectionModel, QSize, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QItemSelectionModel, QSize, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -34,6 +34,7 @@ from .file_browser.views import (
     _FileTileView,
     _FileTreeView,
     navigation_cursor_action,
+    navigation_edge_row,
     navigation_event_without_control,
 )
 from .file_browser_background import FileBrowserThumbnailScheduler
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "FileBrowserTab",
     "navigation_cursor_action",
+    "navigation_edge_row",
     "navigation_event_without_control",
 ]
 
@@ -61,7 +63,7 @@ class FileBrowserTab(
     FileBrowserThumbnailMixin,
     QWidget,
 ):
-    """File browser view based on QFileSystemModel."""
+    """走査ベースのディレクトリモデルを使うファイルブラウザのタブ。"""
 
     DEFAULT_NAME_COLUMN_WIDTH = 420
     MEDIA_RATIO_THRESHOLD = 0.6
@@ -99,13 +101,10 @@ class FileBrowserTab(
             selected_path=lambda: self._selected_index_path(),
         )
 
+        # 走査ベースのモデル。``.``/``..`` は os.scandir が返さず、シンボリックリンクも
+        # 辿らない（``follow_symlinks=False``）ので、QFileSystemModel 時代の
+        # setFilter / setResolveSymlinks / setReadOnly に相当する設定は要らない。
         self._source_model = MediaFileSystemModel(self)
-        self._source_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
-        # シンボリックリンクの解決はエントリごとに実I/Oを伴う。サムネイルキーは
-        # 既に字句的な正規化（MediaFileSystemModel._resolve_key）で揃えているため、
-        # ここで辿る必要はない。
-        self._source_model.setResolveSymlinks(False)
-        self._source_model.setReadOnly(True)
 
         # 名前順/拡張子順の並べ替えはプロキシ側で制御し、UI からは従来どおり
         # ``self._model`` を QFileSystemModel と同じ感覚で扱えるようにする。

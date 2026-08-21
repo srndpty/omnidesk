@@ -114,7 +114,7 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         if not self._hidden_keys:
             return
         source = self._media_source()
-        remaining = {key for key in self._hidden_keys if source.index(key).isValid()}
+        remaining = {key for key in self._hidden_keys if source.index_for_path(key).isValid()}
         if remaining == self._hidden_keys:
             return
         self._hidden_keys = remaining
@@ -343,11 +343,14 @@ class SortedFileSystemModel(QSortFilterProxyModel):
     # QFileSystemModel 互換の転送（プロキシのインデックスを元モデルへ橋渡し）
     # ------------------------------------------------------------------
     def index(self, *args):  # type: ignore[override]
-        # QFileSystemModel.index(path, column=0) のパス版を透過させる。
+        # 呼び出し側が使っているパス版 index(path) を透過させる。
         if args and isinstance(args[0], str):
             path = args[0]
             column = args[1] if len(args) > 1 else 0
-            return self.mapFromSource(self._media_source().index(path, column))
+            source_index = self._media_source().index_for_path(path)
+            if column:
+                source_index = source_index.siblingAtColumn(column)
+            return self.mapFromSource(source_index)
         return super().index(*args)
 
     def fileInfo(self, index: QModelIndex):  # noqa: N802 - Qt-style API
@@ -409,16 +412,31 @@ class SortedFileSystemModel(QSortFilterProxyModel):
     def forget_failed_thumbnails(self) -> None:
         self._media_source().forget_failed_thumbnails()
 
+    def rescan(self) -> None:
+        """現在のディレクトリを読み直す。"""
+        self._media_source().refresh()
+
+    def stop_watching(self) -> None:
+        self._media_source().stop_watching()
+
+    def resume_watching(self) -> None:
+        self._media_source().resume_watching()
+
 
 def _build_entry_meta(source: MediaFileSystemModel, index: QModelIndex) -> EntryMeta:
-    """元モデルのインデックスから並べ替え用メタdataを作る。"""
-    info = source.fileInfo(index)
-    modified = info.lastModified()
-    mtime = modified.toMSecsSinceEpoch() if modified.isValid() else 0
+    """元モデルのインデックスから並べ替え用メタdataを作る。
+
+    値はすべて走査時に確定しているので、ここでファイルシステムへ触らない。
+    以前は行ごとに ``QFileInfo`` を作っており、大量ファイルのフォルダで
+    並べ替えのたびに実I/Oが発生していた。
+    """
+    entry = source.entry(index)
+    if entry is None:
+        return EntryMeta(is_dir=False, name="", suffix="", size=0, mtime=0)
     return EntryMeta(
-        is_dir=info.isDir(),
-        name=info.fileName(),
-        suffix=info.suffix(),
-        size=info.size(),
-        mtime=mtime,
+        is_dir=entry.is_dir,
+        name=entry.name,
+        suffix=entry.suffix,
+        size=entry.size,
+        mtime=entry.mtime_ms,
     )

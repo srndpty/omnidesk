@@ -189,9 +189,13 @@ def test_normalise_key_cache_is_cleared_on_navigation(tmp_path: Path) -> None:
 
 
 def test_thumbnail_change_only_notifies_item_data(qtbot, tmp_path: Path) -> None:
+    # フラットなモデルではルートディレクトリ自身が行にならないので、
+    # 通知対象は中のエントリにする。
+    target = tmp_path / "picture.png"
+    target.write_bytes(b"x")
     model = MediaFileSystemModel()
-    model.setRootPath(str(tmp_path))
-    qtbot.waitUntil(lambda: model.index(str(tmp_path)).isValid())
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
     data_changes: list[tuple[object, object, list[int]]] = []
     header_changes: list[tuple[Qt.Orientation, int, int]] = []
     model.dataChanged.connect(lambda first, last, roles: data_changes.append((first, last, roles)))
@@ -199,7 +203,7 @@ def test_thumbnail_change_only_notifies_item_data(qtbot, tmp_path: Path) -> None
         lambda orientation, first, last: header_changes.append((orientation, first, last))
     )
 
-    model._emit_thumbnail_changed(str(tmp_path))
+    model._emit_thumbnail_changed(model._normalise_key(target))
 
     assert len(data_changes) == 1
     assert data_changes[0][2] == [Qt.ItemDataRole.DecorationRole]
@@ -543,15 +547,24 @@ def test_cache_pixmap_for_edge_scales_down_large_pixmap() -> None:
     assert image.pixelColor(80, 0).alpha() == 0
 
 
-def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) -> None:
+def test_media_file_system_model_flags_for_invalid_and_directory(qtbot, tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
     model = MediaFileSystemModel()
-    invalid_flags = model.flags(model.index(""))
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
 
-    monkeypatch.setattr(model, "isDir", lambda index: True)
-    directory_flags = model.flags(model.index("C:/"))
+    invalid_flags = model.flags(model.index(""))
+    directory_flags = model.flags(model.index_for_path(tmp_path / "sub"))
+    file_flags = model.flags(model.index_for_path(tmp_path / "a.txt"))
 
     assert directory_flags & Qt.ItemFlag.ItemIsDragEnabled
+    # フォルダだけがドロップ先になる。
     assert directory_flags & Qt.ItemFlag.ItemIsDropEnabled
+    assert file_flags & Qt.ItemFlag.ItemIsDragEnabled
+    assert not (file_flags & Qt.ItemFlag.ItemIsDropEnabled)
+    # 名前列はF2のインプレースリネームのため編集可能。
+    assert file_flags & Qt.ItemFlag.ItemIsEditable
     assert invalid_flags is not None
 
 
@@ -1007,25 +1020,28 @@ def test_media_file_system_model_disables_custom_directory_icons() -> None:
     あると明記している。
     """
     model = MediaFileSystemModel()
-    provider = model.iconProvider()
 
-    assert provider is not None
-    assert provider.options() & QFileIconProvider.Option.DontUseCustomDirectoryIcons
+    assert model._icon_provider.options() & QFileIconProvider.Option.DontUseCustomDirectoryIcons
 
 
-def test_media_file_system_model_keeps_qt_owned_icon_provider() -> None:
-    """アイコンプロバイダを差し替えないこと。
+def test_media_file_system_model_caches_icons_per_extension(qtbot, tmp_path: Path) -> None:
+    """アイコンを拡張子ごとに1回だけ作って使い回すこと。
 
-    ``QFileSystemModel`` はプロバイダを所有せず、エントリごとの ``icon()`` を
-    バックグラウンドの ``QFileInfoGatherer`` スレッドから呼ぶ。Python側で生成した
-    インスタンスを渡すと、モデルの破棄と競合して先に解放され、タブを閉じた直後に
-    アクセス違反でプロセスごと落ちる。設定だけを載せて、寿命はQtに任せる。
+    エントリごとにシェルへ問い合わせると、大量ファイルのフォルダで描画が止まる。
     """
+    for index in range(3):
+        (tmp_path / f"f{index}.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "image.png").write_bytes(b"x")
+    (tmp_path / "sub").mkdir()
     model = MediaFileSystemModel()
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
 
-    # setIconProvider() は使わないので、モデルが最初から持つものと同一のまま。
-    assert model._icon_provider is not None
-    assert model._icon_provider.options() == model.iconProvider().options()
+    for row in range(model.rowCount()):
+        model.data(model.index(row, 0), Qt.ItemDataRole.DecorationRole)
+
+    # フォルダ(None)・txt・png の3種類だけ。txt が3件あっても1回。
+    assert set(model._type_icons) == {None, "txt", "png"}
 
 
 def test_media_file_system_model_reuses_folder_base_pixmap_per_edge() -> None:
@@ -1047,7 +1063,7 @@ def test_media_file_system_model_reuses_folder_base_pixmap_per_edge() -> None:
 
 
 def test_media_file_system_model_thumbnail_ready_does_not_stat_target(
-    monkeypatch, tmp_path: Path
+    monkeypatch, qtbot, tmp_path: Path
 ) -> None:
     """完成通知のたびに Path.is_dir() を呼ばないこと。
 
@@ -1062,6 +1078,11 @@ def test_media_file_system_model_thumbnail_ready_does_not_stat_target(
     monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda changed_key: None)
     monkeypatch.setattr(model, "_request_current_edge_if_needed", lambda *args: None)
 
+    # 行が存在する状態にしてから、Path.is_dir() を呼んだら落ちるようにする。
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
+    assert model.index_for_path(target).isValid()
+
     def fail_is_dir(self: Path) -> bool:
         raise AssertionError("完成通知の経路で Path.is_dir() を呼んではいけない")
 
@@ -1073,6 +1094,4 @@ def test_media_file_system_model_thumbnail_ready_does_not_stat_target(
     model._visible_keys.add(key)
     model._pending.add(key)
 
-    # index() が有効なら Path.is_dir() へフォールバックしない。
-    model.setRootPath(str(tmp_path))
     model._handle_thumbnail_ready(key, QIcon(pixmap), token.generation)

@@ -1,4 +1,9 @@
-"""QFileSystemModel variant with asynchronous media thumbnails."""
+"""走査ベースのディレクトリモデルに、非同期のメディアサムネイルを載せた版。
+
+土台は :class:`omnidesk.ui.directory_model.DirectoryModel`。``QFileSystemModel``
+から置き換えた理由（大量ファイルのフォルダでGUIスレッドが秒単位で止まる）は
+そちらのモジュールdocstringに書いてある。
+"""
 
 from __future__ import annotations
 
@@ -8,11 +13,12 @@ from contextlib import suppress
 from pathlib import Path
 from threading import Lock
 
-from PyQt6.QtCore import QMimeData, QModelIndex, QSize, Qt, QThreadPool
-from PyQt6.QtGui import QFileSystemModel, QIcon, QImage, QPainter, QPixmap
+from PyQt6.QtCore import QFileInfo, QMimeData, QModelIndex, QSize, Qt
+from PyQt6.QtGui import QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import QFileIconProvider
 
 from ..utils.thumbnail_cache import file_thumbnail_cache, folder_preview_cache
+from .directory_model import DirectoryEntry, DirectoryModel
 from .media_icon_provider import MediaThumbnailProvider
 from .qt_lifetime import own_by_application
 from .thumbnail_jobs import (
@@ -91,8 +97,27 @@ def cache_pixmap_for_edge(pixmap: QPixmap, edge: int) -> QPixmap:
     return canvas
 
 
-class MediaFileSystemModel(QFileSystemModel):
-    """Extends QFileSystemModel to provide cached media thumbnails."""
+def _make_icon_provider() -> QFileIconProvider:
+    """フォルダ個別アイコンを引かないアイコンプロバイダを作る。
+
+    ``DontUseCustomDirectoryIcons`` は、フォルダごとの独自アイコン
+    （Windowsでは ``desktop.ini`` の参照）を止めるQtの公式オプション。Qtの
+    ドキュメントも「ネットワークやリムーバブルドライブで大きな性能影響がある」と
+    明記している。
+
+    土台が ``QFileSystemModel`` だった頃は、プロバイダをエントリごとに
+    バックグラウンドの ``QFileInfoGatherer`` スレッドから呼ばれていたため、
+    Python側で作ったインスタンスを渡すと破棄と競合してプロセスごと落ちていた。
+    現在の土台（``DirectoryModel``）はアイコンを一切扱わず、ここでの参照は
+    ``data()`` からGUIスレッドでしか起きないので、自前で持って問題ない。
+    """
+    provider = QFileIconProvider()
+    provider.setOptions(QFileIconProvider.Option.DontUseCustomDirectoryIcons)
+    return provider
+
+
+class MediaFileSystemModel(DirectoryModel):
+    """``DirectoryModel`` に、キャッシュ付きのメディアサムネイルを足したモデル。"""
 
     # thumbnailUpdated = pyqtSignal(QModelIndex)
 
@@ -113,8 +138,9 @@ class MediaFileSystemModel(QFileSystemModel):
         self._generations: dict[str, int] = {}
         self._request_edges: dict[str, int] = {}
         self._allow_folder_preview_for_visible_targets = True
-        self.setReadOnly(False)
-        self._icon_provider = self._configure_icon_provider()
+        self._icon_provider = _make_icon_provider()
+        # 種別・拡張子ごとの汎用アイコン。エントリごとにシェルへ問い合わせない。
+        self._type_icons: dict[str | None, QIcon] = {}
         # フォルダプレビューの土台画像はエッジごとに1枚あれば足りる（下記参照）。
         self._folder_base_pixmaps: dict[int, QPixmap] = {}
         # ジョブはワーカースレッドで破棄されるため、シグナル用QObjectはジョブに
@@ -124,9 +150,6 @@ class MediaFileSystemModel(QFileSystemModel):
         self._job_signals.folder_scanned.connect(self._handle_folder_scan_result)
         self._job_signals.cache_loaded.connect(self._handle_cache_loaded)
         self._folder_scans: dict[str, FolderScanJob] = {}
-        scan_pool = QThreadPool.globalInstance()
-        assert scan_pool is not None
-        self._scan_pool = scan_pool
         self._cache_jobs: dict[str, CacheLoadJob] = {}
         self._cache_save_generations: dict[tuple[int, str, int], int] = {}
         self._cache_save_lock = Lock()
@@ -142,36 +165,11 @@ class MediaFileSystemModel(QFileSystemModel):
     def media_extensions(self) -> set[str]:
         return self._provider.media_extensions
 
-    def setRootPath(self, path: str) -> QModelIndex:  # noqa: N802 - Qt override
+    def setRootPath(self, path: str) -> QModelIndex:  # noqa: N802 - Qt-style API
         # シンボリックリンクの張り替えなどで正規化結果が古くなり得るため、
         # ディレクトリを移動するたびにキャッシュを捨てる。
         self._key_cache.clear()
         return super().setRootPath(path)
-
-    def _configure_icon_provider(self):
-        """モデルが持つアイコンプロバイダから、フォルダ個別アイコンの参照を外す。
-
-        ``DontUseCustomDirectoryIcons`` は、フォルダごとの独自アイコン
-        （Windowsでは ``desktop.ini`` の参照）を止めるQtの公式オプション。Qtの
-        ドキュメントも「ネットワークやリムーバブルドライブで大きな性能影響がある」と
-        明記しており、未訪問のフォルダが並ぶディレクトリで初回だけ大きく待たされる
-        主因になっていた（2回目以降はOS側のキャッシュが効くので速くなる）。
-
-        **自前で作ったプロバイダを ``setIconProvider()`` へ渡してはいけない。**
-        ``QFileSystemModel`` はプロバイダを所有せず、しかもエントリごとの ``icon()`` を
-        バックグラウンドの ``QFileInfoGatherer`` スレッドから呼ぶ。Python側が生成した
-        インスタンスはモデルの破棄と競合して先に解放され得るため、タブを閉じた直後に
-        アクセス違反でプロセスごと落ちる（``tests/test_qt_lifetime.py`` で再現した）。
-        Pythonのサブクラスにすると、さらにgathererスレッドから毎エントリPythonへ
-        入ることになり、GILをGUIスレッドと奪い合って高速化そのものを打ち消す。
-
-        ここではモデルが既に持っている（= Qtが寿命を管理する）プロバイダへ
-        オプションを設定するだけにする。
-        """
-        provider = self.iconProvider()
-        if provider is not None:
-            provider.setOptions(QFileIconProvider.Option.DontUseCustomDirectoryIcons)
-        return provider
 
     def set_thumbnail_edge(self, edge: int) -> None:
         self._thumbnail_edge = max(16, edge)
@@ -181,24 +179,45 @@ class MediaFileSystemModel(QFileSystemModel):
             logger.debug("[thumb:%s] %s %s", event, key, detail)
 
     # ------------------------------------------------------------------
-    def data(self, index, role):
-        if role == Qt.ItemDataRole.DecorationRole and index.isValid() and index.column() == 0:
-            file_info = self.fileInfo(index)
-            path_str = file_info.absoluteFilePath()
-            key = self._normalise_key(path_str)
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        """描画で使う値を返す。
 
-            if file_info.isFile():
-                cached = file_thumbnail_cache.get_memory(key, min_edge=self._thumbnail_edge)
-                if cached is not None:
-                    return cached
-            elif file_info.isDir():
-                cached = folder_preview_cache.get_memory(key, min_edge=self._thumbnail_edge)
-                if cached is not None:
-                    return cached
+        描画経路なので、ここでファイルシステムへ触ってはいけない。必要な情報は
+        すべて走査時に確定した :class:`DirectoryEntry` から取る。
+        """
+        if role != Qt.ItemDataRole.DecorationRole or index.column() != 0:
+            return super().data(index, role)
 
-        # リクエストのロジックは prioritize_thumbnail_requests に移譲されたので、
-        # ここではキャッシュになければ常にデフォルトアイコンを返す
-        return super().data(index, role)
+        entry = self.entry(index)
+        if entry is None:
+            return None
+
+        # サムネイルはメモリキャッシュにあるときだけ返す。生成のリクエストは
+        # set_visible_thumbnail_targets が担当する。
+        cache = self._cache_for_info(entry.is_dir)
+        cached = cache.get_memory(entry.key, min_edge=self._thumbnail_edge)
+        if cached is not None:
+            return cached
+        return self._type_icon(entry)
+
+    def _type_icon(self, entry: DirectoryEntry) -> QIcon:
+        """種別・拡張子ごとの汎用アイコンを、1回だけ作って使い回す。
+
+        エントリごとにシェルへ問い合わせると、大量ファイルのフォルダで描画が
+        止まる。拡張子が同じなら見た目も同じなので、拡張子単位で足りる。
+        """
+        cache_key = None if entry.is_dir else entry.suffix
+        cached = self._type_icons.get(cache_key)
+        if cached is None:
+            cached = self._icon_provider.icon(QFileInfo(entry.path))
+            if cached.isNull():
+                cached = self._icon_provider.icon(
+                    QFileIconProvider.IconType.Folder
+                    if entry.is_dir
+                    else QFileIconProvider.IconType.File
+                )
+            self._type_icons[cache_key] = cached
+        return cached
 
     def _new_token(self, key: str) -> CancellationToken:
         generation = self._generations.get(key, 0) + 1
@@ -268,16 +287,15 @@ class MediaFileSystemModel(QFileSystemModel):
         ordered: list[tuple[str, Path, bool]] = []
         seen: set[str] = set()
         for index in indexes:
-            if not index.isValid():
+            # 走査時に確定した情報だけを使う。QFileInfo を作ると可視アイテム数ぶんの
+            # 実I/Oが描画のたびにGUIスレッドで走る。
+            entry = self.entry(index)
+            if entry is None:
                 continue
-            source = index.siblingAtColumn(0)
-            file_info = self.fileInfo(source)
-            path = Path(file_info.absoluteFilePath())
-            key = self._normalise_key(path)
-            if key in seen:
+            if entry.key in seen:
                 continue
-            seen.add(key)
-            ordered.append((key, path, file_info.isDir()))
+            seen.add(entry.key)
+            ordered.append((entry.key, Path(entry.path), entry.is_dir))
 
         new_visible = seen
         for key in self._visible_keys - new_visible:
@@ -316,7 +334,7 @@ class MediaFileSystemModel(QFileSystemModel):
         cache = self._cache_for_info(is_dir)
         if cache.get_memory(key, min_edge=self._thumbnail_edge) is not None:
             self._debug("memory-hit", key)
-            index = self.index(key)
+            index = self.index_for_path(key)
             if index.isValid():
                 self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
             return False
@@ -410,9 +428,9 @@ class MediaFileSystemModel(QFileSystemModel):
         """Given a list of indexes, return their absolute file paths."""
         paths = []
         for index in indexes:
-            if index.isValid():
-                file_info = self.fileInfo(index)
-                paths.append(file_info.absoluteFilePath())
+            entry = self.entry(index)
+            if entry is not None:
+                paths.append(entry.path)
         return paths
 
     # ------------------------------------------------------------------
@@ -420,7 +438,7 @@ class MediaFileSystemModel(QFileSystemModel):
         norm_key = key or self._normalise_key(path)
 
         if file_thumbnail_cache.get_memory(norm_key, min_edge=self._thumbnail_edge) is not None:
-            idx = self.index(norm_key)
+            idx = self.index_for_path(norm_key)
             if idx.isValid():
                 self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
             return
@@ -495,11 +513,12 @@ class MediaFileSystemModel(QFileSystemModel):
         self._failed.discard(key)
 
         target_path = Path(key)
-        folder_index = self.index(key)
-        # 種別はモデルが把握している情報から決める。以前は Path.is_dir() を
-        # （しかも同じ関数内で2回）呼んでおり、サムネイルが1件完成するたびに
-        # GUIスレッドで実I/Oが走っていた。7,500件のフォルダでは無視できない。
-        is_dir = self.isDir(folder_index) if folder_index.isValid() else target_path.is_dir()
+        folder_index = self.index_for_path(key)
+        # 種別は走査時に確定した情報から決める。以前は Path.is_dir() を（しかも
+        # 同じ関数内で2回）呼んでおり、サムネイルが1件完成するたびにGUIスレッドで
+        # 実I/Oが走っていた。7,500件のフォルダでは無視できない。
+        entry = self.entry(folder_index)
+        is_dir = entry.is_dir if entry is not None else target_path.is_dir()
 
         if is_dir:
             if not folder_index.isValid():
@@ -638,7 +657,7 @@ class MediaFileSystemModel(QFileSystemModel):
             return True
 
     def _emit_thumbnail_changed(self, key: str) -> None:
-        index = self.index(key)
+        index = self.index_for_path(key)
         if index.isValid():
             self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
 
