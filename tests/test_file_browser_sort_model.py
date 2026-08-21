@@ -369,22 +369,85 @@ def test_hidden_rows_are_released_when_the_source_model_drops_them(qtbot, tmp_pa
     qtbot.waitUntil(lambda: "b.txt" in _visible_names(tab), timeout=5000)
 
 
-def test_hidden_rows_are_released_by_the_safety_timer(qtbot, tmp_path: Path) -> None:
-    """元モデルが追いつかなくても、伏せたまま取り残されないこと。"""
+def test_safety_timer_asks_for_a_rescan_instead_of_unhiding(qtbot, tmp_path: Path) -> None:
+    """決着がつかないとき、経過時間で伏せる指定を解除しないこと。
+
+    元モデルの再走査が遅い（UNC、スピンダウンした外付け、遅いファイルサーバー）と、
+    時間で解除する実装では削除済みのファイルが画面に戻り、走査が終わってから
+    また消える、というちらつきになる。解除の判断は走査結果に委ねる。
+    """
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+    target = tmp_path / "b.txt"
+    # 削除は成功したが、元モデルの再走査がまだ届かない状況を作る。
+    tab._source_model.stop_watching()
+    target.unlink()
+    tab._model.hide_removed_paths([target])
+    assert "b.txt" not in _visible_names(tab)
+    rescans: list[bool] = []
+    tab._source_model.refresh = lambda: rescans.append(True)
+
+    tab._model._hidden_release_timer.setInterval(0)
+    tab._model._hidden_release_timer.start()
+    qtbot.waitUntil(lambda: bool(rescans), timeout=3000)
+
+    # 走査をやり直させるだけで、伏せた行は戻さない。
+    assert "b.txt" not in _visible_names(tab)
+    assert tab._model._hidden_keys
+
+
+def test_hidden_rows_are_released_once_a_later_scan_reports(qtbot, tmp_path: Path) -> None:
+    """伏せたあとに始まった走査が終われば、伏せる指定を解除すること。
+
+    走査に残っているエントリは本当に残っている（削除に失敗した、作り直された）。
+    """
     _make_files(tmp_path)
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
     _wait_for_entries(qtbot, tab, 5)
 
-    # ファイルは消さずに伏せるだけ（元モデルは rowsRemoved を出さない）。
+    # ファイルは消さずに伏せるだけ（＝削除に失敗した状況）。
     tab._model.hide_removed_paths([tmp_path / "b.txt"])
     assert "b.txt" not in _visible_names(tab)
 
-    tab._model._hidden_release_timer.setInterval(0)
-    tab._model._hidden_release_timer.start()
+    tab._source_model.refresh()
 
-    qtbot.waitUntil(lambda: "b.txt" in _visible_names(tab), timeout=3000)
+    qtbot.waitUntil(lambda: "b.txt" in _visible_names(tab), timeout=5000)
+    assert not tab._model._hidden_keys
+
+
+def test_a_scan_started_before_hiding_does_not_release_hidden_rows(qtbot, tmp_path: Path) -> None:
+    """伏せる前に始まった走査の結果を、解除の根拠にしないこと。
+
+    その走査はまだ削除前の状態を見ている可能性がある。判定は世代の比較だけで
+    決まるので、実際の走査の速さに左右されないよう世代を直接与えて確かめる。
+    """
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+    tab._source_model.stop_watching()
+    tab._model.hide_removed_paths([tmp_path / "b.txt"])
+    hidden_at = tab._model._hidden_since_generation
+
+    # 伏せた時点と同じ世代（＝伏せる前に始まっていた走査）の完了。
+    tab._source_model._last_completed_generation = hidden_at
+    tab._model._reconcile_hidden_rows()
+
+    assert tab._model._hidden_keys
+    assert "b.txt" not in _visible_names(tab)
+
+    # 伏せたあとに始まった走査の完了なら、根拠になる。
+    tab._source_model._last_completed_generation = hidden_at + 1
+    tab._model._reconcile_hidden_rows()
+
+    assert not tab._model._hidden_keys
+    assert "b.txt" in _visible_names(tab)
 
 
 def test_navigating_away_clears_hidden_rows(qtbot, tmp_path: Path) -> None:

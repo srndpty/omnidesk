@@ -531,3 +531,38 @@ def test_resume_watching_restores_the_watch_after_stop(qtbot, tmp_path: Path) ->
 
     model.resume_watching()
     assert model._watcher.directories() == [str(tmp_path)]
+
+
+def test_late_directory_changed_after_stop_watching_does_not_rescan(qtbot, tmp_path: Path) -> None:
+    """監視を止めたあとに届いた変更通知で、走査を起こさないこと。
+
+    ``stop_watching()`` の時点で Qt 側に配送待ちの通知が残っていることがある。
+    watcher を外しただけではそれが届き、非表示のタブで走査が1回走ってしまう。
+    """
+    _make_tree(tmp_path)
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    model.stop_watching()
+    generation_before = model._generation
+
+    # 配送待ちだった通知が、いま届いたとする。
+    model._handle_directory_changed(str(tmp_path))
+
+    assert not model._watch_timer.isActive()
+    assert model._generation == generation_before
+
+
+def test_stopping_watching_during_the_debounce_cancels_the_rescan(qtbot, tmp_path: Path) -> None:
+    """デバウンス待ちの間に監視が止められたら、走査を起こさないこと。"""
+    _make_tree(tmp_path)
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    model._handle_directory_changed(str(tmp_path))
+    assert model._watch_timer.isActive()
+    generation_before = model._generation
+
+    model.stop_watching()
+    # タイマーが止まっていても、直接発火させて二重ガードを確かめる。
+    model._rescan_current_root()
+
+    assert model._generation == generation_before

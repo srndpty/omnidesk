@@ -151,8 +151,11 @@ def _delete_paths_individually(
     1件ごとにシェル操作が走るので、1件ごとにキャンセルを見る。
     """
     errors: list[str] = []
-    for index, path in enumerate(targets):
-        if is_cancelled is not None and index and is_cancelled():
+    for path in targets:
+        # まとめての呼び出しは中断できないので、その実行中にキャンセルされる窓がある。
+        # ここへ来た時点で既にキャンセル済みのことがあるため、1件目から確認する
+        # （契約は「キャンセル後に新しい対象の削除を開始しない」）。
+        if is_cancelled is not None and is_cancelled():
             return errors, True
         if not os.path.lexists(path):
             # まとめての呼び出しで移動できていた分。

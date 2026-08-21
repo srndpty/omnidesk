@@ -517,10 +517,45 @@ def test_delete_paths_batch_failure_does_not_stop_later_batches(
     assert not any(path.exists() for path in paths)
 
 
-def test_individual_retry_after_a_failed_batch_can_be_cancelled(
+def test_cancelling_during_a_batch_stops_before_the_individual_retry_deletes_anything(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    """バッチ失敗後の1件ずつの再試行も、途中で中断できること。
+    """まとめての呼び出し中にキャンセルされたら、1件も追加で消さないこと。
+
+    まとめての呼び出し自体は中断できないので、その実行中にキャンセルされる窓がある。
+    失敗して1件ずつの再試行へ入るとき、既にキャンセル済みなのに1件目だけ消して
+    しまうと「キャンセル後に新しい対象の削除を開始しない」という契約が破れる。
+    """
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"f{index}.txt"
+        path.write_text("x", encoding="utf-8")
+        paths.append(path)
+    cancelled = False
+    individually_deleted: list[str] = []
+
+    def fake_send2trash(target):
+        nonlocal cancelled
+        if isinstance(target, list):
+            # まとめての呼び出しの最中にキャンセルされ、そのあと失敗する。
+            cancelled = True
+            raise OSError("batch failed")
+        individually_deleted.append(target)
+        Path(target).unlink()
+
+    mocker.patch("omnidesk.ui.file_operations.send2trash", side_effect=fake_send2trash)
+
+    result = delete_paths_with_result(paths, is_cancelled=lambda: cancelled)
+
+    assert result.cancelled is True
+    assert individually_deleted == []
+    assert all(path.exists() for path in paths)
+
+
+def test_individual_retry_after_a_failed_batch_can_be_cancelled_midway(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """1件ずつの再試行の途中でも中断できること。
 
     ここは1件ごとにシェル操作が走る最も遅い経路で、以前はキャンセルを一度も
     見ずに最大 TRASH_BATCH_SIZE 件を走り切っていた。
@@ -540,11 +575,7 @@ def test_individual_retry_after_a_failed_batch_can_be_cancelled(
 
     mocker.patch("omnidesk.ui.file_operations.send2trash", side_effect=fake_send2trash)
 
-    def is_cancelled() -> bool:
-        # 事前の検証ループでは通し、1件消えたところで中断させる。
-        return len(deleted) >= 2
-
-    result = delete_paths_with_result(paths, is_cancelled=is_cancelled)
+    result = delete_paths_with_result(paths, is_cancelled=lambda: len(deleted) >= 2)
 
     assert result.cancelled is True
     assert len(deleted) == 2

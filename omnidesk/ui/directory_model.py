@@ -233,6 +233,7 @@ class DirectoryModel(QAbstractTableModel):
         # カレントディレクトリになってしまうので、番兵として別扱いにする。
         self._root_key = ""
         self._generation = 0
+        self._last_completed_generation = 0
         self._entry_ids = _entry_id_sequence()
         self._locale = QLocale()
         self._type_names: dict[str, str] = {}
@@ -429,6 +430,21 @@ class DirectoryModel(QAbstractTableModel):
         if self._root_path:
             self._start_scan()
 
+    @property
+    def scan_generation(self) -> int:
+        """最後に**開始した**走査の世代。"""
+        return self._generation
+
+    @property
+    def last_completed_scan_generation(self) -> int:
+        """最後に**反映を終えた**走査の世代。
+
+        「ある時点より後に始まった走査が終わったか」を判定するために使う。
+        ある時刻を根拠に状態を決めるのではなく、走査の完了を根拠にしたい箇所で
+        突き合わせる（:meth:`SortedFileSystemModel.hide_removed_paths` 参照）。
+        """
+        return self._last_completed_generation
+
     # ------------------------------------------------------------------
     # 走査
     # ------------------------------------------------------------------
@@ -450,11 +466,13 @@ class DirectoryModel(QAbstractTableModel):
             return
         if error is not None:
             self._apply_entries([])
+            self._last_completed_generation = generation
             self.scanFailed.emit(path, str(error))
             self.directoryLoaded.emit(path)
             return
         assert isinstance(entries, list)
         self._apply_entries(entries)
+        self._last_completed_generation = generation
         self._watch_current_root()
         self.directoryLoaded.emit(path)
 
@@ -533,11 +551,16 @@ class DirectoryModel(QAbstractTableModel):
 
     def _handle_directory_changed(self, path: str) -> None:
         _ = path
+        # ``stop_watching()`` の時点で Qt 側に配送待ちの通知が残っていることがある。
+        # watcher を外しただけではそれが届いてしまい、非表示のタブで走査が1回走る。
+        if not self._watching_enabled:
+            return
         # 1回の削除操作でも対象1件ごとに通知が飛ぶ。走査を1回にまとめる。
         self._watch_timer.start()
 
     def _rescan_current_root(self) -> None:
-        if self._root_path:
+        # デバウンス待ちの間に監視が止められた場合に備えて、ここでも見る。
+        if self._watching_enabled and self._root_path:
             self._start_scan()
 
     def stop_watching(self) -> None:

@@ -1,8 +1,8 @@
 """名前順/拡張子順の並べ替えを担うプロキシモデル。
 
-``QFileSystemModel`` はネイティブには「拡張子順」の並べ替えを持たないため、
-:class:`SortedFileSystemModel` を ``MediaFileSystemModel`` の上に被せ、表示順だけを
-制御する。プロキシは元モデルとほぼ同じ API を転送するので、タブ側のコントローラは
+元モデル（:class:`omnidesk.ui.directory_model.DirectoryModel` 系）は走査順のまま
+行を保持するので、名前順・拡張子順・列ごとの並べ替えはこのプロキシが受け持つ。
+プロキシは元モデルとほぼ同じ API を転送するので、タブ側のコントローラは
 ``self._model`` をそのまま使い続けられる（呼び出し箇所の大規模改修が不要）。
 
 比較ロジック自体は Qt 非依存の :mod:`omnidesk.ui.file_browser_sort` に置き、
@@ -35,9 +35,9 @@ logger = logging.getLogger(__name__)
 # これを超える並べ替えは体感でひっかかる。再発時に原因を特定できるよう記録する。
 SLOW_SORT_WARNING_MS = 200
 
-# 伏せた行を強制的に戻すまでの猶予。元モデルが再走査を終えれば通常はもっと早く
-# 解除されるが、伏せたまま取り残されないための保険。
-HIDDEN_ROW_RELEASE_MS = 5_000
+# 伏せた行の決着がつかないまま経過したら、元モデルへ再走査を促すまでの猶予。
+# 「時間が経ったから戻す」ではなく「走査をやり直させて、その結果で決める」。
+HIDDEN_ROW_RECONCILE_MS = 5_000
 
 
 class SortedFileSystemModel(QSortFilterProxyModel):
@@ -55,9 +55,9 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         # sort() では常に昇順で親クラスを呼び、昇順/降順は lessThan 内で自前処理する。
         # こうするとフォルダ優先が降順でも崩れない。
         self._descending = False
-        # 比較のたびに QFileInfo を作り直すと、大量ファイルのフォルダで GUI スレッドが
-        # 固まる（1 回の並べ替えで O(N log N) 回の比較 × 2 個の QFileInfo）。
-        # ソース行ごとのメタdataをキャッシュし、実体の生成を要素数ぶんに抑える。
+        # 比較のたびにメタdataを組み立て直すと、大量ファイルのフォルダで GUI スレッドが
+        # 固まる（1 回の並べ替えで O(N log N) 回の比較）。ソース行ごとにキャッシュし、
+        # 生成を要素数ぶんに抑える。
         self._meta_cache: dict[int, EntryMeta] = {}
         # 比較用のソートキーもキャッシュする。列や並べ替え方式が変わると
         # キーの意味が変わるため、その組み合わせを signature として持つ。
@@ -67,10 +67,15 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         self._hidden_keys: set[str] = set()
         # 全行のパス正規化を避けるための、名前だけの事前フィルタ。
         self._hidden_names: set[str] = set()
+        # 伏せた行がいつまでも決着しない場合に、再走査を促すためのタイマー。
+        # ここで直接戻すことはしない（下記 _request_hidden_row_reconciliation 参照）。
         self._hidden_release_timer = QTimer(self)
         self._hidden_release_timer.setSingleShot(True)
-        self._hidden_release_timer.setInterval(HIDDEN_ROW_RELEASE_MS)
-        self._hidden_release_timer.timeout.connect(self._release_hidden_rows)
+        self._hidden_release_timer.setInterval(HIDDEN_ROW_RECONCILE_MS)
+        self._hidden_release_timer.timeout.connect(self._request_hidden_row_reconciliation)
+        # 伏せた時点の走査世代。これより後に始まった走査の結果だけが、
+        # 伏せた行の扱いを決める根拠になる。
+        self._hidden_since_generation = 0
         self.setDynamicSortFilter(True)
 
     # ------------------------------------------------------------------
@@ -79,14 +84,13 @@ class SortedFileSystemModel(QSortFilterProxyModel):
     def hide_removed_paths(self, paths: Iterable[Path]) -> int:
         """削除済みと確定したパスを、元モデルを待たずに伏せる。
 
-        ``QFileSystemModel`` は ``QFileSystemWatcher`` の通知を受けてから
-        ディレクトリを再走査するため、行が実際に消えるまで待たされる。7,500件の
-        フォルダで実測950ms（30件では46ms）で、件数に比例する。ユーザーから見ると
-        「OKを押したのに1秒近く反映されない」というラグになる。エクスプローラーは
-        自分で削除したので通知を待たずに消しており、そこの差がそのまま出ていた。
+        元モデルはディレクトリの変更通知を受けてから走査し直すため、行が実際に
+        消えるまで待ちが入る。エクスプローラーは自分で削除したので通知を待たずに
+        消しており、そこの差が「OKを押したのに反映されない」というラグになる。
 
-        削除はこちらが実行して結果も確認済みなので、再走査を待つ理由はない。
-        フィルタで伏せておき、元モデルが追いついた時点で解除する。
+        削除はこちらが実行して結果も確認済みなので、待つ理由はない。フィルタで
+        伏せておき、伏せたあとに始まった走査が終わった時点で解除する
+        （:meth:`_reconcile_hidden_rows`）。
 
         戻り値は実際に伏せた件数。
         """
@@ -94,11 +98,44 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         keys = {navigation_key(path) for path in targets} - self._hidden_keys
         if not keys:
             return 0
+        if not self._hidden_keys:
+            # 伏せ始めた時点の世代を覚える。これより後に始まった走査の結果だけが
+            # 「本当に消えたのか」の判断材料になる（下記 _reconcile_hidden_rows）。
+            self._hidden_since_generation = self._media_source().scan_generation
         self._hidden_keys |= keys
         self._hidden_names |= {os.path.normcase(path.name) for path in targets}
         self.invalidateFilter()
         self._hidden_release_timer.start()
         return len(keys)
+
+    def _reconcile_hidden_rows(self) -> None:
+        """走査が終わったので、伏せた行の扱いを走査結果で決める。
+
+        走査は元モデルの現状そのものなので、そこに残っているエントリは
+        「本当に残っている」（削除に失敗した、あるいは作り直された）。消えたものは
+        既に ``rowsRemoved`` 経由で伏せる指定から落ちている。どちらにせよ、
+        伏せ続ける理由はここで無くなる。
+
+        伏せ始めたあとに**開始された**走査でなければ根拠にしない。伏せる直前から
+        走っていた走査は、まだ削除前の状態を見ている可能性がある。
+        """
+        if not self._hidden_keys:
+            return
+        if self._media_source().last_completed_scan_generation <= self._hidden_since_generation:
+            return
+        self._release_hidden_rows()
+
+    def _request_hidden_row_reconciliation(self) -> None:
+        """伏せた行の決着がつかないまま時間が経ったら、走査をやり直させる。
+
+        以前はここで無条件に伏せる指定を解除していたが、それは経過時間を正しさの
+        根拠にしていることになる。元モデルの再走査が遅いとき（UNC、スピンダウンした
+        外付け、遅いファイルサーバー）、削除済みのファイルが画面に戻り、走査が
+        終わってからまた消える、というちらつきになる。解除の判断は走査結果に委ねる。
+        """
+        if not self._hidden_keys:
+            return
+        self._media_source().refresh()
 
     def _release_hidden_rows(self) -> None:
         """伏せた行の指定を解除する（元モデルが追いついた／保険の時間切れ）。"""
@@ -149,6 +186,7 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         previous = self.sourceModel()
         if isinstance(previous, MediaFileSystemModel):
             previous.directoryLoaded.disconnect(self.directoryLoaded)
+            previous.directoryLoaded.disconnect(self._reconcile_hidden_rows)
             previous.modelReset.disconnect(self._clear_meta_cache)
             previous.rowsAboutToBeRemoved.disconnect(self._handle_source_rows_about_to_be_removed)
             previous.rowsRemoved.disconnect(self._handle_source_rows_removed)
@@ -160,6 +198,7 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         super().setSourceModel(source)
         if isinstance(source, MediaFileSystemModel):
             source.directoryLoaded.connect(self.directoryLoaded)
+            source.directoryLoaded.connect(self._reconcile_hidden_rows)
             source.modelReset.connect(self._clear_meta_cache)
             source.rowsAboutToBeRemoved.connect(self._handle_source_rows_about_to_be_removed)
             source.rowsRemoved.connect(self._handle_source_rows_removed)
@@ -180,10 +219,11 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         「ノードが消えると internalId が別のエントリへ再利用され得る」問題は
         起こらない（古い id がキャッシュに残らないため）。
 
-        以前はその再利用を警戒して毎回すべて捨てていたが、``QFileSystemModel`` は
-        削除を1件ずつ通知してくる。7,500件のフォルダで14件消すと全捨てが14回走り、
-        そのたびに全件の ``QFileInfo`` とソートキーを作り直して、GUIスレッドが
-        1.8秒止まっていた。
+        以前はその再利用を警戒して毎回すべて捨てていた。土台が ``QFileSystemModel``
+        だった頃は削除が1件ずつ通知されるため、7,500件のフォルダで14件消すと全捨てが
+        14回走り、そのたびに全件のソートキーを作り直してGUIスレッドが1.8秒止まって
+        いた。現在の元モデルは差分をまとめて通知するが、消える行だけ落とす方が
+        安いことに変わりはない。
         """
         self._drop_cached_rows(parent, first, last)
 
@@ -214,8 +254,9 @@ class SortedFileSystemModel(QSortFilterProxyModel):
             self._key_cache.pop(entry_id, None)
 
     # ``rowsInserted`` は意図的に接続していない。キャッシュのキーである
-    # ``internalId()`` は ``QFileSystemModel`` の内部ノードのアドレスで、
-    # 生存中のノードのアドレスが別のエントリへ割り当てられることはない。
+    # ``internalId()`` は元モデルが行ごとに配る使い回さないID
+    # （``DirectoryEntry.entry_id``）で、生きている行の値が別のエントリへ
+    # 割り当てられることはない。
     # したがって、
     #   * ノードが消える経路（rowsAboutToBeRemoved / modelReset / setRootPath）
     #   * 中身が変わる経路（dataChanged）
@@ -231,11 +272,10 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         これを無視しないと、サムネイル生成のたびにキャッシュが飛んでしまう。
 
         捨てるのは通知された行だけにする。ファイルを削除すると
-        ``QFileSystemModel`` がディレクトリを再走査し、その間 ``dataChanged`` が
-        何度も飛ぶ。毎回すべて捨てると、そのあとの並べ替えで 7,500 件ぶんの
-        ``QFileInfo`` とソートキーを作り直すことになり、GUIスレッドが止まる
-        （14件削除で1.6秒のストールを2回計測）。``internalId`` は行が生きている
-        限り安定なので、行単位で落として問題ない。
+        元モデルがディレクトリを走査し直し、中身が変わった行を通知してくる。
+        毎回すべて捨てると、そのあとの並べ替えで全件ぶんのソートキーを作り直す
+        ことになる。``internalId`` は行が生きている限り安定なので、行単位で
+        落として問題ない。
         """
         if roles and all(role == Qt.ItemDataRole.DecorationRole for role in roles):
             return
@@ -340,7 +380,7 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         return prepared
 
     # ------------------------------------------------------------------
-    # QFileSystemModel 互換の転送（プロキシのインデックスを元モデルへ橋渡し）
+    # 元モデルへの転送（プロキシのインデックスを元モデルへ橋渡し）
     # ------------------------------------------------------------------
     def index(self, *args):  # type: ignore[override]
         # 呼び出し側が使っているパス版 index(path) を透過させる。
@@ -427,8 +467,8 @@ def _build_entry_meta(source: MediaFileSystemModel, index: QModelIndex) -> Entry
     """元モデルのインデックスから並べ替え用メタdataを作る。
 
     値はすべて走査時に確定しているので、ここでファイルシステムへ触らない。
-    以前は行ごとに ``QFileInfo`` を作っており、大量ファイルのフォルダで
-    並べ替えのたびに実I/Oが発生していた。
+    土台が ``QFileSystemModel`` だった頃は行ごとに ``QFileInfo`` を作っており、
+    大量ファイルのフォルダでは並べ替えのたびに実I/Oが発生していた。
     """
     entry = source.entry(index)
     if entry is None:
