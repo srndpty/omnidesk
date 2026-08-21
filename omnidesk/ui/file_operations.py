@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -15,6 +15,10 @@ from send2trash import send2trash
 from omnidesk.utils.config import DEFAULT_CONFIG_DIR
 
 logger = logging.getLogger(__name__)
+
+# ゴミ箱へまとめて送るときの1回あたりの件数。1回のシェル呼び出しは中断できないため、
+# 「呼び出し回数を減らす」と「キャンセルできる粒度を残す」の折り合いを取る値。
+TRASH_BATCH_SIZE = 256
 
 FileOperationMode = Literal["copy", "move", "delete"]
 
@@ -79,8 +83,11 @@ def delete_paths_with_result(
     繰り返され、その間ずっと表示が落ち着かない。1回にまとめれば、どちらも1回で済む。
 
     まとめての呼び出しが失敗したときだけ、どの対象が原因かを示すために1件ずつ
-    再試行する。まとめての呼び出しは中断できないため、キャンセル判定は事前の
-    検証ループでのみ効く。
+    再試行する。
+
+    1回のシェル呼び出し自体は中断できないので、``TRASH_BATCH_SIZE`` 件ずつに
+    区切って、その境目でキャンセルを見る。通常の選択数なら呼び出しは1回で済み、
+    巨大な選択でも中断できる粒度が残る。
     """
     errors: list[str] = []
     changed_dirs: list[Path] = []
@@ -103,18 +110,25 @@ def delete_paths_with_result(
     if not targets:
         return FileOperationResult(errors, changed_dirs)
 
-    try:
-        send2trash([str(path) for path in targets])
-    except Exception:  # pragma: no cover - send2trash/backend dependent
-        logger.warning(
-            "まとめてのゴミ箱移動に失敗しました。原因を特定するため1件ずつ再試行します",
-            exc_info=True,
-        )
-        errors.extend(_delete_paths_individually(targets, changed_dirs))
-        return FileOperationResult(errors, changed_dirs)
-
-    changed_dirs.extend(path.parent for path in targets)
+    for chunk in _chunked(targets, TRASH_BATCH_SIZE):
+        if is_cancelled is not None and is_cancelled():
+            return FileOperationResult(errors, changed_dirs, cancelled=True)
+        try:
+            send2trash([str(path) for path in chunk])
+        except Exception:  # pragma: no cover - send2trash/backend dependent
+            logger.warning(
+                "まとめてのゴミ箱移動に失敗しました。原因を特定するため1件ずつ再試行します",
+                exc_info=True,
+            )
+            errors.extend(_delete_paths_individually(chunk, changed_dirs))
+            continue
+        changed_dirs.extend(path.parent for path in chunk)
     return FileOperationResult(errors, changed_dirs)
+
+
+def _chunked(paths: list[Path], size: int) -> Iterator[list[Path]]:
+    for start in range(0, len(paths), size):
+        yield paths[start : start + size]
 
 
 def _delete_paths_individually(targets: list[Path], changed_dirs: list[Path]) -> list[str]:

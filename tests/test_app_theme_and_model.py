@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from PyQt6.QtCore import QMimeData, QSize, Qt, QUrl
+from PyQt6.QtCore import QFileInfo, QMimeData, QSize, Qt, QUrl
 from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QFileIconProvider
 
@@ -1040,8 +1040,39 @@ def test_media_file_system_model_caches_icons_per_extension(qtbot, tmp_path: Pat
     for row in range(model.rowCount()):
         model.data(model.index(row, 0), Qt.ItemDataRole.DecorationRole)
 
-    # フォルダ(None)・txt・png の3種類だけ。txt が3件あっても1回。
-    assert set(model._type_icons) == {None, "txt", "png"}
+    # フォルダ・txt・png の3種類だけ。txt が3件あっても1回。
+    assert set(model._type_icons) == {model_module._FOLDER_ICON_KEY, "txt", "png"}
+
+
+def test_media_file_system_model_does_not_share_icons_between_executables(
+    qtbot, tmp_path: Path
+) -> None:
+    """ファイルごとに絵が違う拡張子で、1つ目のアイコンを使い回さないこと。
+
+    ``a.exe`` と ``b.exe`` は別々の埋め込みアイコンを持てる。拡張子単位で
+    キャッシュすると、まったく別のアプリのアイコンを表示してしまう。
+    """
+    for name in ("a.exe", "b.exe", "shortcut.lnk", "notes.txt"):
+        (tmp_path / name).write_bytes(b"x")
+    model = MediaFileSystemModel()
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
+    looked_up: list[object] = []
+    original = model._icon_provider.icon
+    model._icon_provider.icon = lambda arg: looked_up.append(arg) or original(arg)
+
+    for row in range(model.rowCount()):
+        model.data(model.index(row, 0), Qt.ItemDataRole.DecorationRole)
+
+    # exe / lnk は種別の汎用アイコンへ寄せる（パスからは引かない）。
+    assert not any(
+        isinstance(arg, QFileInfo) and arg.suffix() in ("exe", "lnk") for arg in looked_up
+    )
+    assert model_module._GENERIC_FILE_ICON_KEY in model._type_icons
+    assert "exe" not in model._type_icons
+    assert "lnk" not in model._type_icons
+    # 関連付けで決まる拡張子は従来どおり拡張子単位。
+    assert "txt" in model._type_icons
 
 
 def test_media_file_system_model_reuses_folder_base_pixmap_per_edge() -> None:

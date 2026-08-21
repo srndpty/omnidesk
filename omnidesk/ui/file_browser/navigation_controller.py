@@ -191,10 +191,12 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         self._sort_refresh_controller.begin_refresh_sort(self._pending_selection_path or selected)
         target = self._current_path
         if force:
-            # 走査は非同期なので、結果が届いてから選択を戻す。
-            self._model.rescan()
+            # 走査はワーカースレッドで走る。並べ替えと選択復元は、走査結果が
+            # モデルへ反映されてから（directoryLoaded を受けてから）行う。
+            # タイマーは、通知が来なかった場合に保留を残さないための保険。
             self._deferred_refresh_target = target
             self._deferred_refresh_timer.start()
+            self._model.rescan()
             return
         self._complete_refresh(target, force=False)
 
@@ -203,6 +205,7 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         self._deferred_refresh_target = None
         if target is None:
             return
+        self._deferred_refresh_timer.stop()
         # 遅延経路へ来るのは force=True のときだけ（走査を投げた直後）。
         self._complete_refresh(target, force=True)
 
@@ -281,6 +284,10 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
     # ------------------------------------------------------------------
 
     def _on_directory_loaded(self, _: str) -> None:
+        # 明示的な再読込（F5）は、走査結果が反映されたこの時点で仕上げる。
+        # 時間で待つと、走査が遅いときに古い一覧のまま並べ替えと選択復元が走る。
+        if self._deferred_refresh_target is not None:
+            self._complete_deferred_refresh()
         self._request_status_item_counts(self._current_path)
         self._update_media_mode(self._current_path, select_default=False)
 

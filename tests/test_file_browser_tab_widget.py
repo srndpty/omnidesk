@@ -623,13 +623,13 @@ def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
     tab._pending_selection_path = pending_selection
     monkeypatch.setattr(tab, "_selected_index_path", lambda: old_selection)
     monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
-    monkeypatch.setattr(tab._model, "rescan", lambda: None)
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or False)
 
     tab.refresh(force=True)
 
-    qtbot.waitUntil(lambda: bool(selected), timeout=1000)
+    # 走査結果が届いてから仕上げる。
+    qtbot.waitUntil(lambda: bool(selected), timeout=5000)
     assert tab._pending_selection_path == pending_selection
     assert tab._refresh_selection_path == pending_selection
     assert selected == [pending_selection]
@@ -2947,3 +2947,46 @@ def tile_layout_batch_size() -> int:
     from omnidesk.ui.file_browser.views import _FileTileView
 
     return _FileTileView.LAYOUT_BATCH_SIZE
+
+
+def test_forced_refresh_waits_for_the_scan_to_finish(qtbot, tmp_path: Path) -> None:
+    """明示的な再読込は、走査結果が反映されてから並べ替えと選択復元を行うこと。
+
+    時間で待つ実装だと、走査が遅いときに古い一覧のまま仕上げが走ってしまう。
+    """
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    qtbot.waitUntil(lambda: tab._model.rowCount() == 1, timeout=5000)
+
+    rows_when_completed: list[int] = []
+    original = tab._complete_refresh
+    tab._complete_refresh = lambda target, *, force=False: (
+        rows_when_completed.append(tab._model.rowCount()),
+        original(target, force=force),
+    )[1]
+
+    # 再読込の直前にファイルを増やす。仕上げの時点で新しい件数が見えているはず。
+    (tmp_path / "b.txt").write_text("x", encoding="utf-8")
+    tab.refresh(force=True)
+
+    qtbot.waitUntil(lambda: bool(rows_when_completed), timeout=5000)
+    assert rows_when_completed == [2]
+    assert tab._deferred_refresh_target is None
+
+
+def test_forced_refresh_gives_up_if_the_scan_never_reports(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """完了通知が届かなくても、保留を残したままにしないこと。"""
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab._current_path = tmp_path
+    tab._has_loaded_root = True
+    monkeypatch.setattr(tab._model, "rescan", lambda: None)
+    tab._deferred_refresh_timer.setInterval(0)
+
+    tab.refresh(force=True)
+
+    qtbot.waitUntil(lambda: tab._deferred_refresh_target is None, timeout=3000)

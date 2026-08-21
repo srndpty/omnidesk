@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,9 @@ from omnidesk.ui.directory_model import (
     COLUMN_SIZE,
     COLUMN_TYPE,
     DirectoryModel,
+    DirectoryScanJob,
+    DirectoryScanSignals,
+    _entry_id_sequence,
     contiguous_descending_ranges,
     normalise_entry_key,
 )
@@ -341,3 +345,154 @@ def test_row_index_is_consistent_when_insertion_is_announced(qtbot, tmp_path: Pa
         model.refresh()
 
     assert seen == [True]
+
+
+def test_changing_root_drops_the_previous_rows_immediately(qtbot, tmp_path: Path) -> None:
+    """別のディレクトリへ移った瞬間に、旧ディレクトリの行を捨てること。
+
+    残したままにすると、``rootPath()`` は新しいディレクトリを指しているのに
+    並んでいる行は旧ディレクトリのもの、という状態が走査中ずっと続く。
+    フラットな表ではビュー側のルートインデックスが旧行を隔離してくれないので、
+    その間に削除やリネームを実行すると、画面に見えているのとは違うディレクトリの
+    ファイルを操作してしまう。
+    """
+    first = tmp_path / "A"
+    second = tmp_path / "B"
+    first.mkdir()
+    second.mkdir()
+    (first / "old.txt").write_text("x", encoding="utf-8")
+    (second / "new.txt").write_text("x", encoding="utf-8")
+    model = DirectoryModel()
+    _load(qtbot, model, first)
+    assert model.rowCount() > 0
+
+    model.setRootPath(str(second))
+
+    # まだ B の走査は終わっていない時点。
+    assert model.rootPath() == str(second)
+    assert model.rowCount() == 0
+    assert not model.index_for_path(first / "old.txt").isValid()
+    assert model.filePath(model.index(0, COLUMN_NAME)) == ""
+
+
+def test_reloading_the_same_root_keeps_the_existing_rows(qtbot, tmp_path: Path) -> None:
+    """同じディレクトリの読み直しでは行を捨てないこと（選択とスクロールを保つ）。"""
+    _make_tree(tmp_path)
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    resets: list[object] = []
+    model.modelReset.connect(lambda: resets.append(True))
+
+    model.setRootPath(str(tmp_path))
+
+    assert resets == []
+    assert model.rowCount() == 3
+
+
+def test_directory_symlinks_are_treated_as_directories(qtbot, tmp_path: Path) -> None:
+    """ディレクトリへのリンクを、開ける対象として扱うこと。
+
+    種別の判定でリンクを辿らないと、ディレクトリへのリンクがファイル扱いになり、
+    フォルダアイコンにもならず、ダブルクリックでも開けなくなる。
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "inner.txt").write_text("x", encoding="utf-8")
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        # Windowsでは開発者モードか管理者権限が要る。
+        pytest.skip(f"シンボリックリンクを作成できません: {exc}")
+
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+
+    link_index = model.index_for_path(link)
+    assert link_index.isValid()
+    assert model.isDir(link_index) is True
+
+
+def test_broken_symlinks_stay_listed_as_files(qtbot, tmp_path: Path) -> None:
+    """リンク切れのエントリを一覧から消さないこと。
+
+    メタdataはリンク自身から取るので、リンク先が無くても行として残る。
+    """
+    missing = tmp_path / "missing-target"
+    link = tmp_path / "broken"
+    try:
+        link.symlink_to(missing, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"シンボリックリンクを作成できません: {exc}")
+
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+
+    index = model.index_for_path(link)
+    assert index.isValid()
+    assert model.isDir(index) is False
+
+
+def test_watcher_is_registered_after_a_successful_scan(qtbot, tmp_path: Path) -> None:
+    """監視の登録を、走査の成功後に行うこと。
+
+    以前は setRootPath の中で os.path.isdir() を確かめてから登録していたが、
+    それはGUIスレッドの同期I/Oで、UNCや切断されたリムーバブルドライブでは
+    ナビゲーション自体がそこで止まり得た。
+    """
+    _make_tree(tmp_path)
+    model = DirectoryModel()
+
+    model.setRootPath(str(tmp_path))
+    # 走査前は監視していない。
+    assert model._watcher.directories() == []
+
+    qtbot.waitSignal(model.directoryLoaded, timeout=5000).wait()
+    assert model._watcher.directories() == [str(tmp_path)]
+
+
+def test_failed_scan_does_not_start_watching(qtbot, tmp_path: Path) -> None:
+    model = DirectoryModel()
+
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path / "does-not-exist"))
+
+    assert model._watcher.directories() == []
+
+
+class _StubDirEntry:
+    """``os.DirEntry`` の代わり。follow_symlinks の指定を記録する。"""
+
+    def __init__(self, path: str, *, is_dir: bool, size: int, mtime: float) -> None:
+        self.path = path
+        self.name = Path(path).name
+        self.calls: dict[str, bool] = {}
+        self._is_dir = is_dir
+        self._stat = os.stat_result(
+            (0o040755 if is_dir else 0o100644, 0, 0, 0, 0, 0, size, 0, mtime, 0)
+        )
+
+    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+        self.calls["is_dir"] = follow_symlinks
+        return self._is_dir
+
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+        self.calls["stat"] = follow_symlinks
+        return self._stat
+
+
+def test_scan_follows_links_for_type_but_not_for_metadata(tmp_path: Path) -> None:
+    """種別はリンクを辿り、メタdataは辿らないこと。
+
+    * 種別を辿らないと、ディレクトリへのリンクがファイル扱いになって開けなくなる。
+    * メタdataを辿ると、``DirEntry`` が走査時に得た情報を使えず追加のsyscallになり、
+      リンク切れのエントリも一覧から消えてしまう。
+    """
+    job = DirectoryScanJob(str(tmp_path), 1, DirectoryScanSignals(), _entry_id_sequence())
+    item = _StubDirEntry(str(tmp_path / "link"), is_dir=True, size=0, mtime=1_700_000_000.0)
+
+    entry = job._build_entry(item)  # type: ignore[arg-type]
+
+    assert entry is not None
+    assert entry.is_dir is True
+    assert item.calls == {"stat": False, "is_dir": True}

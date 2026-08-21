@@ -159,16 +159,29 @@ class DirectoryScanJob(QRunnable):
     def _build_entry(self, item: os.DirEntry[str]) -> DirectoryEntry | None:
         """``DirEntry`` から1エントリを作る。
 
-        ``is_dir`` と ``stat`` は走査時にOSが返した情報から取れるため、
-        エントリごとの追加syscallはほぼ発生しない。
+        種別とメタdataで、リンクを辿るかどうかの方針を分けている。
+
+        * ``is_dir`` は**辿る**。ディレクトリへのシンボリックリンクは、開ける対象
+          として扱いたい（フォルダアイコン・フォルダプレビュー・ダブルクリックでの
+          移動が、実体のディレクトリと同じように働く）。辿らないと、
+          ディレクトリへのリンクがファイル扱いになって開けなくなる。
+          追加のsyscallが要るのはリンクだったときだけ。
+        * ``stat`` は**辿らない**。リンク自身の情報で表示には足り、リンク切れの
+          エントリも一覧から消えずに残る。``DirEntry`` が走査時に得た情報を
+          そのまま使えるので、エントリごとの追加syscallも発生しない。
         """
         try:
-            is_dir = item.is_dir(follow_symlinks=False)
             stat_result = item.stat(follow_symlinks=False)
         except OSError:
             # 走査中に消えた、あるいは読めないエントリ。一覧から落とす。
             logger.debug("エントリを読めませんでした: %s", item.path, exc_info=True)
             return None
+        try:
+            is_dir = item.is_dir(follow_symlinks=True)
+        except OSError:
+            # リンク切れなど。開ける先が無いのでファイル扱いにする。
+            logger.debug("リンク先を判定できませんでした: %s", item.path, exc_info=True)
+            is_dir = False
         name = item.name
         return DirectoryEntry(
             entry_id=next(self._next_entry_id),
@@ -216,6 +229,9 @@ class DirectoryModel(QAbstractTableModel):
         self._entries: list[DirectoryEntry] = []
         self._row_by_key: dict[str, int] = {}
         self._root_path = ""
+        # 空文字は「まだどこも開いていない」を表す。normalise_entry_key("") は
+        # カレントディレクトリになってしまうので、番兵として別扱いにする。
+        self._root_key = ""
         self._generation = 0
         self._entry_ids = _entry_id_sequence()
         self._locale = QLocale()
@@ -373,12 +389,37 @@ class DirectoryModel(QAbstractTableModel):
         """表示するディレクトリを切り替え、走査を開始する。
 
         フラットな表なので、ビューへ渡すルートインデックスは常に不正値になる。
+
+        **別のディレクトリへ移るときは、走査の完了を待たずに旧行を捨てる。**
+        残したままにすると、``rootPath()`` は新しいディレクトリを指しているのに
+        並んでいる行は旧ディレクトリのもの、という状態が走査中ずっと続く。
+        フラットな表ではビュー側のルートインデックスが旧行を隔離してくれないため、
+        その間に削除やリネームを実行すると、画面に見えているのとは違う
+        ディレクトリのファイルを操作してしまう。低速なドライブでは数百ms〜秒単位で
+        この窓が開く。
+
+        同じディレクトリの読み直し（``refresh``）では行を保持し、差分だけを
+        反映する。選択もスクロール位置も保たれる。
         """
-        self._root_path = str(path)
+        new_root = str(path)
+        root_changed = normalise_entry_key(new_root) != self._root_key
+        self._root_path = new_root
+        self._root_key = normalise_entry_key(new_root)
         self._watch_timer.stop()
-        self._retarget_watcher(self._root_path)
+        self._unwatch_all()
+        if root_changed:
+            self._clear_entries()
         self._start_scan()
         return QModelIndex()
+
+    def _clear_entries(self) -> None:
+        """表示中の行を即座に空にする。"""
+        if not self._entries:
+            return
+        self.beginResetModel()
+        self._entries = []
+        self._row_by_key = {}
+        self.endResetModel()
 
     def refresh(self) -> None:
         """現在のディレクトリを読み直す。"""
@@ -411,6 +452,7 @@ class DirectoryModel(QAbstractTableModel):
             return
         assert isinstance(entries, list)
         self._apply_entries(entries)
+        self._watch_current_root()
         self.directoryLoaded.emit(path)
 
     def _apply_entries(self, scanned: list[DirectoryEntry]) -> None:
@@ -462,12 +504,24 @@ class DirectoryModel(QAbstractTableModel):
     # ------------------------------------------------------------------
     # 監視
     # ------------------------------------------------------------------
-    def _retarget_watcher(self, path: str) -> None:
+    def _unwatch_all(self) -> None:
         watched = self._watcher.directories()
         if watched:
             self._watcher.removePaths(watched)
-        if path and os.path.isdir(path):
-            self._watcher.addPath(path)
+
+    def _watch_current_root(self) -> None:
+        """走査が成功したディレクトリを監視対象にする。
+
+        以前は ``setRootPath`` の中で ``os.path.isdir()`` を確かめてから登録して
+        いたが、それはGUIスレッドの同期I/Oで、UNCや切断されたリムーバブル
+        ドライブではナビゲーション自体がそこで止まり得た。走査が成功していれば
+        ディレクトリであることは確定しているので、その後に登録すれば確認は要らない。
+        """
+        if not self._root_path:
+            return
+        if self._root_path in self._watcher.directories():
+            return
+        self._watcher.addPath(self._root_path)
 
     def _handle_directory_changed(self, path: str) -> None:
         _ = path
@@ -481,13 +535,11 @@ class DirectoryModel(QAbstractTableModel):
     def stop_watching(self) -> None:
         """監視とデバウンスを止める（破棄前・非表示時に使う）。"""
         self._watch_timer.stop()
-        watched = self._watcher.directories()
-        if watched:
-            self._watcher.removePaths(watched)
+        self._unwatch_all()
 
     def resume_watching(self) -> None:
         """監視を張り直す。"""
-        self._retarget_watcher(self._root_path)
+        self._watch_current_root()
 
 
 def _entry_id_sequence() -> Iterator[int]:

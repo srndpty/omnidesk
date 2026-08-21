@@ -97,6 +97,18 @@ def cache_pixmap_for_edge(pixmap: QPixmap, edge: int) -> QPixmap:
     return canvas
 
 
+# アイコンがファイルごとに違い得る拡張子。実行ファイルは埋め込みアイコンを持ち、
+# ショートカットはリンク先のアイコンを指し、アイコンファイル自体は中身がアイコン。
+# 拡張子単位でキャッシュすると、別のファイルの絵を使い回してしまう。
+PER_FILE_ICON_SUFFIXES = frozenset(
+    {"exe", "lnk", "ico", "cur", "ani", "scr", "cpl", "msc", "url", "dll", "msi"}
+)
+
+# 拡張子と衝突しないキャッシュキー（拡張子は常に小文字・ドット無し）。
+_FOLDER_ICON_KEY = "<folder>"
+_GENERIC_FILE_ICON_KEY = "<file>"
+
+
 def _make_icon_provider() -> QFileIconProvider:
     """フォルダ個別アイコンを引かないアイコンプロバイダを作る。
 
@@ -139,8 +151,8 @@ class MediaFileSystemModel(DirectoryModel):
         self._request_edges: dict[str, int] = {}
         self._allow_folder_preview_for_visible_targets = True
         self._icon_provider = _make_icon_provider()
-        # 種別・拡張子ごとの汎用アイコン。エントリごとにシェルへ問い合わせない。
-        self._type_icons: dict[str | None, QIcon] = {}
+        # 拡張子ごとのアイコン。エントリごとにシェルへ問い合わせない。
+        self._type_icons: dict[str, QIcon] = {}
         # フォルダプレビューの土台画像はエッジごとに1枚あれば足りる（下記参照）。
         self._folder_base_pixmaps: dict[int, QPixmap] = {}
         # ジョブはワーカースレッドで破棄されるため、シグナル用QObjectはジョブに
@@ -201,21 +213,38 @@ class MediaFileSystemModel(DirectoryModel):
         return self._type_icon(entry)
 
     def _type_icon(self, entry: DirectoryEntry) -> QIcon:
-        """種別・拡張子ごとの汎用アイコンを、1回だけ作って使い回す。
+        """アイコンを拡張子ごとに1回だけ引いて使い回す。
 
         エントリごとにシェルへ問い合わせると、大量ファイルのフォルダで描画が
-        止まる。拡張子が同じなら見た目も同じなので、拡張子単位で足りる。
+        止まる。ほとんどの拡張子はアイコンが拡張子の関連付けだけで決まるので、
+        拡張子単位のキャッシュで正しい絵が出せる。
+
+        ただし :data:`PER_FILE_ICON_SUFFIXES` の拡張子は**ファイルごとに絵が違う**。
+        1つ目に見た ``a.exe`` のアイコンを ``b.exe`` にも使ってしまうと、
+        まったく別のアプリのアイコンを表示することになる。これらは種別の汎用
+        アイコンに寄せる（具体性は落ちるが、間違った絵は出さない）。
+
+        なお、拡張子ごとの初回だけはここでシェルへ問い合わせるため、GUIスレッドで
+        の同期I/Oが発生する。フォルダ内の**異なる拡張子の数**だけで、件数には
+        比例しない。
         """
-        cache_key = None if entry.is_dir else entry.suffix
-        cached = self._type_icons.get(cache_key)
+        if entry.is_dir:
+            return self._cached_type_icon(_FOLDER_ICON_KEY, QFileIconProvider.IconType.Folder)
+        if entry.suffix in PER_FILE_ICON_SUFFIXES:
+            return self._cached_type_icon(_GENERIC_FILE_ICON_KEY, QFileIconProvider.IconType.File)
+
+        cached = self._type_icons.get(entry.suffix)
         if cached is None:
             cached = self._icon_provider.icon(QFileInfo(entry.path))
             if cached.isNull():
-                cached = self._icon_provider.icon(
-                    QFileIconProvider.IconType.Folder
-                    if entry.is_dir
-                    else QFileIconProvider.IconType.File
-                )
+                cached = self._icon_provider.icon(QFileIconProvider.IconType.File)
+            self._type_icons[entry.suffix] = cached
+        return cached
+
+    def _cached_type_icon(self, cache_key: str, icon_type: QFileIconProvider.IconType) -> QIcon:
+        cached = self._type_icons.get(cache_key)
+        if cached is None:
+            cached = self._icon_provider.icon(icon_type)
             self._type_icons[cache_key] = cached
         return cached
 
