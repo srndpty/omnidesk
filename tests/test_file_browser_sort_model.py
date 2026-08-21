@@ -361,7 +361,7 @@ def test_hidden_rows_are_released_when_the_source_model_drops_them(qtbot, tmp_pa
 
     # 保険のタイマー（5秒）ではなく、元モデルの rowsRemoved で解除されること。
     qtbot.waitUntil(lambda: not tab._model._hidden_keys, timeout=3000)
-    assert not tab._model._hidden_release_timer.isActive()
+    assert not tab._model._hidden_reconcile_timer.isActive()
     assert _visible_names(tab) == ["sub", "a.png", "c.txt", "d.png"]
 
     # 伏せる指定が外れているので、作り直せば再び現れる。
@@ -369,7 +369,9 @@ def test_hidden_rows_are_released_when_the_source_model_drops_them(qtbot, tmp_pa
     qtbot.waitUntil(lambda: "b.txt" in _visible_names(tab), timeout=5000)
 
 
-def test_safety_timer_asks_for_a_rescan_instead_of_unhiding(qtbot, tmp_path: Path) -> None:
+def test_reconciliation_timeout_asks_for_a_rescan_instead_of_unhiding(
+    qtbot, tmp_path: Path
+) -> None:
     """決着がつかないとき、経過時間で伏せる指定を解除しないこと。
 
     元モデルの再走査が遅い（UNC、スピンダウンした外付け、遅いファイルサーバー）と、
@@ -382,19 +384,20 @@ def test_safety_timer_asks_for_a_rescan_instead_of_unhiding(qtbot, tmp_path: Pat
     tab.navigate_to(tmp_path)
     _wait_for_entries(qtbot, tab, 5)
     target = tmp_path / "b.txt"
-    # 削除は成功したが、元モデルの再走査がまだ届かない状況を作る。
-    tab._source_model.stop_watching()
     target.unlink()
     tab._model.hide_removed_paths([target])
     assert "b.txt" not in _visible_names(tab)
-    rescans: list[bool] = []
-    tab._source_model.refresh = lambda: rescans.append(True)
+    # 走査が始まらないようにして、要求そのものだけを観察する
+    # （＝再走査がいつまでも終わらない状況）。
+    scans: list[bool] = []
+    tab._source_model._start_scan = lambda: scans.append(True)
 
-    tab._model._hidden_release_timer.setInterval(0)
-    tab._model._hidden_release_timer.start()
-    qtbot.waitUntil(lambda: bool(rescans), timeout=3000)
+    tab._model._request_hidden_row_reconciliation()
 
     # 走査をやり直させるだけで、伏せた行は戻さない。
+    assert scans == [True]
+    assert "b.txt" not in _visible_names(tab)
+    assert tab._model._hidden_keys
     assert "b.txt" not in _visible_names(tab)
     assert tab._model._hidden_keys
 
@@ -487,3 +490,84 @@ def test_filter_rejects_by_name_before_resolving_paths(qtbot, tmp_path: Path, mo
     resolved = [call.args[0] for call in spy.call_args_list]
     # 伏せる対象の1件ぶんと、名前が一致した行の照合だけ。他の4行では解決しない。
     assert len(resolved) <= 2
+
+
+def test_each_new_hide_advances_the_reconciliation_boundary(qtbot, tmp_path: Path) -> None:
+    """伏せるたびに、解除の境界を現在の世代へ進めること。
+
+    最初に伏せた時点で境界を固定すると、そのあとに始まった走査（＝2件目を削除する
+    前の状態を見ている）が2件目まで解除してしまい、削除済みのファイルが一時的に
+    再表示される。
+    """
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+    source = tab._source_model
+    source.stop_watching()
+
+    tab._model.hide_removed_paths([tmp_path / "b.txt"])
+    first_boundary = tab._model._hidden_since_generation
+
+    # 2件目を伏せる前に、走査が1つ始まったことにする。
+    source._generation = first_boundary + 1
+    tab._model.hide_removed_paths([tmp_path / "c.txt"])
+
+    assert tab._model._hidden_since_generation == first_boundary + 1
+
+    # その走査（＝2件目の削除前に始まったもの）の完了では解除しない。
+    source._last_completed_generation = first_boundary + 1
+    tab._model._reconcile_hidden_rows()
+
+    assert tab._model._hidden_keys
+    assert "b.txt" not in _visible_names(tab)
+    assert "c.txt" not in _visible_names(tab)
+
+    # さらに後で始まった走査の完了なら、まとめて解除できる。
+    source._last_completed_generation = first_boundary + 2
+    tab._model._reconcile_hidden_rows()
+
+    assert not tab._model._hidden_keys
+
+
+def test_deactivating_stops_the_reconciliation_timer(qtbot, tmp_path: Path) -> None:
+    """見えていないタブでは、突き合わせタイマーも走査を起こさないこと。
+
+    このタイマーは元モデルへ再走査を促すので、watcher とは別経路で
+    「見えていないタブは監視も再走査もしない」という契約を破り得る。
+    """
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+    tab._model.hide_removed_paths([tmp_path / "b.txt"])
+    assert tab._model._hidden_reconcile_timer.isActive()
+
+    tab._model.stop_watching()
+    assert not tab._model._hidden_reconcile_timer.isActive()
+
+    generation_before = tab._source_model.scan_generation
+    # 止まっていても、直接発火させて再走査が起きないことを確かめる。
+    tab._model._hidden_reconcile_timer.timeout.emit()
+    qtbot.wait(50)
+
+    # タイマー経由の再走査は促されるが、監視が止まっている間は開始されない。
+    assert tab._source_model.scan_generation == generation_before
+
+
+def test_resuming_restarts_the_reconciliation_timer_when_rows_are_still_hidden(
+    qtbot, tmp_path: Path
+) -> None:
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+    tab._model.hide_removed_paths([tmp_path / "b.txt"])
+    tab._model.stop_watching()
+
+    tab._model.resume_watching()
+
+    assert tab._model._hidden_reconcile_timer.isActive()

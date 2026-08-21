@@ -69,10 +69,10 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         self._hidden_names: set[str] = set()
         # 伏せた行がいつまでも決着しない場合に、再走査を促すためのタイマー。
         # ここで直接戻すことはしない（下記 _request_hidden_row_reconciliation 参照）。
-        self._hidden_release_timer = QTimer(self)
-        self._hidden_release_timer.setSingleShot(True)
-        self._hidden_release_timer.setInterval(HIDDEN_ROW_RECONCILE_MS)
-        self._hidden_release_timer.timeout.connect(self._request_hidden_row_reconciliation)
+        self._hidden_reconcile_timer = QTimer(self)
+        self._hidden_reconcile_timer.setSingleShot(True)
+        self._hidden_reconcile_timer.setInterval(HIDDEN_ROW_RECONCILE_MS)
+        self._hidden_reconcile_timer.timeout.connect(self._request_hidden_row_reconciliation)
         # 伏せた時点の走査世代。これより後に始まった走査の結果だけが、
         # 伏せた行の扱いを決める根拠になる。
         self._hidden_since_generation = 0
@@ -98,14 +98,16 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         keys = {navigation_key(path) for path in targets} - self._hidden_keys
         if not keys:
             return 0
-        if not self._hidden_keys:
-            # 伏せ始めた時点の世代を覚える。これより後に始まった走査の結果だけが
-            # 「本当に消えたのか」の判断材料になる（下記 _reconcile_hidden_rows）。
-            self._hidden_since_generation = self._media_source().scan_generation
+        # 新しく伏せるたびに境界を現在の世代へ進める。最初に伏せた時点で固定すると、
+        # その後に走り始めた走査（＝2件目を削除する前の状態を見ている）が、
+        # 2件目まで解除してしまう。世代は単調増加なので、現在値は「いま伏せている
+        # すべての行にとって安全な、最も新しい境界」になる。古い行の解除が少し
+        # 遅れるだけで、安全側に倒れる。
+        self._hidden_since_generation = self._media_source().scan_generation
         self._hidden_keys |= keys
         self._hidden_names |= {os.path.normcase(path.name) for path in targets}
         self.invalidateFilter()
-        self._hidden_release_timer.start()
+        self._hidden_reconcile_timer.start()
         return len(keys)
 
     def _reconcile_hidden_rows(self) -> None:
@@ -135,15 +137,25 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         """
         if not self._hidden_keys:
             return
-        self._media_source().refresh()
+        source = self._media_source()
+        if not source.is_watching:
+            # 見えていないタブでは再走査を促さない（タイマーは stop_watching で
+            # 止めてあるが、経路としても塞いでおく）。表示へ戻るときに必ず
+            # 走査し直すので、決着はそこでつく。
+            return
+        source.refresh()
 
     def _release_hidden_rows(self) -> None:
-        """伏せた行の指定を解除する（元モデルが追いついた／保険の時間切れ）。"""
+        """伏せた行の指定をまとめて解除する。
+
+        呼ぶのは、伏せたあとに始まった走査が終わったときだけ
+        （:meth:`_reconcile_hidden_rows`）。経過時間は解除の根拠にしない。
+        """
         if not self._hidden_keys:
             return
         self._hidden_keys.clear()
         self._hidden_names.clear()
-        self._hidden_release_timer.stop()
+        self._hidden_reconcile_timer.stop()
         self.invalidateFilter()
 
     def _drop_hidden_keys_absent_from_source(self) -> None:
@@ -157,7 +169,7 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         self._hidden_keys = remaining
         self._hidden_names = {os.path.normcase(Path(key).name) for key in remaining}
         if not remaining:
-            self._hidden_release_timer.stop()
+            self._hidden_reconcile_timer.stop()
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:  # noqa: N802
         """伏せる対象の行だけ落とす。それ以外は素通しする。
@@ -194,7 +206,7 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         self._clear_meta_cache()
         self._hidden_keys.clear()
         self._hidden_names.clear()
-        self._hidden_release_timer.stop()
+        self._hidden_reconcile_timer.stop()
         super().setSourceModel(source)
         if isinstance(source, MediaFileSystemModel):
             source.directoryLoaded.connect(self.directoryLoaded)
@@ -410,7 +422,7 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         # 別ディレクトリでは、伏せる指定を持ち越さない。
         self._hidden_keys.clear()
         self._hidden_names.clear()
-        self._hidden_release_timer.stop()
+        self._hidden_reconcile_timer.stop()
         return self.mapFromSource(self._media_source().setRootPath(path))
 
     def rootPath(self) -> str:  # noqa: N802 - Qt-style API
@@ -457,10 +469,19 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         self._media_source().refresh()
 
     def stop_watching(self) -> None:
+        """監視を止める。伏せた行の突き合わせ用タイマーも一緒に止める。
+
+        このタイマーは元モデルへ再走査を促すので、止めないと「見えていないタブでは
+        監視も再走査もしない」という契約を、watcher とは別経路で破ってしまう。
+        """
+        self._hidden_reconcile_timer.stop()
         self._media_source().stop_watching()
 
     def resume_watching(self) -> None:
         self._media_source().resume_watching()
+        # 止めている間に決着がついていなければ、突き合わせを再開する。
+        if self._hidden_keys:
+            self._hidden_reconcile_timer.start()
 
 
 def _build_entry_meta(source: MediaFileSystemModel, index: QModelIndex) -> EntryMeta:

@@ -436,6 +436,15 @@ class DirectoryModel(QAbstractTableModel):
         return self._generation
 
     @property
+    def is_watching(self) -> bool:
+        """ディレクトリの変更を監視しているか。
+
+        止まっている間は「表示されていない」とみなしてよい。再走査を促す側は、
+        これを見て余計な走査を起こさないようにする。
+        """
+        return self._watching_enabled
+
+    @property
     def last_completed_scan_generation(self) -> int:
         """最後に**反映を終えた**走査の世代。
 
