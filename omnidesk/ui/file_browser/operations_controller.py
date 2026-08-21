@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -375,20 +376,21 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         )
 
     def _hide_paths_that_left_current_directory(self, request: FileOperationRequest | None) -> None:
-        """元の場所から消えたパスを、モデルの再走査を待たずに伏せる。
+        """元の場所から消えたパスを、監視の通知を待たずに伏せる。
 
-        ``QFileSystemModel`` は ``QFileSystemWatcher`` の通知を受けてから
-        ディレクトリを再走査するため、行が実際に消えるまで待たされる（7,500件の
-        フォルダで実測950ms）。削除はこちらが実行して結果も確認できるので、
-        再走査を待つ理由はない。詳細は
-        :meth:`SortedFileSystemModel.hide_removed_paths`。
+        モデルはディレクトリの変更通知を受けてから走査し直すため、行が実際に消える
+        まで待ちが入る。削除はこちらが実行して結果も確認できるので、待つ理由はない。
+        詳細は :meth:`SortedFileSystemModel.hide_removed_paths`。
 
-        判定はディスク上の実在で行う。一部だけ失敗した操作でも、消えたものだけが
-        伏せられる。
+        判定はディスク上の実在で行うので、一部だけ失敗した操作でも、消えたものだけが
+        伏せられる。存在確認には ``os.path.lexists`` を使う。``Path.exists()`` は
+        リンク先を辿るため、**リンク切れのシンボリックリンクで False になる**。
+        リンク切れのエントリは一覧に残す仕様（``DirectoryScanJob._build_entry``）
+        なので、``exists()`` だと削除に失敗しても消えたと誤判定して伏せてしまう。
         """
         if request is None or request.mode not in ("delete", "move"):
             return
-        removed = [source for source in request.sources if not source.exists()]
+        removed = [source for source in request.sources if not os.path.lexists(source)]
         if not removed:
             return
         hidden = self._model.hide_removed_paths(removed)

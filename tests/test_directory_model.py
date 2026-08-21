@@ -496,3 +496,38 @@ def test_scan_follows_links_for_type_but_not_for_metadata(tmp_path: Path) -> Non
     assert entry is not None
     assert entry.is_dir is True
     assert item.calls == {"stat": False, "is_dir": True}
+
+
+def test_scan_finishing_after_stop_watching_does_not_resume_watching(qtbot, tmp_path: Path) -> None:
+    """走査中に監視を止めたら、遅れて届いた結果で監視が復活しないこと。
+
+    走査の投入と結果の到着の間にタブが非アクティブ化されると、成功結果が
+    ``_watch_current_root()`` を呼んで監視を復活させ、「見えていないタブは
+    監視も再走査もしない」という設計が崩れる。
+    """
+    _make_tree(tmp_path)
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    assert model._watcher.directories() == [str(tmp_path)]
+
+    model.refresh()
+    model.stop_watching()
+    assert model._watcher.directories() == []
+
+    # 進行中だった走査の成功結果が、このあと届く。
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        pass
+
+    assert model._watcher.directories() == []
+
+
+def test_resume_watching_restores_the_watch_after_stop(qtbot, tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+
+    model.stop_watching()
+    assert model._watcher.directories() == []
+
+    model.resume_watching()
+    assert model._watcher.directories() == [str(tmp_path)]

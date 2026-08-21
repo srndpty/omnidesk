@@ -46,7 +46,8 @@ from .qt_lifetime import own_by_application
 logger = logging.getLogger(__name__)
 
 # 明示的な再読込の完了通知が届かなかった場合に、保留を打ち切るまでの猶予。
-DEFERRED_REFRESH_FALLBACK_MS = 3_000
+# 打ち切るだけで仕上げはしないので、遅いドライブで長引いても実害はない。
+DEFERRED_REFRESH_FALLBACK_MS = 30_000
 
 __all__ = [
     "FileBrowserTab",
@@ -323,12 +324,12 @@ class FileBrowserTab(
             request_visible=self._request_visible_thumbnail_batch,
         )
 
-        # 明示的な再読込の仕上げは directoryLoaded が駆動する。このタイマーは、
-        # 通知が届かなかった場合に保留状態を残さないための保険。
+        # 明示的な再読込の仕上げは directoryLoaded だけが駆動する。このタイマーは、
+        # 通知が届かなかった場合に保留状態を残さないための保険で、仕上げはしない。
         self._deferred_refresh_timer = QTimer(self)
         self._deferred_refresh_timer.setSingleShot(True)
         self._deferred_refresh_timer.setInterval(DEFERRED_REFRESH_FALLBACK_MS)
-        self._deferred_refresh_timer.timeout.connect(self._complete_deferred_refresh)
+        self._deferred_refresh_timer.timeout.connect(self._abort_deferred_refresh)
 
         scroll_bars = (
             self._tree_view.verticalScrollBar(),

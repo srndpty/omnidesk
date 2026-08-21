@@ -120,7 +120,12 @@ def delete_paths_with_result(
                 "まとめてのゴミ箱移動に失敗しました。原因を特定するため1件ずつ再試行します",
                 exc_info=True,
             )
-            errors.extend(_delete_paths_individually(chunk, changed_dirs))
+            retry_errors, cancelled = _delete_paths_individually(
+                chunk, changed_dirs, is_cancelled=is_cancelled
+            )
+            errors.extend(retry_errors)
+            if cancelled:
+                return FileOperationResult(errors, changed_dirs, cancelled=True)
             continue
         changed_dirs.extend(path.parent for path in chunk)
     return FileOperationResult(errors, changed_dirs)
@@ -131,15 +136,25 @@ def _chunked(paths: list[Path], size: int) -> Iterator[list[Path]]:
         yield paths[start : start + size]
 
 
-def _delete_paths_individually(targets: list[Path], changed_dirs: list[Path]) -> list[str]:
-    """1件ずつゴミ箱へ移し、失敗した対象だけをエラーとして返す。
+def _delete_paths_individually(
+    targets: list[Path],
+    changed_dirs: list[Path],
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> tuple[list[str], bool]:
+    """1件ずつゴミ箱へ移し、``(エラー, 中断したか)`` を返す。
 
     まとめての呼び出しが途中まで成功していることがあるため、既に消えているものは
     成功として扱う（重複したエラーを出さない）。
+
+    ここは「まとめての呼び出しが失敗した」ときだけ通る、最も遅くなり得る経路。
+    1件ごとにシェル操作が走るので、1件ごとにキャンセルを見る。
     """
     errors: list[str] = []
-    for path in targets:
-        if not path.exists() and not path.is_symlink():
+    for index, path in enumerate(targets):
+        if is_cancelled is not None and index and is_cancelled():
+            return errors, True
+        if not os.path.lexists(path):
             # まとめての呼び出しで移動できていた分。
             changed_dirs.append(path.parent)
             continue
@@ -149,7 +164,7 @@ def _delete_paths_individually(targets: list[Path], changed_dirs: list[Path]) ->
         except Exception as exc:  # pragma: no cover - send2trash/backend dependent
             logger.exception("Failed to move path to trash: %s", path)
             errors.append(f"{path}: {exc}")
-    return errors
+    return errors, False
 
 
 def perform_copy_or_move(sources: list[Path], dest_dir: Path, *, move: bool) -> list[str]:

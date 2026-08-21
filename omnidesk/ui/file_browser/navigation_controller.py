@@ -201,6 +201,11 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         self._complete_refresh(target, force=False)
 
     def _complete_deferred_refresh(self) -> None:
+        """走査結果が反映されたので、明示的な再読込の仕上げを行う。
+
+        呼び出し元は ``directoryLoaded`` だけ。時間切れの経路とは分ける
+        （:meth:`_abort_deferred_refresh` 参照）。
+        """
         target = self._deferred_refresh_target
         self._deferred_refresh_target = None
         if target is None:
@@ -208,6 +213,23 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         self._deferred_refresh_timer.stop()
         # 遅延経路へ来るのは force=True のときだけ（走査を投げた直後）。
         self._complete_refresh(target, force=True)
+
+    def _abort_deferred_refresh(self) -> None:
+        """完了通知が届かないまま時間切れになった再読込を、保留ごと取り下げる。
+
+        ここで仕上げてしまうと、単に走査が遅いだけのとき（UNC、スピンダウンした
+        外付けドライブ、一時的に遅いファイルサーバー）に、古い一覧のまま並べ替えと
+        選択復元が走る。しかもそのあと本当の完了通知が来ても、保留が消えているので
+        もう仕上げ直せない。時間で仕上げるくらいなら、何もしないほうが安全。
+        """
+        if self._deferred_refresh_target is None:
+            return
+        logger.info(
+            "再読込の完了通知が届かないまま時間切れになりました: %s",
+            self._deferred_refresh_target,
+        )
+        self._deferred_refresh_target = None
+        self._sort_refresh_controller.cancel()
 
     def _complete_refresh(self, target: Path, *, force: bool = False) -> None:
         if target != self._current_path:

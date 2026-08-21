@@ -4,6 +4,7 @@ from pathlib import Path
 from threading import Event
 from typing import cast
 
+import pytest
 from PyQt6.QtCore import (
     QEvent,
     QItemSelection,
@@ -618,13 +619,16 @@ def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
     selected: list[Path] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    tab._current_path = tmp_path
-    tab._has_loaded_root = True
+    # 実際に開いておく。開いていないと走査が走らず、完了通知も来ない。
+    tab.navigate_to(tmp_path)
+    qtbot.waitUntil(lambda: tab._model.rowCount() == 2, timeout=5000)
     tab._pending_selection_path = pending_selection
     monkeypatch.setattr(tab, "_selected_index_path", lambda: old_selection)
     monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
-    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or False)
+    monkeypatch.setattr(
+        tab, "_select_path", lambda path, *args, **kwargs: selected.append(path) or False
+    )
 
     tab.refresh(force=True)
 
@@ -632,7 +636,9 @@ def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
     qtbot.waitUntil(lambda: bool(selected), timeout=5000)
     assert tab._pending_selection_path == pending_selection
     assert tab._refresh_selection_path == pending_selection
-    assert selected == [pending_selection]
+    # 仕上げ（_complete_refresh）と走査完了通知の両方から復元を試みる。
+    # どちらも同じ保留パスが対象で、他のパスを選びにいくことはない。
+    assert set(selected) == {pending_selection}
 
 
 def test_file_browser_tab_refresh_and_select_keeps_pending_until_model_ready(
@@ -2976,17 +2982,53 @@ def test_forced_refresh_waits_for_the_scan_to_finish(qtbot, tmp_path: Path) -> N
     assert tab._deferred_refresh_target is None
 
 
-def test_forced_refresh_gives_up_if_the_scan_never_reports(
-    monkeypatch, qtbot, tmp_path: Path
-) -> None:
-    """完了通知が届かなくても、保留を残したままにしないこと。"""
+def test_broken_symlink_that_failed_to_delete_is_not_hidden(qtbot, tmp_path: Path) -> None:
+    """リンク切れの削除に失敗したら、行を伏せないこと。
+
+    ``Path.exists()`` はリンク先を辿るのでリンク切れでは False になる。それで
+    判定すると、削除に失敗して実際には残っているエントリまで「消えた」と
+    誤判定して画面から消してしまう。
+    """
+    broken = tmp_path / "broken"
+    try:
+        broken.symlink_to(tmp_path / "no-such-target")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"シンボリックリンクを作成できません: {exc}")
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    tab._current_path = tmp_path
-    tab._has_loaded_root = True
+    tab.navigate_to(tmp_path)
+    hidden: list[list[Path]] = []
+    tab._model.hide_removed_paths = lambda paths: hidden.append(list(paths)) or 0
+
+    # 削除は失敗し、リンク自体はまだ残っている。
+    tab._hide_paths_that_left_current_directory(FileOperationRequest([broken], None, "delete"))
+
+    assert hidden == []
+
+
+def test_forced_refresh_timeout_abandons_instead_of_finishing(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """完了通知が来ないまま時間切れになっても、仕上げてしまわないこと。
+
+    単に走査が遅いだけのとき（UNC、スピンダウンした外付けドライブなど）に
+    時間で仕上げると、古い一覧のまま並べ替えと選択復元が走る。
+    """
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    qtbot.waitUntil(lambda: tab._model.rowCount() == 1, timeout=5000)
+    completions: list[Path] = []
+    monkeypatch.setattr(
+        tab, "_complete_refresh", lambda target, *, force=False: completions.append(target)
+    )
+    # 完了通知が来ない状況を作り、保険タイマーだけを即発火させる。
     monkeypatch.setattr(tab._model, "rescan", lambda: None)
     tab._deferred_refresh_timer.setInterval(0)
 
     tab.refresh(force=True)
 
     qtbot.waitUntil(lambda: tab._deferred_refresh_target is None, timeout=3000)
+    assert completions == []
+    assert not tab._sort_refresh_controller.active

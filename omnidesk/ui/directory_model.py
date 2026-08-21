@@ -244,6 +244,9 @@ class DirectoryModel(QAbstractTableModel):
         assert pool is not None
         self._scan_pool = pool
         self._watcher = QFileSystemWatcher(self)
+        # 監視の希望状態。走査中に非アクティブ化されても、遅れて届いた結果が
+        # 監視を復活させないようにするためのフラグ（下記 _watch_current_root 参照）。
+        self._watching_enabled = True
         self._watcher.directoryChanged.connect(self._handle_directory_changed)
         self._watch_timer = QTimer(self)
         self._watch_timer.setSingleShot(True)
@@ -516,8 +519,13 @@ class DirectoryModel(QAbstractTableModel):
         いたが、それはGUIスレッドの同期I/Oで、UNCや切断されたリムーバブル
         ドライブではナビゲーション自体がそこで止まり得た。走査が成功していれば
         ディレクトリであることは確定しているので、その後に登録すれば確認は要らない。
+
+        ``_watching_enabled`` を見るのは、走査中に :meth:`stop_watching` が
+        呼ばれた場合に備えるため。走査の投入と結果の到着の間にタブが非アクティブ
+        化されると、遅れて届いた成功結果がここで監視を復活させてしまい、
+        「見えていないタブは監視も再走査もしない」という設計が崩れる。
         """
-        if not self._root_path:
+        if not self._watching_enabled or not self._root_path:
             return
         if self._root_path in self._watcher.directories():
             return
@@ -533,12 +541,18 @@ class DirectoryModel(QAbstractTableModel):
             self._start_scan()
 
     def stop_watching(self) -> None:
-        """監視とデバウンスを止める（破棄前・非表示時に使う）。"""
+        """監視とデバウンスを止める（破棄前・非表示時に使う）。
+
+        進行中の走査は止めない（結果自体は反映してよい）が、その完了で監視が
+        復活しないようにフラグを倒す。
+        """
+        self._watching_enabled = False
         self._watch_timer.stop()
         self._unwatch_all()
 
     def resume_watching(self) -> None:
         """監視を張り直す。"""
+        self._watching_enabled = True
         self._watch_current_root()
 
 

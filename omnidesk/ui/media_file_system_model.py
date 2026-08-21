@@ -194,8 +194,10 @@ class MediaFileSystemModel(DirectoryModel):
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         """描画で使う値を返す。
 
-        描画経路なので、ここでファイルシステムへ触ってはいけない。必要な情報は
-        すべて走査時に確定した :class:`DirectoryEntry` から取る。
+        描画経路なので、**行ごとの同期I/Oは行わない**。表示に要る情報はすべて
+        走査時に確定した :class:`DirectoryEntry` から取る。唯一の例外は
+        :meth:`_type_icon` で、拡張子ごとの初回だけシェルへ問い合わせる
+        （件数ではなく、フォルダ内の異なる拡張子の数にしか比例しない）。
         """
         if role != Qt.ItemDataRole.DecorationRole or index.column() != 0:
             return super().data(index, role)
