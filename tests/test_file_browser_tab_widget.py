@@ -2846,3 +2846,48 @@ def test_file_browser_tab_handle_current_changed_emits_for_directory(
         tab._handle_current_changed(tab._model.index(str(tmp_path)), tab._model.index(""))
 
     assert blocker.args == [tmp_path]
+
+
+def test_file_browser_tab_delete_hides_rows_without_waiting_for_the_watcher(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    """削除完了時に、モデルの再走査を待たずに行を伏せること。
+
+    QFileSystemModel は QFileSystemWatcher の通知を受けてからディレクトリ全体を
+    再走査するため、行が消えるまで件数に比例した待ちが入る（7,500件で実測950ms）。
+    削除はこちらが実行して結果も確認できるので、待つ理由がない。
+    """
+    target = tmp_path / "gone.txt"
+    target.write_text("x", encoding="utf-8")
+    (tmp_path / "keep.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    hidden: list[list[Path]] = []
+    tab._model.hide_removed_paths = lambda paths: hidden.append(list(paths)) or len(list(paths))
+
+    target.unlink()
+    tab._hide_paths_that_left_current_directory(
+        FileOperationRequest([target, tmp_path / "keep.txt"], None, "delete")
+    )
+
+    # 実際にディスクから消えたものだけを伏せる（一部失敗した操作でも取り違えない）。
+    assert hidden == [[target]]
+
+
+def test_file_browser_tab_copy_does_not_hide_source_rows(qtbot, tmp_path: Path) -> None:
+    """コピーは元の行を消さないので、伏せる対象にしないこと。"""
+    source = tmp_path / "src.txt"
+    source.write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    hidden: list[list[Path]] = []
+    tab._model.hide_removed_paths = lambda paths: hidden.append(list(paths)) or 0
+
+    tab._hide_paths_that_left_current_directory(
+        FileOperationRequest([source], tmp_path / "dest", "copy")
+    )
+
+    assert hidden == []

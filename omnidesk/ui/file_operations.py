@@ -70,10 +70,23 @@ def delete_paths_with_result(
     *,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> FileOperationResult:
-    """Delete files or directories and return errors plus directories that changed."""
+    """Delete files or directories and return errors plus directories that changed.
+
+    ゴミ箱への移動は、対象をまとめて1回のシェル呼び出しで行う。1件ずつ呼ぶと
+    Windowsのシェル操作の固定コストが件数ぶんかかる（14件で実測515ms）うえ、
+    ディレクトリの変更通知も件数ぶん飛ぶ。通知のたびに ``QFileSystemModel`` が
+    ディレクトリ全体を再走査するため、7,500件のフォルダでは再走査が数秒にわたって
+    繰り返され、その間ずっと表示が落ち着かない。1回にまとめれば、どちらも1回で済む。
+
+    まとめての呼び出しが失敗したときだけ、どの対象が原因かを示すために1件ずつ
+    再試行する。まとめての呼び出しは中断できないため、キャンセル判定は事前の
+    検証ループでのみ効く。
+    """
     errors: list[str] = []
     changed_dirs: list[Path] = []
     logger.info("Deleting %d path(s)", len(paths))
+
+    targets: list[Path] = []
     for path in paths:
         if is_cancelled is not None and is_cancelled():
             return FileOperationResult(errors, changed_dirs, cancelled=True)
@@ -85,13 +98,44 @@ def delete_paths_with_result(
             logger.warning("Path does not exist, cannot move to trash: %s", path)
             errors.append(f"Missing: {path}")
             continue
+        targets.append(path)
+
+    if not targets:
+        return FileOperationResult(errors, changed_dirs)
+
+    try:
+        send2trash([str(path) for path in targets])
+    except Exception:  # pragma: no cover - send2trash/backend dependent
+        logger.warning(
+            "まとめてのゴミ箱移動に失敗しました。原因を特定するため1件ずつ再試行します",
+            exc_info=True,
+        )
+        errors.extend(_delete_paths_individually(targets, changed_dirs))
+        return FileOperationResult(errors, changed_dirs)
+
+    changed_dirs.extend(path.parent for path in targets)
+    return FileOperationResult(errors, changed_dirs)
+
+
+def _delete_paths_individually(targets: list[Path], changed_dirs: list[Path]) -> list[str]:
+    """1件ずつゴミ箱へ移し、失敗した対象だけをエラーとして返す。
+
+    まとめての呼び出しが途中まで成功していることがあるため、既に消えているものは
+    成功として扱う（重複したエラーを出さない）。
+    """
+    errors: list[str] = []
+    for path in targets:
+        if not path.exists() and not path.is_symlink():
+            # まとめての呼び出しで移動できていた分。
+            changed_dirs.append(path.parent)
+            continue
         try:
             send2trash(str(path))
             changed_dirs.append(path.parent)
         except Exception as exc:  # pragma: no cover - send2trash/backend dependent
             logger.exception("Failed to move path to trash: %s", path)
             errors.append(f"{path}: {exc}")
-    return FileOperationResult(errors, changed_dirs)
+    return errors
 
 
 def perform_copy_or_move(sources: list[Path], dest_dir: Path, *, move: bool) -> list[str]:

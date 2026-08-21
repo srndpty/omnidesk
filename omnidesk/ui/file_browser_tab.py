@@ -199,6 +199,10 @@ class FileBrowserTab(
         self._file_operation_jobs: list[FileOperationJob] = []
         self._file_operation_job_seq = 0
         self._file_operation_completions: dict = {}
+        # 削除の体感ラグを切り分けるための計測用（詳細は operations_controller）。
+        self._file_operation_requested_at: dict[int, float] = {}
+        self._file_operation_requests: dict = {}
+        self._pending_rows_changed_since: float | None = None
         self._delete_confirmation_open = False
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")

@@ -97,17 +97,35 @@ class ViewModeController:
         if self._media_icon_mode:
             icon_edge = 160
             self._model.set_thumbnail_edge(icon_edge)
-            self._tile_view.setIconSize(QSize(icon_edge, icon_edge))
-            self._tile_view.setGridSize(self.calculate_grid_size(icon_edge))
+            self._apply_tile_geometry(icon_edge)
             self._view_stack.setCurrentWidget(self._tile_view)
         else:
             self._model.set_thumbnail_edge(96)
-            self._tree_view.setIconSize(QSize(32, 32))
+            self._set_icon_size(self._tree_view, QSize(32, 32))
             self._view_stack.setCurrentWidget(self._tree_view)
         self.update_view_toggle_button()
         self._connect_selection_signals()
         if select_default:
             self._select_pending_or_first_row()
+
+    def _apply_tile_geometry(self, icon_edge: int) -> None:
+        """タイルのアイコン／グリッドサイズを、変化があるときだけ設定する。
+
+        ``setIconSize`` と ``setGridSize`` は QListView に全アイテムの再レイアウトを
+        させ、スクロール位置も先頭へ戻す。``apply_media_mode`` は ``directoryLoaded``
+        のたびに呼ばれるため、無条件に設定すると、削除後にモデルがディレクトリを
+        再走査するたびに表示が先頭へ飛ぶ（14件削除で再走査が3回発生し、そのたびに
+        起きていた）。
+        """
+        self._set_icon_size(self._tile_view, QSize(icon_edge, icon_edge))
+        grid_size = self.calculate_grid_size(icon_edge)
+        if self._tile_view.gridSize() != grid_size:
+            self._tile_view.setGridSize(grid_size)
+
+    @staticmethod
+    def _set_icon_size(view: QAbstractItemView, size: QSize) -> None:
+        if view.iconSize() != size:
+            view.setIconSize(size)
 
     def handle_view_toggle_clicked(self) -> None:
         target = not self._media_icon_mode

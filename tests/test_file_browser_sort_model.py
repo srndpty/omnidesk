@@ -178,8 +178,55 @@ def test_thumbnail_only_data_changed_keeps_sort_cache(qtbot, tmp_path: Path) -> 
     source.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
     assert tab._model._meta_cache
 
-    # 名前やサイズが変わり得る通知（ロール指定なし）では捨てる。
+    # 名前やサイズが変わり得る通知（ロール指定なし）では捨てる。ただし
+    # 捨てるのは通知された行だけ（全体を捨てると再走査のたびに全件を作り直す）。
+    before = dict(tab._model._meta_cache)
     source.dataChanged.emit(index, index, [])
+    after = tab._model._meta_cache
+
+    assert index.internalId() in before
+    assert index.internalId() not in after
+    assert set(after) == set(before) - {index.internalId()}
+
+
+def test_wide_data_changed_clears_the_whole_sort_cache(qtbot, tmp_path: Path) -> None:
+    """広範囲の通知は、行単位で引くよりまとめて捨てる。
+
+    範囲が広いと1行ずつ ``source.index()`` を引くほうが高くつく。
+    """
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+    tab._model.sort(0, Qt.SortOrder.AscendingOrder)
+    assert tab._model._meta_cache
+
+    source = tab._source_model
+    root = source.index(str(tmp_path))
+    # 5件のディレクトリで広範囲扱いになるよう、しきい値だけ下げる。
+    tab._model.ROW_SCOPED_INVALIDATION_LIMIT = 1
+    source.dataChanged.emit(source.index(0, 0, root), source.index(2, 0, root), [])
+
+    assert not tab._model._meta_cache
+
+
+def test_data_changed_with_unresolvable_range_clears_the_whole_sort_cache(
+    qtbot, tmp_path: Path
+) -> None:
+    """範囲を絞り込めない通知では、安全側に倒して全部捨てること。"""
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+    tab._model.sort(0, Qt.SortOrder.AscendingOrder)
+    assert tab._model._meta_cache
+
+    from PyQt6.QtCore import QModelIndex
+
+    tab._source_model.dataChanged.emit(QModelIndex(), QModelIndex(), [])
+
     assert not tab._model._meta_cache
 
 
@@ -263,3 +310,117 @@ def test_file_path_and_file_info_map_through_proxy(qtbot, tmp_path: Path) -> Non
     assert index.isValid()
     assert Path(tab._model.filePath(index)) == target
     assert tab._model.fileInfo(index).fileName() == "a.png"
+
+
+def test_removed_paths_are_hidden_before_the_source_model_catches_up(qtbot, tmp_path: Path) -> None:
+    """削除済みの行を、QFileSystemModel の再走査を待たずに消すこと。
+
+    QFileSystemModel は QFileSystemWatcher の通知を受けてからディレクトリを
+    再走査するため、行が実際に消えるまで待たされる（7,500件のフォルダで実測950ms）。
+    ユーザーから見ると「OKを押したのに反映されない」ラグになる。
+    """
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+
+    hidden = tab._model.hide_removed_paths([tmp_path / "b.txt"])
+
+    assert hidden == 1
+    # 元モデルはまだ b.txt を持っているが、表示からは消えている。
+    assert tab._source_model.index(str(tmp_path / "b.txt")).isValid()
+    assert _visible_names(tab) == ["sub", "a.png", "c.txt", "d.png"]
+
+
+def test_hiding_the_same_path_twice_does_not_refilter_again(qtbot, tmp_path: Path) -> None:
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+
+    assert tab._model.hide_removed_paths([tmp_path / "b.txt"]) == 1
+    assert tab._model.hide_removed_paths([tmp_path / "b.txt"]) == 0
+
+
+def test_hidden_rows_are_released_when_the_source_model_drops_them(qtbot, tmp_path: Path) -> None:
+    """元モデルが追いついたら、伏せる指定を持ち越さないこと。
+
+    残したままだと、同名のファイルを作り直したときに見えなくなる。
+    """
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+
+    target = tmp_path / "b.txt"
+    tab._model.hide_removed_paths([target])
+    target.unlink()
+
+    # 保険のタイマー（5秒）ではなく、元モデルの rowsRemoved で解除されること。
+    qtbot.waitUntil(lambda: not tab._model._hidden_keys, timeout=3000)
+    assert not tab._model._hidden_release_timer.isActive()
+    assert _visible_names(tab) == ["sub", "a.png", "c.txt", "d.png"]
+
+    # 伏せる指定が外れているので、作り直せば再び現れる。
+    target.write_text("x", encoding="utf-8")
+    qtbot.waitUntil(lambda: "b.txt" in _visible_names(tab), timeout=5000)
+
+
+def test_hidden_rows_are_released_by_the_safety_timer(qtbot, tmp_path: Path) -> None:
+    """元モデルが追いつかなくても、伏せたまま取り残されないこと。"""
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+
+    # ファイルは消さずに伏せるだけ（元モデルは rowsRemoved を出さない）。
+    tab._model.hide_removed_paths([tmp_path / "b.txt"])
+    assert "b.txt" not in _visible_names(tab)
+
+    tab._model._hidden_release_timer.setInterval(0)
+    tab._model._hidden_release_timer.start()
+
+    qtbot.waitUntil(lambda: "b.txt" in _visible_names(tab), timeout=3000)
+
+
+def test_navigating_away_clears_hidden_rows(qtbot, tmp_path: Path) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "b.txt").write_text("x", encoding="utf-8")
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+    tab._model.hide_removed_paths([tmp_path / "b.txt"])
+
+    tab.navigate_to(other)
+    _wait_for_entries(qtbot, tab, 1)
+
+    # 同名でも別ディレクトリのファイルは伏せない。
+    assert tab._model._hidden_keys == set()
+    assert _visible_names(tab) == ["b.txt"]
+
+
+def test_filter_rejects_by_name_before_resolving_paths(qtbot, tmp_path: Path, mocker) -> None:
+    """伏せていない行でフルパスを解決しないこと。
+
+    ``invalidateFilter()`` は全行に対して ``filterAcceptsRow`` を呼ぶ。全行で
+    パス正規化すると、7,500件でGUIスレッドを数十ms消費してしまう。
+    """
+    _make_files(tmp_path)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 5)
+    spy = mocker.spy(sort_model_module, "navigation_key")
+
+    tab._model.hide_removed_paths([tmp_path / "b.txt"])
+
+    resolved = [call.args[0] for call in spy.call_args_list]
+    # 伏せる対象の1件ぶんと、名前が一致した行の照合だけ。他の4行では解決しない。
+    assert len(resolved) <= 2

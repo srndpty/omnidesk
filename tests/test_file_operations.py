@@ -316,9 +316,84 @@ def test_delete_paths_calls_send2trash_for_existing_path(
 
     result = delete_paths_with_result([file_path])
 
-    mock_send2trash.assert_called_once_with(str(file_path))
+    mock_send2trash.assert_called_once_with([str(file_path)])
     assert result.errors == []
     assert result.changed_dirs == [file_path.parent]
+
+
+def test_delete_paths_moves_everything_in_one_shell_call(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """複数削除を1回のシェル呼び出しにまとめること。
+
+    1件ずつ呼ぶとWindowsのシェル操作の固定コストが件数ぶんかかる（14件で実測515ms）
+    うえ、ディレクトリの変更通知も件数ぶん飛ぶ。通知のたびに QFileSystemModel が
+    ディレクトリ全体を再走査するため、大量ファイルのフォルダでは再走査が数秒に
+    わたって繰り返される。
+    """
+    paths = []
+    for index in range(14):
+        path = tmp_path / f"f{index:02d}.txt"
+        path.write_text("x", encoding="utf-8")
+        paths.append(path)
+    mock_send2trash = mocker.patch("omnidesk.ui.file_operations.send2trash")
+
+    result = delete_paths_with_result(paths)
+
+    mock_send2trash.assert_called_once_with([str(path) for path in paths])
+    assert result.errors == []
+    assert result.changed_dirs == [tmp_path] * len(paths)
+
+
+def test_delete_paths_retries_individually_when_the_batch_fails(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """まとめての呼び出しが失敗したら、原因を特定するため1件ずつ再試行すること。"""
+    first = tmp_path / "a.txt"
+    second = tmp_path / "b.txt"
+    for path in (first, second):
+        path.write_text("x", encoding="utf-8")
+
+    def fake_send2trash(target):
+        if isinstance(target, list):
+            raise OSError("batch failed")
+        if target == str(second):
+            raise OSError("locked")
+        Path(target).unlink()
+
+    mocker.patch("omnidesk.ui.file_operations.send2trash", side_effect=fake_send2trash)
+
+    result = delete_paths_with_result([first, second])
+
+    assert not first.exists()
+    assert result.changed_dirs == [tmp_path]
+    assert len(result.errors) == 1
+    assert str(second) in result.errors[0]
+
+
+def test_delete_paths_individual_retry_treats_already_gone_as_done(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """まとめての呼び出しが途中まで成功していたら、その分をエラーにしないこと。"""
+    gone = tmp_path / "gone.txt"
+    remaining = tmp_path / "remaining.txt"
+    for path in (gone, remaining):
+        path.write_text("x", encoding="utf-8")
+
+    def fake_send2trash(target):
+        if isinstance(target, list):
+            # 1件目だけ移動できた状態で失敗する。
+            gone.unlink()
+            raise OSError("batch failed halfway")
+        Path(target).unlink()
+
+    mocker.patch("omnidesk.ui.file_operations.send2trash", side_effect=fake_send2trash)
+
+    result = delete_paths_with_result([gone, remaining])
+
+    assert result.errors == []
+    assert result.changed_dirs == [tmp_path, tmp_path]
+    assert not remaining.exists()
 
 
 def test_delete_paths_skips_send2trash_for_dangerous_path(
