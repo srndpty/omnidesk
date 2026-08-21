@@ -120,6 +120,9 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
         # budget_check_interval writes. Use budget_check_interval=1 for strict enforcement.
         self._budget_check_interval = max(1, budget_check_interval)
         self._budget_lock = threading.Lock()
+        # 書き込み回数の更新は、実走査中の ``_budget_lock`` を待たされないよう
+        # 別ロックで守る（保存ジョブが走査の完了までブロックされるのを避ける）。
+        self._put_count_lock = threading.Lock()
 
     # ---------- ディスクキー生成 ----------
     def _disk_key(self, key: Key, *, hint_edge: int | None = None) -> Path:
@@ -187,6 +190,23 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
     def enforce_disk_budget(self) -> None:
         self._enforce_disk_budget()
 
+    def maybe_enforce_disk_budget(self) -> None:
+        """間引きつきの予算チェック。
+
+        ``_enforce_disk_budget`` はキャッシュフォルダを丸ごと走査するため、
+        サムネイル1枚保存するたびに呼ぶと、保存のたびに数千件の ``stat`` が走る。
+        非同期保存の完了コールバックからはこちらを使い、``budget_check_interval``
+        回に1回だけ実走査する（``put`` の同期経路と同じ間引き方針）。
+        """
+        if self._should_check_budget():
+            self._enforce_disk_budget()
+
+    def _should_check_budget(self) -> bool:
+        """書き込み回数を1つ進め、今回実走査すべきかを返す。"""
+        with self._put_count_lock:
+            self._put_count += 1
+            return self._put_count % self._budget_check_interval == 0
+
     # ---------- メモリ+ディスク: get ----------
     def get(self, key: Key, *, hint_edge: int | None = None) -> QIcon | None:
         icon = ThumbnailCache.get_sized(self, key, hint_edge)
@@ -245,31 +265,35 @@ class PersistentThumbnailCache(ThumbnailCache[Key]):
             logger.exception("Failed to save thumbnail cache file: %s", dst)
             return
 
-        self._put_count += 1
-        if self._put_count % self._budget_check_interval == 0:
-            self._enforce_disk_budget()
+        self.maybe_enforce_disk_budget()
 
     # ---------- ディスクLRU整理 ----------
     def _enforce_disk_budget(self) -> None:
         if not self._budget_lock.acquire(blocking=False):
             return  # 別スレッドが実行中 → スキップ
         try:
-            files = list(self._root.glob("*.png"))
-            if not files:
+            # ``glob`` + 個別 ``stat`` から ``os.scandir`` の1パスへ。``DirEntry`` は
+            # 走査中に得た stat 結果を保持するので、エントリごとの追加 syscall が減る。
+            total = 0
+            stats: list[tuple[Path, float, int]] = []
+            with os.scandir(self._root) as entries:
+                for entry in entries:
+                    if not entry.name.endswith(".png"):
+                        continue
+                    try:
+                        st = entry.stat()
+                    except OSError:
+                        logger.debug(
+                            "Could not stat thumbnail cache file: %s", entry.path, exc_info=True
+                        )
+                        continue
+                    total += st.st_size
+                    stats.append((Path(entry.path), st.st_mtime, st.st_size))
+
+            if not stats:
                 return
 
             # サイズ・件数がしきい値内なら何もしない
-            total = 0
-            stats = []
-            for f in files:
-                try:
-                    st = f.stat()
-                    total += st.st_size
-                    stats.append((f, st.st_mtime, st.st_size))
-                except Exception:
-                    logger.debug("Could not stat thumbnail cache file: %s", f, exc_info=True)
-                    continue
-
             if len(stats) <= self._disk_max_items and total <= self._disk_max_bytes:
                 return
 

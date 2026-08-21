@@ -74,12 +74,20 @@ class SortRefreshController:
             self._timer.start()
 
     def apply_refresh_sort(self) -> None:
+        """レイアウト確定を待って選択を復元する。
+
+        以前はこのリトライのたびに :meth:`sort_current_directory` を呼んでいたため、
+        1回の refresh で最大10回の並べ替えとタイルの再レイアウトが走っていた。
+        7,500件規模では ``lessThan`` が1回あたり約9万回呼ばれるので、これだけで
+        数秒のGUI停止になる。並べ替えは ``_complete_refresh`` の1回で足りる
+        （行の増減はプロキシの動的ソートが追従する）ため、ここは選択復元だけを
+        リトライする。
+        """
         retries_before_attempt = self._retries
         if not self._active or retries_before_attempt <= 0:
             self._active = False
             return
         self._retries -= 1
-        self.sort_current_directory(reason="refresh-deferred")
         restore_succeeded = (
             self._selection_path
             and self._selection_path.exists()

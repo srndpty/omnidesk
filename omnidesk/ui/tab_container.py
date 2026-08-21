@@ -375,9 +375,10 @@ class TabContainer(QWidget):
             tab.go_up()
 
     def refresh(self) -> None:
+        """ユーザーによる明示的な再読込（F5）。ディレクトリを丸ごと読み直す。"""
         tab = self.current_tab()
         if tab:
-            tab.refresh()
+            tab.refresh(force=True)
 
     def focus_current(self) -> None:
         tab = self.current_tab()

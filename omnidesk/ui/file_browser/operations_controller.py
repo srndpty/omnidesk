@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from PyQt6.QtCore import QThreadPool
 from PyQt6.QtWidgets import QAbstractItemView, QInputDialog, QMessageBox, QWidget
 
+from .. import job_priority
 from ..file_browser_drop import has_blocked_self_move
 from ..file_browser_navigation import same_navigation_path
 from ..file_operation_jobs import FileOperationJob, FileOperationSignals
@@ -79,7 +80,7 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
 
         def focus_view(self) -> None: ...
 
-        def refresh(self) -> None: ...
+        def refresh(self, *, force: bool = False) -> None: ...
 
     def _rename_selected(self) -> None:
         paths = self._selected_paths()
@@ -318,7 +319,8 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         self._file_operation_jobs.append(job)
         pool = QThreadPool.globalInstance()
         assert pool is not None
-        pool.start(job)
+        # サムネイル系の待ち行列を追い越させる。ユーザーは結果を待っている。
+        pool.start(job, job_priority.INTERACTIVE)
         return job
 
     def _handle_file_operation_job_finished(self, job_id: int, result: object) -> None:

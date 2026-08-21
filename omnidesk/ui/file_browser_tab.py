@@ -101,7 +101,10 @@ class FileBrowserTab(
 
         self._source_model = MediaFileSystemModel(self)
         self._source_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
-        self._source_model.setResolveSymlinks(True)
+        # シンボリックリンクの解決はエントリごとに実I/Oを伴う。サムネイルキーは
+        # 既に字句的な正規化（MediaFileSystemModel._resolve_key）で揃えているため、
+        # ここで辿る必要はない。
+        self._source_model.setResolveSymlinks(False)
         self._source_model.setReadOnly(True)
 
         # 名前順/拡張子順の並べ替えはプロキシ側で制御し、UI からは従来どおり
@@ -267,7 +270,7 @@ class FileBrowserTab(
         self._refresh_button = QToolButton(self)
         self._refresh_button.setText("Reload")
         self._refresh_button.setToolTip("Refresh (F5)")
-        self._refresh_button.clicked.connect(self.refresh)
+        self._refresh_button.clicked.connect(lambda: self.refresh(force=True))
 
         path_bar_layout = QHBoxLayout()
         path_bar_layout.setContentsMargins(0, 0, 0, 0)

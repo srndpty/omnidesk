@@ -534,7 +534,10 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setWrapping(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Static)
-        self.setLayoutMode(QListView.LayoutMode.SinglePass)
+        # SinglePass は挿入バッチごとに全アイテムを一度にレイアウトするため、
+        # 大量ファイルのフォルダでGUIスレッドが止まる。Batched なら
+        # LAYOUT_BATCH_SIZE 件ずつに割れて、途中でイベントを処理できる。
+        self.setLayoutMode(QListView.LayoutMode.Batched)
         self.setBatchSize(self.LAYOUT_BATCH_SIZE)
         self.setSpacing(16)
         self.setUniformItemSizes(True)

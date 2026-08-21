@@ -114,7 +114,9 @@ class MediaFileSystemModel(QFileSystemModel):
         self._request_edges: dict[str, int] = {}
         self._allow_folder_preview_for_visible_targets = True
         self.setReadOnly(False)
-        self._icon_provider = QFileIconProvider()
+        self._icon_provider = self._configure_icon_provider()
+        # フォルダプレビューの土台画像はエッジごとに1枚あれば足りる（下記参照）。
+        self._folder_base_pixmaps: dict[int, QPixmap] = {}
         # ジョブはワーカースレッドで破棄されるため、シグナル用QObjectはジョブに
         # 持たせず1つだけ用意して共有する。寿命はモデルではなく QApplication に
         # 預ける（サムネイル生成中にタブを閉じても壊れないようにするため）。
@@ -145,6 +147,31 @@ class MediaFileSystemModel(QFileSystemModel):
         # ディレクトリを移動するたびにキャッシュを捨てる。
         self._key_cache.clear()
         return super().setRootPath(path)
+
+    def _configure_icon_provider(self):
+        """モデルが持つアイコンプロバイダから、フォルダ個別アイコンの参照を外す。
+
+        ``DontUseCustomDirectoryIcons`` は、フォルダごとの独自アイコン
+        （Windowsでは ``desktop.ini`` の参照）を止めるQtの公式オプション。Qtの
+        ドキュメントも「ネットワークやリムーバブルドライブで大きな性能影響がある」と
+        明記しており、未訪問のフォルダが並ぶディレクトリで初回だけ大きく待たされる
+        主因になっていた（2回目以降はOS側のキャッシュが効くので速くなる）。
+
+        **自前で作ったプロバイダを ``setIconProvider()`` へ渡してはいけない。**
+        ``QFileSystemModel`` はプロバイダを所有せず、しかもエントリごとの ``icon()`` を
+        バックグラウンドの ``QFileInfoGatherer`` スレッドから呼ぶ。Python側が生成した
+        インスタンスはモデルの破棄と競合して先に解放され得るため、タブを閉じた直後に
+        アクセス違反でプロセスごと落ちる（``tests/test_qt_lifetime.py`` で再現した）。
+        Pythonのサブクラスにすると、さらにgathererスレッドから毎エントリPythonへ
+        入ることになり、GILをGUIスレッドと奪い合って高速化そのものを打ち消す。
+
+        ここではモデルが既に持っている（= Qtが寿命を管理する）プロバイダへ
+        オプションを設定するだけにする。
+        """
+        provider = self.iconProvider()
+        if provider is not None:
+            provider.setOptions(QFileIconProvider.Option.DontUseCustomDirectoryIcons)
+        return provider
 
     def set_thumbnail_edge(self, edge: int) -> None:
         self._thumbnail_edge = max(16, edge)
@@ -266,14 +293,18 @@ class MediaFileSystemModel(QFileSystemModel):
         for key, path, is_dir in ordered:
             if request_limit is not None and requested >= request_limit:
                 break
-            if is_dir and not allow_folder_preview:
-                key = self._normalise_key(path)
-                cache = self._cache_for_info(is_dir)
-                if (
-                    cache.get_memory(key, min_edge=self._thumbnail_edge) is None
-                    and not cache.disk_path(key, hint_edge=self._thumbnail_edge).exists()
-                ):
-                    continue
+            # スクロール中はフォルダプレビューを新規に起こさない。以前はここで
+            # ディスクキャッシュの有無も見ていたが、disk_path() は stat + is_dir、
+            # exists() でさらに1回と、可視アイテム数ぶんの同期I/OがGUIスレッドで
+            # 走っていた。スクロール中はメモリキャッシュだけで判定し、ディスクに
+            # だけあるものはスクロール停止後（allow_folder_preview=True）に拾う。
+            if (
+                is_dir
+                and not allow_folder_preview
+                and self._cache_for_info(is_dir).get_memory(key, min_edge=self._thumbnail_edge)
+                is None
+            ):
+                continue
             if self._request_visible_key(key, path, is_dir):
                 requested += 1
         return requested
@@ -290,29 +321,30 @@ class MediaFileSystemModel(QFileSystemModel):
                 self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
             return False
 
-        disk_path = cache.disk_path(key, hint_edge=self._thumbnail_edge)
-        if disk_path.exists():
-            self._debug("disk-load", key, disk_path)
-            token = self._new_token(key)
-            job = CacheLoadJob(key, disk_path, token, self._job_signals, is_dir=is_dir)
-            self._cache_jobs[key] = job
-            self._pending.add(key)
-            self._scan_pool.start(job)
-            return True
-
-        if is_dir:
-            if self._thumbnail_edge <= 64:
-                return False
-            self._debug("folder-scan-start", key)
-            self._ensure_folder_thumbnail(path)
-            return True
-
-        suffix = path.suffix.lower()
-        if suffix not in self.media_extensions:
+        # そもそもサムネイルを持ち得ないエントリは、I/Oせずここで落とす。
+        # （request_limit の消費対象にもしない）
+        if not self._can_have_thumbnail(path, is_dir):
             return False
-        self._debug("image-start", key)
-        self._ensure_thumbnail(path, suffix, key)
+
+        # ディスクキャッシュの有無は CacheLoadJob が worker で確かめる。
+        # 以前はここで disk_path()（stat + is_dir）と exists() を呼んでおり、
+        # 可視アイテム数 × タイマー発火回数ぶんの同期I/OがGUIスレッドで走っていた。
+        # キャッシュが無ければ _handle_cache_loaded が生成経路へフォールバックする。
+        disk_path = cache.disk_path(key, hint_edge=self._thumbnail_edge)
+        self._debug("disk-load", key, disk_path)
+        token = self._new_token(key)
+        job = CacheLoadJob(key, disk_path, token, self._job_signals, is_dir=is_dir)
+        self._cache_jobs[key] = job
+        self._pending.add(key)
+        self._scan_pool.start(job)
         return True
+
+    def _can_have_thumbnail(self, path: Path, is_dir: bool) -> bool:
+        """サムネイル生成の対象になり得るエントリかを、I/Oせずに判定する。"""
+        if is_dir:
+            # 小さいアイコンではフォルダプレビューを作らない。
+            return self._thumbnail_edge > 64
+        return path.suffix.lower() in self.media_extensions
 
     def _ensure_folder_thumbnail(self, path: Path) -> None:
         """フォルダのプレビューサムネイル生成をリクエストする"""
@@ -463,15 +495,17 @@ class MediaFileSystemModel(QFileSystemModel):
         self._failed.discard(key)
 
         target_path = Path(key)
-        if target_path.is_dir():
-            folder_index = self.index(key)
+        folder_index = self.index(key)
+        # 種別はモデルが把握している情報から決める。以前は Path.is_dir() を
+        # （しかも同じ関数内で2回）呼んでおり、サムネイルが1件完成するたびに
+        # GUIスレッドで実I/Oが走っていた。7,500件のフォルダでは無視できない。
+        is_dir = self.isDir(folder_index) if folder_index.isValid() else target_path.is_dir()
+
+        if is_dir:
             if not folder_index.isValid():
                 return
 
-            folder_info = self.fileInfo(folder_index)
-            base_icon = self._icon_provider.icon(folder_info)
-            base_pixmap = folder_base_pixmap(base_icon, request_edge)
-
+            base_pixmap = self._folder_base_pixmap_for_edge(request_edge)
             thumb_pixmap = icon.pixmap(QSize(request_edge, request_edge))
 
             painter = QPainter(base_pixmap)
@@ -497,9 +531,30 @@ class MediaFileSystemModel(QFileSystemModel):
             file_thumbnail_cache.put_memory(key, icon, pixmap)
             self._save_cache_async(file_thumbnail_cache, key, pixmap, hint_edge=request_edge)
 
-        self._request_current_edge_if_needed(key, target_path, target_path.is_dir(), request_edge)
+        self._request_current_edge_if_needed(key, target_path, is_dir, request_edge)
         self._debug("ready", key)
         self._emit_thumbnail_changed(key)
+
+    def _folder_base_pixmap_for_edge(self, edge: int) -> QPixmap:
+        """フォルダプレビューの土台画像を、エッジごとに1枚だけ作って使い回す。
+
+        :class:`LightweightIconProvider` によりフォルダの基底アイコンは全フォルダで
+        同一になったため、エッジが同じなら土台も同じになる。以前はフォルダ1件ごとに
+        ``QIcon`` からの取り出しと平滑スケーリングをやり直していた。
+
+        呼び出し側はこの上にサムネイルを描き込むので、必ずコピーを返す。
+        """
+        cached = self._folder_base_pixmaps.get(edge)
+        if cached is None:
+            provider = self._icon_provider
+            base_icon = (
+                provider.icon(QFileIconProvider.IconType.Folder)
+                if provider is not None
+                else QIcon()
+            )
+            cached = folder_base_pixmap(base_icon, edge)
+            self._folder_base_pixmaps[edge] = cached
+        return cached.copy()
 
     def _request_current_edge_if_needed(
         self, key: str, path: Path, is_dir: bool, completed_edge: int
@@ -509,11 +564,9 @@ class MediaFileSystemModel(QFileSystemModel):
         if key not in self._visible_keys:
             return
         if is_dir and not self._allow_folder_preview_for_visible_targets:
+            # set_visible_thumbnail_targets と同じ理由で、ここでも exists() は見ない。
             cache = self._cache_for_info(is_dir)
-            if (
-                cache.get_memory(key, min_edge=self._thumbnail_edge) is None
-                and not cache.disk_path(key, hint_edge=self._thumbnail_edge).exists()
-            ):
+            if cache.get_memory(key, min_edge=self._thumbnail_edge) is None:
                 self._debug("edge-stale-throttled", key, completed_edge)
                 return
         self._debug("edge-stale", key, f"{completed_edge}->{self._thumbnail_edge}")
@@ -536,7 +589,9 @@ class MediaFileSystemModel(QFileSystemModel):
             CacheSaveJob(
                 cache.disk_path(key, hint_edge=edge),
                 cache_pixmap.toImage(),
-                cache.enforce_disk_budget,
+                # 保存1件ごとの全走査を避けるため、間引き版を渡す。
+                # サムネイルは1フォルダで数千件保存され得る。
+                cache.maybe_enforce_disk_budget,
                 lambda temp_path, cache_path: self._commit_cache_save(
                     save_key,
                     generation,

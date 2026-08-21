@@ -40,7 +40,7 @@ class FakeBrowserTab(QWidget):
     def go_up(self) -> None:
         self.calls.append("go_up")
 
-    def refresh(self) -> None:
+    def refresh(self, *, force: bool = False) -> None:
         self.calls.append("refresh")
 
     def focus_view(self) -> None:

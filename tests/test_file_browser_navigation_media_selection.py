@@ -14,6 +14,7 @@ from omnidesk.ui.file_browser_navigation import (
     directory_fingerprint,
     directory_fingerprint_changed,
     navigation_history_step,
+    navigation_key,
     navigation_target,
     path_to_focus_after_go_up,
     refresh_sort_action,
@@ -49,12 +50,31 @@ def test_should_record_history_respects_history_flag_and_same_path(tmp_path: Pat
     assert should_record_history(current, other, from_history=False)
 
 
-def test_navigation_path_comparison_uses_resolved_paths(tmp_path: Path) -> None:
+def test_navigation_path_comparison_normalises_without_filesystem_access(tmp_path: Path) -> None:
+    """``..`` を畳んで比較するが、実ファイルシステムへは触らないこと。
+
+    以前は ``Path.resolve()`` を使っていた。この比較は 80ms のリトライタイマー
+    （選択復元・遅延スクロール）から繰り返し呼ばれるため、1回でも実I/Oが混じると
+    低速ドライブやネットワークドライブでGUIスレッドが止まる。
+    """
     current = tmp_path / "current"
     current.mkdir()
 
     assert same_navigation_path(current, current / ".." / "current")
     assert same_navigation_path(tmp_path, current / "..")
+
+    # 存在しないパスでも、字句的に同じなら同じと判定できる（= stat していない）。
+    missing = tmp_path / "missing" / "deep"
+    assert same_navigation_path(missing, tmp_path / "missing" / "." / "deep")
+    assert not same_navigation_path(missing, tmp_path / "missing")
+
+
+def test_navigation_key_is_case_insensitive_on_windows(tmp_path: Path) -> None:
+    """``normcase`` により、Windowsでは大文字小文字と区切り文字が揃うこと。"""
+    left = navigation_key(tmp_path / "Folder" / "File.PNG")
+    right = navigation_key(str(tmp_path / "Folder" / "File.PNG").lower())
+
+    assert (left == right) == (os.name == "nt")
 
 
 def test_directory_fingerprint_detects_directory_metadata_change(tmp_path: Path) -> None:

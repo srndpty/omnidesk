@@ -25,9 +25,10 @@ def test_deletion_replacement_prefers_previous_item(tmp_path: Path) -> None:
 
     assert (
         deletion_replacement_path(
-            paths,
+            lambda row: paths[row],
+            len(paths),
             selected_rows={2},
-            deleted_paths={paths[2].resolve()},
+            deleted_paths=[paths[2]],
         )
         == paths[1]
     )
@@ -38,9 +39,10 @@ def test_deletion_replacement_falls_back_to_next_item(tmp_path: Path) -> None:
 
     assert (
         deletion_replacement_path(
-            paths,
+            lambda row: paths[row],
+            len(paths),
             selected_rows={0, 1},
-            deleted_paths={paths[0].resolve(), paths[1].resolve()},
+            deleted_paths=[paths[0], paths[1]],
         )
         == paths[2]
     )
@@ -51,9 +53,10 @@ def test_deletion_replacement_returns_none_when_no_item_remains(tmp_path: Path) 
 
     assert (
         deletion_replacement_path(
-            paths,
+            lambda row: paths[row],
+            len(paths),
             selected_rows={0, 1},
-            deleted_paths={paths[0].resolve(), paths[1].resolve()},
+            deleted_paths=[paths[0], paths[1]],
         )
         is None
     )
@@ -91,3 +94,29 @@ def test_rubber_band_target_rows_preserves_partial_previous_selection_behavior()
     previous = {(2, 0)}
 
     assert rubber_band_target_rows(current, previous, control_pressed=True) == {2}
+
+
+def test_deletion_replacement_only_reads_rows_it_needs(tmp_path: Path) -> None:
+    """全行を事前に列挙しないこと。
+
+    削除確認の前に7,500件ぶんのモデル往復が走っていたのが、削除操作が数秒
+    かかっていた原因のひとつ。探索は選択行の隣から始まるので、実際に引くのは
+    ごく少数の行で足りる。
+    """
+    paths = _paths(tmp_path, [f"{index:03d}.txt" for index in range(100)])
+    requested: list[int] = []
+
+    def path_at(row: int) -> Path:
+        requested.append(row)
+        return paths[row]
+
+    assert (
+        deletion_replacement_path(
+            path_at,
+            len(paths),
+            selected_rows={50},
+            deleted_paths=[paths[50]],
+        )
+        == paths[49]
+    )
+    assert requested == [49]

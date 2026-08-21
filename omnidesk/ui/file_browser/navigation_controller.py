@@ -163,8 +163,20 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
     def current_path(self) -> Path:
         return self._current_path
 
-    def refresh(self) -> None:
-        """Refresh the current directory view."""
+    def refresh(self, *, force: bool = False) -> None:
+        """Refresh the current directory view.
+
+        ``force=True`` はユーザーによる明示的な再読込（F5 / Reload ボタン）専用。
+        モデルのルートを親へ張り替えてから戻すことでディレクトリを丸ごと読み直す。
+        確実だが高価で、7,500件規模のフォルダでは全行の削除→再挿入と
+        ビュー全体の再レイアウトが走り、数秒のGUI停止になる。
+
+        ファイル操作（削除・コピー・移動・リネーム）の完了後は既定の
+        ``force=False`` で呼ぶこと。``QFileSystemModel`` は
+        ``QFileSystemWatcher`` を内蔵しており、消えた行・増えた行は
+        モデルを作り直さなくても反映される。ここで必要なのは、
+        失敗サムネイルの再試行と選択の復元だけ。
+        """
         # 明示的な refresh では、以前失敗したサムネイル（一時的にロックされていた
         # ファイルなど）を再試行する。これをしないとモデルの寿命の間ずっと空のままになる。
         self._model.forget_failed_thumbnails()
@@ -180,26 +192,29 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
             self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._sort_refresh_controller.begin_refresh_sort(self._pending_selection_path or selected)
         target = self._current_path
-        if self._reset_root_before_refresh(target):
+        if force and self._reset_root_before_refresh(target):
             self._deferred_refresh_target = target
             self._deferred_refresh_timer.start()
             return
-        self._complete_refresh(target)
+        self._complete_refresh(target, force=force)
 
     def _complete_deferred_refresh(self) -> None:
         target = self._deferred_refresh_target
         self._deferred_refresh_target = None
         if target is None:
             return
-        self._complete_refresh(target)
+        # 遅延経路へ来るのは force=True のときだけ（親へ張り替え済み）。
+        self._complete_refresh(target, force=True)
 
-    def _complete_refresh(self, target: Path) -> None:
+    def _complete_refresh(self, target: Path, *, force: bool = False) -> None:
         if target != self._current_path:
             self._sort_refresh_controller.cancel()
             return
-        self.navigate_to(target)
+        if force:
+            # 親へ張り替えた（あるいは張り替えを試みた）ので、ルートを戻す必要がある。
+            self.navigate_to(target)
         self._select_pending_path_if_ready()
-        self._sort_current_directory(reason="refresh-immediate")
+        self._sort_current_directory(reason="refresh-immediate" if force else "refresh-in-place")
         self._schedule_refresh_sort()
 
     def _reset_root_before_refresh(self, target: Path) -> bool:
@@ -488,15 +503,18 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         if not selected_rows:
             return None
 
-        ordered_paths: list[Path] = []
-        row_count = model.rowCount(root_index)
-        for row in range(row_count):
+        def path_at(row: int) -> Path | None:
             index = model.index(row, 0, root_index)
-            if index.isValid():
-                ordered_paths.append(Path(self._model.filePath(index)))
+            if not index.isValid():
+                return None
+            return Path(self._model.filePath(index))
 
-        deleted = {path.resolve() for path in deleted_paths}
-        return deletion_replacement_path(ordered_paths, selected_rows, deleted)
+        return deletion_replacement_path(
+            path_at,
+            model.rowCount(root_index),
+            selected_rows,
+            deleted_paths,
+        )
 
     def _connect_selection_signals(self) -> None:
         view = self._active_view()

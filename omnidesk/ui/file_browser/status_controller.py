@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from PyQt6.QtCore import QItemSelection, QObject, QRunnable, QThreadPool, pyqtSignal
 from PyQt6.QtWidgets import QAbstractItemView
 
+from .. import job_priority
 from ..file_browser_status import BrowserStatus, browser_status_from_counts, directory_item_counts
 from ..qt_lifetime import own_by_application
 from .selection_restore_controller import SelectionRestoreController
@@ -134,7 +135,8 @@ class BrowserStatusController:
         self._ensure_callback_connected(callback)
         job = _DirectoryCountJob(path, generation, self._signals)
         self.jobs[generation] = job
-        self.pool.start(job)
+        # 件数表示はサムネイルの待ち行列より先に出したい（操作はブロックしない）。
+        self.pool.start(job, job_priority.STATUS)
 
     def _ensure_callback_connected(self, callback: Callable[[str, int, int, int], None]) -> None:
         """共有シグナルへの接続を1回だけ張る。"""
