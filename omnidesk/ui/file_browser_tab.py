@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import QDir, QItemSelectionModel, QSize, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QItemSelectionModel, QSize, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -34,6 +34,7 @@ from .file_browser.views import (
     _FileTileView,
     _FileTreeView,
     navigation_cursor_action,
+    navigation_edge_row,
     navigation_event_without_control,
 )
 from .file_browser_background import FileBrowserThumbnailScheduler
@@ -44,9 +45,14 @@ from .qt_lifetime import own_by_application
 
 logger = logging.getLogger(__name__)
 
+# 明示的な再読込の完了通知が届かなかった場合に、保留を打ち切るまでの猶予。
+# 打ち切るだけで仕上げはしないので、遅いドライブで長引いても実害はない。
+DEFERRED_REFRESH_FALLBACK_MS = 30_000
+
 __all__ = [
     "FileBrowserTab",
     "navigation_cursor_action",
+    "navigation_edge_row",
     "navigation_event_without_control",
 ]
 
@@ -61,7 +67,7 @@ class FileBrowserTab(
     FileBrowserThumbnailMixin,
     QWidget,
 ):
-    """File browser view based on QFileSystemModel."""
+    """走査ベースのディレクトリモデルを使うファイルブラウザのタブ。"""
 
     DEFAULT_NAME_COLUMN_WIDTH = 420
     MEDIA_RATIO_THRESHOLD = 0.6
@@ -99,10 +105,10 @@ class FileBrowserTab(
             selected_path=lambda: self._selected_index_path(),
         )
 
+        # 走査ベースのモデル。``.``/``..`` は os.scandir が返さないので setFilter は不要。
+        # シンボリックリンクの扱い（種別は辿る／メタdataは辿らない）はモデル側の
+        # DirectoryScanJob._build_entry に集約してある。書き込みAPIも実装していない。
         self._source_model = MediaFileSystemModel(self)
-        self._source_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
-        self._source_model.setResolveSymlinks(True)
-        self._source_model.setReadOnly(True)
 
         # 名前順/拡張子順の並べ替えはプロキシ側で制御し、UI からは従来どおり
         # ``self._model`` を QFileSystemModel と同じ感覚で扱えるようにする。
@@ -196,6 +202,10 @@ class FileBrowserTab(
         self._file_operation_jobs: list[FileOperationJob] = []
         self._file_operation_job_seq = 0
         self._file_operation_completions: dict = {}
+        # 削除の体感ラグを切り分けるための計測用（詳細は operations_controller）。
+        self._file_operation_requested_at: dict[int, float] = {}
+        self._file_operation_requests: dict = {}
+        self._pending_rows_changed_since: float | None = None
         self._delete_confirmation_open = False
         self._toggle_view_button = QToolButton(self)
         self._toggle_view_button.setText("Tile View")
@@ -267,7 +277,7 @@ class FileBrowserTab(
         self._refresh_button = QToolButton(self)
         self._refresh_button.setText("Reload")
         self._refresh_button.setToolTip("Refresh (F5)")
-        self._refresh_button.clicked.connect(self.refresh)
+        self._refresh_button.clicked.connect(lambda: self.refresh(force=True))
 
         path_bar_layout = QHBoxLayout()
         path_bar_layout.setContentsMargins(0, 0, 0, 0)
@@ -314,10 +324,12 @@ class FileBrowserTab(
             request_visible=self._request_visible_thumbnail_batch,
         )
 
+        # 明示的な再読込の仕上げは directoryLoaded だけが駆動する。このタイマーは、
+        # 通知が届かなかった場合に保留状態を残さないための保険で、仕上げはしない。
         self._deferred_refresh_timer = QTimer(self)
         self._deferred_refresh_timer.setSingleShot(True)
-        self._deferred_refresh_timer.setInterval(0)
-        self._deferred_refresh_timer.timeout.connect(self._complete_deferred_refresh)
+        self._deferred_refresh_timer.setInterval(DEFERRED_REFRESH_FALLBACK_MS)
+        self._deferred_refresh_timer.timeout.connect(self._abort_deferred_refresh)
 
         scroll_bars = (
             self._tree_view.verticalScrollBar(),

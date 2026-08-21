@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 from pytest_mock import MockerFixture
 
+from omnidesk.ui import file_operations
 from omnidesk.ui.file_operations import (
     MAX_NAME_COMPONENT_UNITS,
     MAX_PATH_UNITS,
@@ -316,9 +317,84 @@ def test_delete_paths_calls_send2trash_for_existing_path(
 
     result = delete_paths_with_result([file_path])
 
-    mock_send2trash.assert_called_once_with(str(file_path))
+    mock_send2trash.assert_called_once_with([str(file_path)])
     assert result.errors == []
     assert result.changed_dirs == [file_path.parent]
+
+
+def test_delete_paths_moves_everything_in_one_shell_call(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """複数削除を1回のシェル呼び出しにまとめること。
+
+    1件ずつ呼ぶとWindowsのシェル操作の固定コストが件数ぶんかかる（14件で実測515ms）
+    うえ、ディレクトリの変更通知も件数ぶん飛ぶ。旧実装（QFileSystemModel）では通知の
+    たびにディレクトリ全体を再構築していたため、大量ファイルのフォルダでは再走査が
+    数秒にわたって繰り返されていた。
+    """
+    paths = []
+    for index in range(14):
+        path = tmp_path / f"f{index:02d}.txt"
+        path.write_text("x", encoding="utf-8")
+        paths.append(path)
+    mock_send2trash = mocker.patch("omnidesk.ui.file_operations.send2trash")
+
+    result = delete_paths_with_result(paths)
+
+    mock_send2trash.assert_called_once_with([str(path) for path in paths])
+    assert result.errors == []
+    assert result.changed_dirs == [tmp_path] * len(paths)
+
+
+def test_delete_paths_retries_individually_when_the_batch_fails(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """まとめての呼び出しが失敗したら、原因を特定するため1件ずつ再試行すること。"""
+    first = tmp_path / "a.txt"
+    second = tmp_path / "b.txt"
+    for path in (first, second):
+        path.write_text("x", encoding="utf-8")
+
+    def fake_send2trash(target):
+        if isinstance(target, list):
+            raise OSError("batch failed")
+        if target == str(second):
+            raise OSError("locked")
+        Path(target).unlink()
+
+    mocker.patch("omnidesk.ui.file_operations.send2trash", side_effect=fake_send2trash)
+
+    result = delete_paths_with_result([first, second])
+
+    assert not first.exists()
+    assert result.changed_dirs == [tmp_path]
+    assert len(result.errors) == 1
+    assert str(second) in result.errors[0]
+
+
+def test_delete_paths_individual_retry_treats_already_gone_as_done(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """まとめての呼び出しが途中まで成功していたら、その分をエラーにしないこと。"""
+    gone = tmp_path / "gone.txt"
+    remaining = tmp_path / "remaining.txt"
+    for path in (gone, remaining):
+        path.write_text("x", encoding="utf-8")
+
+    def fake_send2trash(target):
+        if isinstance(target, list):
+            # 1件目だけ移動できた状態で失敗する。
+            gone.unlink()
+            raise OSError("batch failed halfway")
+        Path(target).unlink()
+
+    mocker.patch("omnidesk.ui.file_operations.send2trash", side_effect=fake_send2trash)
+
+    result = delete_paths_with_result([gone, remaining])
+
+    assert result.errors == []
+    assert result.changed_dirs == [tmp_path, tmp_path]
+    assert not remaining.exists()
 
 
 def test_delete_paths_skips_send2trash_for_dangerous_path(
@@ -363,5 +439,144 @@ def test_delete_paths_passes_broken_symlink_to_send2trash(
 
     result = delete_paths_with_result([broken_link])
 
-    mock_send2trash.assert_called_once_with(str(broken_link))
+    # まとめて渡す経路（リストで1回）。リンク切れでも対象から落とさない。
+    mock_send2trash.assert_called_once_with([str(broken_link)])
     assert result.errors == []
+
+
+def test_delete_paths_chunks_large_selections_so_cancellation_still_works(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """巨大な選択でも、途中でキャンセルできる粒度を残すこと。
+
+    1回のシェル呼び出し自体は中断できないので、区切りを入れてその境目で見る。
+    """
+    paths = []
+    for index in range(file_operations.TRASH_BATCH_SIZE + 5):
+        path = tmp_path / f"f{index:04d}.txt"
+        path.write_text("x", encoding="utf-8")
+        paths.append(path)
+    mock_send2trash = mocker.patch("omnidesk.ui.file_operations.send2trash")
+    calls: list[int] = []
+    mock_send2trash.side_effect = lambda batch: calls.append(len(batch))
+
+    result = delete_paths_with_result(paths)
+
+    assert calls == [file_operations.TRASH_BATCH_SIZE, 5]
+    assert result.errors == []
+
+
+def test_delete_paths_stops_between_batches_when_cancelled(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    paths = []
+    for index in range(file_operations.TRASH_BATCH_SIZE * 2):
+        path = tmp_path / f"f{index:04d}.txt"
+        path.write_text("x", encoding="utf-8")
+        paths.append(path)
+    calls: list[int] = []
+    mocker.patch(
+        "omnidesk.ui.file_operations.send2trash",
+        side_effect=lambda batch: calls.append(len(batch)),
+    )
+    # 最初のバッチが終わったところでキャンセルされる状況を作る。
+    seen = {"checks": 0}
+
+    def is_cancelled() -> bool:
+        seen["checks"] += 1
+        return bool(calls)
+
+    result = delete_paths_with_result(paths, is_cancelled=is_cancelled)
+
+    assert calls == [file_operations.TRASH_BATCH_SIZE]
+    assert result.cancelled is True
+
+
+def test_delete_paths_batch_failure_does_not_stop_later_batches(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """あるバッチが失敗しても、残りのバッチは処理すること。"""
+    paths = []
+    for index in range(file_operations.TRASH_BATCH_SIZE + 2):
+        path = tmp_path / f"f{index:04d}.txt"
+        path.write_text("x", encoding="utf-8")
+        paths.append(path)
+
+    def fake_send2trash(target):
+        if isinstance(target, list) and len(target) == file_operations.TRASH_BATCH_SIZE:
+            raise OSError("first batch failed")
+        for item in target if isinstance(target, list) else [target]:
+            Path(item).unlink()
+
+    mocker.patch("omnidesk.ui.file_operations.send2trash", side_effect=fake_send2trash)
+
+    result = delete_paths_with_result(paths)
+
+    # 1件ずつの再試行で最初のバッチも片付き、最後の2件も消える。
+    assert result.errors == []
+    assert not any(path.exists() for path in paths)
+
+
+def test_cancelling_during_a_batch_stops_before_the_individual_retry_deletes_anything(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """まとめての呼び出し中にキャンセルされたら、1件も追加で消さないこと。
+
+    まとめての呼び出し自体は中断できないので、その実行中にキャンセルされる窓がある。
+    失敗して1件ずつの再試行へ入るとき、既にキャンセル済みなのに1件目だけ消して
+    しまうと「キャンセル後に新しい対象の削除を開始しない」という契約が破れる。
+    """
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"f{index}.txt"
+        path.write_text("x", encoding="utf-8")
+        paths.append(path)
+    cancelled = False
+    individually_deleted: list[str] = []
+
+    def fake_send2trash(target):
+        nonlocal cancelled
+        if isinstance(target, list):
+            # まとめての呼び出しの最中にキャンセルされ、そのあと失敗する。
+            cancelled = True
+            raise OSError("batch failed")
+        individually_deleted.append(target)
+        Path(target).unlink()
+
+    mocker.patch("omnidesk.ui.file_operations.send2trash", side_effect=fake_send2trash)
+
+    result = delete_paths_with_result(paths, is_cancelled=lambda: cancelled)
+
+    assert result.cancelled is True
+    assert individually_deleted == []
+    assert all(path.exists() for path in paths)
+
+
+def test_individual_retry_after_a_failed_batch_can_be_cancelled_midway(
+    mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """1件ずつの再試行の途中でも中断できること。
+
+    ここは1件ごとにシェル操作が走る最も遅い経路で、以前はキャンセルを一度も
+    見ずに最大 TRASH_BATCH_SIZE 件を走り切っていた。
+    """
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"f{index}.txt"
+        path.write_text("x", encoding="utf-8")
+        paths.append(path)
+    deleted: list[str] = []
+
+    def fake_send2trash(target):
+        if isinstance(target, list):
+            raise OSError("batch failed")
+        deleted.append(target)
+        Path(target).unlink()
+
+    mocker.patch("omnidesk.ui.file_operations.send2trash", side_effect=fake_send2trash)
+
+    result = delete_paths_with_result(paths, is_cancelled=lambda: len(deleted) >= 2)
+
+    assert result.cancelled is True
+    assert len(deleted) == 2
+    assert paths[-1].exists()

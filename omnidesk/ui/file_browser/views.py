@@ -86,6 +86,23 @@ NAVIGATION_CURSOR_ACTIONS = {
     Qt.Key.Key_Right: QAbstractItemView.CursorAction.MoveRight,
 }
 
+# Home/End は行番号を直接指定して動かす。``QListView`` は ``Batched`` レイアウトだと
+# ``MoveEnd`` に対して「モデルの最終行」ではなく「そこまでにレイアウト済みの最終行」
+# （``batchStartRow() - 1``）を返すため、大きなフォルダを開いた直後に End を押すと
+# 末尾ではなくバッチ境界（既定で128行目）へ飛んでしまう。
+NAVIGATION_EDGE_KEYS = {
+    Qt.Key.Key_Home: 0,
+    Qt.Key.Key_End: -1,
+}
+
+
+def navigation_edge_row(key: int, row_count: int) -> int | None:
+    """Home/End が指す行番号を返す。対象外のキーや空のビューでは ``None``。"""
+    offset = NAVIGATION_EDGE_KEYS.get(Qt.Key(key))
+    if offset is None or row_count <= 0:
+        return None
+    return 0 if offset == 0 else row_count - 1
+
 
 def navigation_event_without_control(event: QKeyEvent) -> QKeyEvent | None:
     """Return an equivalent navigation key event with Ctrl stripped."""
@@ -385,7 +402,10 @@ class _BaseFileViewMixin:
         if navigation_modifiers in (
             Qt.KeyboardModifier.NoModifier,
             Qt.KeyboardModifier.ControlModifier,
-        ) and self._select_single_navigation_target(event.key()):
+        ) and (
+            self._select_edge_navigation_target(event.key())
+            or self._select_single_navigation_target(event.key())
+        ):
             event.accept()
             return
         replacement_event = navigation_event_without_control(event)
@@ -394,6 +414,28 @@ class _BaseFileViewMixin:
             event.setAccepted(replacement_event.isAccepted())
             return
         super().keyPressEvent(event)  # type: ignore[attr-defined]
+
+    def _select_edge_navigation_target(self, key: int) -> bool:
+        """Home/End を、モデルの先頭行・最終行へ直接移動させる。
+
+        ``QAbstractItemView.moveCursor`` に任せると、タイル表示（``QListView`` の
+        ``Batched`` レイアウト）ではレイアウト済みの範囲までしか動かない。
+        """
+        view = cast(QAbstractItemView, self)
+        model = view.model()
+        selection_model = view.selectionModel()
+        if model is None or selection_model is None:
+            return False
+        root = view.rootIndex()
+        row = navigation_edge_row(key, model.rowCount(root))
+        if row is None:
+            return False
+        target = model.index(row, 0, root)
+        if not target.isValid():
+            return False
+        selection_model.setCurrentIndex(target, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        view.scrollTo(target)
+        return True
 
     def _select_single_navigation_target(self, key: int) -> bool:
         if isinstance(self, QTreeView) and key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
@@ -534,7 +576,10 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setWrapping(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Static)
-        self.setLayoutMode(QListView.LayoutMode.SinglePass)
+        # SinglePass は挿入バッチごとに全アイテムを一度にレイアウトするため、
+        # 大量ファイルのフォルダでGUIスレッドが止まる。Batched なら
+        # LAYOUT_BATCH_SIZE 件ずつに割れて、途中でイベントを処理できる。
+        self.setLayoutMode(QListView.LayoutMode.Batched)
         self.setBatchSize(self.LAYOUT_BATCH_SIZE)
         self.setSpacing(16)
         self.setUniformItemSizes(True)

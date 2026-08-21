@@ -163,8 +163,18 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
     def current_path(self) -> Path:
         return self._current_path
 
-    def refresh(self) -> None:
-        """Refresh the current directory view."""
+    def refresh(self, *, force: bool = False) -> None:
+        """Refresh the current directory view.
+
+        ``force=True`` はユーザーによる明示的な再読込（F5 / Reload ボタン）専用で、
+        ディレクトリを走査し直す。走査はワーカースレッドで行い、結果は差分で
+        反映されるので、選択もスクロール位置も保たれる。
+
+        ファイル操作（削除・コピー・移動・リネーム）の完了後は既定の
+        ``force=False`` で呼ぶこと。モデルはディレクトリを監視しており、消えた行・
+        増えた行は自動で反映される。ここで必要なのは、失敗サムネイルの再試行と
+        選択の復元だけ。
+        """
         # 明示的な refresh では、以前失敗したサムネイル（一時的にロックされていた
         # ファイルなど）を再試行する。これをしないとモデルの寿命の間ずっと空のままになる。
         self._model.forget_failed_thumbnails()
@@ -180,34 +190,54 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
             self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.EnsureVisible
         self._sort_refresh_controller.begin_refresh_sort(self._pending_selection_path or selected)
         target = self._current_path
-        if self._reset_root_before_refresh(target):
+        if force:
+            # 走査はワーカースレッドで走る。並べ替えと選択復元は、走査結果が
+            # モデルへ反映されてから（directoryLoaded を受けてから）行う。
+            # タイマーは、通知が来なかった場合に保留を残さないための保険。
             self._deferred_refresh_target = target
             self._deferred_refresh_timer.start()
+            self._model.rescan()
             return
-        self._complete_refresh(target)
+        self._complete_refresh(target, force=False)
 
     def _complete_deferred_refresh(self) -> None:
+        """走査結果が反映されたので、明示的な再読込の仕上げを行う。
+
+        呼び出し元は ``directoryLoaded`` だけ。時間切れの経路とは分ける
+        （:meth:`_abort_deferred_refresh` 参照）。
+        """
         target = self._deferred_refresh_target
         self._deferred_refresh_target = None
         if target is None:
             return
-        self._complete_refresh(target)
+        self._deferred_refresh_timer.stop()
+        # 遅延経路へ来るのは force=True のときだけ（走査を投げた直後）。
+        self._complete_refresh(target, force=True)
 
-    def _complete_refresh(self, target: Path) -> None:
+    def _abort_deferred_refresh(self) -> None:
+        """完了通知が届かないまま時間切れになった再読込を、保留ごと取り下げる。
+
+        ここで仕上げてしまうと、単に走査が遅いだけのとき（UNC、スピンダウンした
+        外付けドライブ、一時的に遅いファイルサーバー）に、古い一覧のまま並べ替えと
+        選択復元が走る。しかもそのあと本当の完了通知が来ても、保留が消えているので
+        もう仕上げ直せない。時間で仕上げるくらいなら、何もしないほうが安全。
+        """
+        if self._deferred_refresh_target is None:
+            return
+        logger.info(
+            "再読込の完了通知が届かないまま時間切れになりました: %s",
+            self._deferred_refresh_target,
+        )
+        self._deferred_refresh_target = None
+        self._sort_refresh_controller.cancel()
+
+    def _complete_refresh(self, target: Path, *, force: bool = False) -> None:
         if target != self._current_path:
             self._sort_refresh_controller.cancel()
             return
-        self.navigate_to(target)
         self._select_pending_path_if_ready()
-        self._sort_current_directory(reason="refresh-immediate")
+        self._sort_current_directory(reason="refresh-forced" if force else "refresh-in-place")
         self._schedule_refresh_sort()
-
-    def _reset_root_before_refresh(self, target: Path) -> bool:
-        parent = target.parent
-        if parent == target or not parent.exists():
-            return False
-        self._model.setRootPath(str(parent))
-        return True
 
     def go_back(self) -> None:
         """Navigate to the previous directory in this tab's history."""
@@ -276,6 +306,10 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
     # ------------------------------------------------------------------
 
     def _on_directory_loaded(self, _: str) -> None:
+        # 明示的な再読込（F5）は、走査結果が反映されたこの時点で仕上げる。
+        # 時間で待つと、走査が遅いときに古い一覧のまま並べ替えと選択復元が走る。
+        if self._deferred_refresh_target is not None:
+            self._complete_deferred_refresh()
         self._request_status_item_counts(self._current_path)
         self._update_media_mode(self._current_path, select_default=False)
 
@@ -431,8 +465,9 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         if not model:
             return
         selection_model = view.selectionModel()
+        # フラットなモデルなので、ルートインデックスは常に不正値（＝トップレベル）。
         root_index = view.rootIndex()
-        if selection_model and root_index.isValid():
+        if selection_model:
             first_index = model.index(0, 0, root_index)
             if first_index.isValid():
                 selection_model.setCurrentIndex(
@@ -488,15 +523,18 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         if not selected_rows:
             return None
 
-        ordered_paths: list[Path] = []
-        row_count = model.rowCount(root_index)
-        for row in range(row_count):
+        def path_at(row: int) -> Path | None:
             index = model.index(row, 0, root_index)
-            if index.isValid():
-                ordered_paths.append(Path(self._model.filePath(index)))
+            if not index.isValid():
+                return None
+            return Path(self._model.filePath(index))
 
-        deleted = {path.resolve() for path in deleted_paths}
-        return deletion_replacement_path(ordered_paths, selected_rows, deleted)
+        return deletion_replacement_path(
+            path_at,
+            model.rowCount(root_index),
+            selected_rows,
+            deleted_paths,
+        )
 
     def _connect_selection_signals(self) -> None:
         view = self._active_view()

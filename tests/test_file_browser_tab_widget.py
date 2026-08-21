@@ -4,6 +4,7 @@ from pathlib import Path
 from threading import Event
 from typing import cast
 
+import pytest
 from PyQt6.QtCore import (
     QEvent,
     QItemSelection,
@@ -40,10 +41,12 @@ from PyQt6.QtWidgets import (
 import omnidesk.ui.file_browser.delegates as file_browser_delegates_module
 import omnidesk.ui.file_browser.navigation_controller as file_browser_navigation_controller_module
 import omnidesk.ui.file_browser.status_controller as file_browser_status_controller_module
+from omnidesk.ui import job_priority
 from omnidesk.ui.file_browser_status import BrowserStatus
 from omnidesk.ui.file_browser_tab import (
     FileBrowserTab,
     navigation_cursor_action,
+    navigation_edge_row,
     navigation_event_without_control,
 )
 from omnidesk.ui.file_operation_jobs import FileOperationJob
@@ -525,8 +528,49 @@ def test_file_browser_tab_refresh_preserves_selection_and_resorts(
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(tab, "_selected_index_path", lambda: selected_path)
+    rescans: list[bool] = []
+    monkeypatch.setattr(tab._model, "rescan", lambda: rescans.append(True))
+    monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
+    monkeypatch.setattr(
+        tab._model,
+        "sort",
+        lambda column, order: sorted_columns.append((column, order)),
+    )
+
+    tab.refresh(force=True)
+
+    qtbot.waitUntil(lambda: bool(sorted_columns), timeout=1000)
+    # 明示的な再読込は走査のやり直し。モデルは作り直さない。
+    assert rescans == [True]
+    assert navigated == []
+    assert tab._refresh_selection_path == selected_path
+    assert tab._pending_selection_scroll_hint == QAbstractItemView.ScrollHint.EnsureVisible
+    assert sorted_columns == [(0, Qt.SortOrder.AscendingOrder)]
+
+
+def test_file_browser_tab_refresh_without_force_does_not_rebuild_model(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    """ファイル操作後の refresh でモデルを作り直さないこと。
+
+    以前は削除1件ごとに「親へ setRootPath → 自分へ戻す」でディレクトリを丸ごと
+    読み直しており、7,500件のフォルダでは全行の削除→再挿入と再レイアウトが走って
+    数秒のGUI停止になっていた。行の増減は QFileSystemWatcher が追従するので、
+    通常経路で作り直す必要はない。
+    """
+    selected_path = tmp_path / "keep.txt"
+    selected_path.write_text("keep", encoding="utf-8")
+    navigated: list[Path] = []
+    reset_roots: list[Path] = []
+    sorted_columns: list[tuple[int, Qt.SortOrder]] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(tab, "_selected_index_path", lambda: selected_path)
     monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
-    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
+    monkeypatch.setattr(tab._model, "rescan", lambda: reset_roots.append(tab._current_path))
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(
         tab._model,
@@ -536,11 +580,12 @@ def test_file_browser_tab_refresh_preserves_selection_and_resorts(
 
     tab.refresh()
 
-    qtbot.waitUntil(lambda: bool(navigated), timeout=1000)
-    assert navigated == [tmp_path]
-    assert tab._refresh_selection_path == selected_path
-    assert tab._pending_selection_scroll_hint == QAbstractItemView.ScrollHint.EnsureVisible
+    assert navigated == []
+    assert reset_roots == []
+    assert tab._deferred_refresh_target is None
+    # 並べ替えは1回だけ。選択の復元対象は従来どおり保持する。
     assert sorted_columns == [(0, Qt.SortOrder.AscendingOrder)]
+    assert tab._refresh_selection_path == selected_path
 
 
 def test_file_browser_tab_refresh_retries_failed_thumbnails(
@@ -552,7 +597,6 @@ def test_file_browser_tab_refresh_retries_failed_thumbnails(
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(tab, "navigate_to", lambda path: True)
-    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
     monkeypatch.setattr(tab._model, "sort", lambda column, order: None)
     tab._source_model._failed.add(str(tmp_path / "locked.png"))
@@ -575,28 +619,38 @@ def test_file_browser_tab_refresh_keeps_explicit_pending_selection(
     selected: list[Path] = []
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
-    tab._current_path = tmp_path
-    tab._has_loaded_root = True
+    # 実際に開いておく。開いていないと走査が走らず、完了通知も来ない。
+    tab.navigate_to(tmp_path)
+    qtbot.waitUntil(lambda: tab._model.rowCount() == 2, timeout=5000)
     tab._pending_selection_path = pending_selection
     monkeypatch.setattr(tab, "_selected_index_path", lambda: old_selection)
     monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
-    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: False)
     monkeypatch.setattr(tab, "_schedule_refresh_sort", lambda: None)
-    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or False)
+    monkeypatch.setattr(
+        tab, "_select_path", lambda path, *args, **kwargs: selected.append(path) or False
+    )
 
-    tab.refresh()
+    tab.refresh(force=True)
 
-    qtbot.waitUntil(lambda: bool(navigated), timeout=1000)
+    # 走査結果が届いてから仕上げる。
+    qtbot.waitUntil(lambda: bool(selected), timeout=5000)
     assert tab._pending_selection_path == pending_selection
     assert tab._refresh_selection_path == pending_selection
-    assert selected == [pending_selection]
+    # 仕上げ（_complete_refresh）と走査完了通知の両方から復元を試みる。
+    # どちらも同じ保留パスが対象で、他のパスを選びにいくことはない。
+    assert set(selected) == {pending_selection}
 
 
-def test_file_browser_tab_refresh_and_select_defers_selection_until_model_ready(
+def test_file_browser_tab_refresh_and_select_keeps_pending_until_model_ready(
     monkeypatch,
     qtbot,
     tmp_path: Path,
 ) -> None:
+    """作成直後でモデルにまだ行が無くても、選択対象を取り下げないこと。
+
+    ``_refresh_and_select`` はモデルを作り直さなくなった（``force`` なし）ので、
+    行が現れるまでの待ちは ``SortRefreshController`` の選択復元リトライが担う。
+    """
     target = tmp_path / "created.txt"
     target.write_text("created", encoding="utf-8")
     selected: list[Path] = []
@@ -604,7 +658,6 @@ def test_file_browser_tab_refresh_and_select_defers_selection_until_model_ready(
     qtbot.addWidget(tab)
     tab._current_path = tmp_path
     tab._has_loaded_root = True
-    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda path: True)
     monkeypatch.setattr(
         tab,
         "_select_path",
@@ -615,10 +668,13 @@ def test_file_browser_tab_refresh_and_select_defers_selection_until_model_ready(
 
     tab._refresh_and_select(target)
 
-    assert selected == [target]
+    # refresh 内（_complete_refresh）と refresh_and_select の両方から復元を試みる。
+    # 行がまだ無い間はどちらも index が無効で即 False を返すだけの空振り。
+    assert selected == [target, target]
     assert tab._pending_selection_path == target
     assert tab._refresh_selection_path == target
-    assert tab._deferred_refresh_target == tmp_path
+    # モデルの作り直しは走らない。
+    assert tab._deferred_refresh_target is None
 
 
 def test_file_browser_tab_pending_selection_survives_deferred_refresh(
@@ -667,10 +723,23 @@ def test_file_browser_tab_deferred_refresh_clears_pending_selection_after_ready(
     assert tab._pending_selection_scroll_hint == QAbstractItemView.ScrollHint.EnsureVisible
 
 
-def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
+def _visible_names(tab: FileBrowserTab) -> list[str]:
+    """タブに見えているエントリ名を返す。"""
+    model = tab._model
+    return [
+        model.index(row, 0).data(Qt.ItemDataRole.DisplayRole) for row in range(model.rowCount())
+    ]
+
+
+def test_file_browser_tab_refresh_keeps_the_model_on_the_current_directory(
     qtbot,
     tmp_path: Path,
 ) -> None:
+    """refresh 後もモデルが同じディレクトリを見ていること。
+
+    フラットなモデルなので、ビューのルートインデックスは常に不正値。
+    どのディレクトリを見ているかは rootPath() が持つ。
+    """
     current = tmp_path / "current"
     current.mkdir()
     (current / "a.txt").write_text("a", encoding="utf-8")
@@ -680,14 +749,11 @@ def test_file_browser_tab_refresh_keeps_view_roots_at_current_directory(
 
     tab.refresh()
 
-    qtbot.waitUntil(
-        lambda: (
-            Path(tab._model.filePath(tab._tree_view.rootIndex())) == current
-            and Path(tab._model.filePath(tab._tile_view.rootIndex())) == current
-        ),
-        timeout=1000,
-    )
+    qtbot.waitUntil(lambda: "a.txt" in _visible_names(tab), timeout=3000)
+    assert Path(tab._model.rootPath()) == current
     assert tab.current_path() == current
+    assert not tab._tree_view.rootIndex().isValid()
+    assert not tab._tile_view.rootIndex().isValid()
 
 
 def test_file_browser_tab_shutdown_cancels_deferred_refresh(
@@ -698,9 +764,9 @@ def test_file_browser_tab_shutdown_cancels_deferred_refresh(
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     tab._current_path = tmp_path
-    monkeypatch.setattr(tab, "_reset_root_before_refresh", lambda target: True)
+    monkeypatch.setattr(tab._model, "rescan", lambda: None)
 
-    tab.refresh()
+    tab.refresh(force=True)
 
     assert tab._deferred_refresh_timer.isActive()
     assert tab._deferred_refresh_target == tmp_path
@@ -820,14 +886,21 @@ def test_manual_list_view_persists_through_media_mode_update(qtbot, tmp_path: Pa
     assert tab._media_icon_mode is False
 
 
-def test_file_browser_tab_tile_view_uses_single_pass_fixed_grid(qtbot) -> None:
+def test_file_browser_tab_tile_view_uses_batched_fixed_grid(qtbot) -> None:
+    """タイルのレイアウトをバッチ分割すること。
+
+    SinglePass だと挿入バッチごとに全アイテムを一度に並べ直すため、大量ファイルの
+    フォルダでGUIスレッドが止まる。グリッドが固定（Static + uniformItemSizes）で
+    ある点は従来どおり。
+    """
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
 
     tile_view = tab._tile_view
 
     assert tile_view.movement() == QListView.Movement.Static
-    assert tile_view.layoutMode() == QListView.LayoutMode.SinglePass
+    assert tile_view.layoutMode() == QListView.LayoutMode.Batched
+    assert tile_view.batchSize() == tab._tile_view.LAYOUT_BATCH_SIZE
     assert tile_view.uniformItemSizes()
     assert tile_view.wordWrap()
     assert tile_view.textElideMode() == Qt.TextElideMode.ElideNone
@@ -2682,8 +2755,8 @@ def test_file_browser_tab_request_status_counts_keeps_previous_counts_until_read
         def __init__(self) -> None:
             self.jobs: list[object] = []
 
-        def start(self, job: object) -> None:
-            self.jobs.append(job)
+        def start(self, job: object, priority: int = 0) -> None:
+            self.jobs.append((job, priority))
 
     pool = NoopThreadPool()
     tab = FileBrowserTab()
@@ -2698,7 +2771,9 @@ def test_file_browser_tab_request_status_counts_keeps_previous_counts_until_read
 
     tab._request_status_item_counts(tmp_path)
 
+    # 件数集計はサムネイルの待ち行列より先に取り出されるべき優先度で投入する。
     assert pool.jobs
+    assert pool.jobs[0][1] == job_priority.STATUS
     assert tab._status_folder_count == 8
     assert tab._status_file_count == 13
     assert statuses == []
@@ -2787,3 +2862,174 @@ def test_file_browser_tab_handle_current_changed_emits_for_directory(
         tab._handle_current_changed(tab._model.index(str(tmp_path)), tab._model.index(""))
 
     assert blocker.args == [tmp_path]
+
+
+def test_file_browser_tab_delete_hides_rows_without_waiting_for_the_watcher(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    """削除完了時に、モデルの再走査を待たずに行を伏せること。
+
+    元モデルはディレクトリの変更通知を受けてから走査し直すため、行が消えるまでは
+    待ちが入る（旧実装の QFileSystemModel では全体を作り直すため、7,500件で
+    実測950ms かかっていた）。削除はこちらが実行して結果も確認できるので、
+    待つ理由がない。
+    """
+    target = tmp_path / "gone.txt"
+    target.write_text("x", encoding="utf-8")
+    (tmp_path / "keep.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    hidden: list[list[Path]] = []
+    tab._model.hide_removed_paths = lambda paths: hidden.append(list(paths)) or len(list(paths))
+
+    target.unlink()
+    tab._hide_paths_that_left_current_directory(
+        FileOperationRequest([target, tmp_path / "keep.txt"], None, "delete")
+    )
+
+    # 実際にディスクから消えたものだけを伏せる（一部失敗した操作でも取り違えない）。
+    assert hidden == [[target]]
+
+
+def test_file_browser_tab_copy_does_not_hide_source_rows(qtbot, tmp_path: Path) -> None:
+    """コピーは元の行を消さないので、伏せる対象にしないこと。"""
+    source = tmp_path / "src.txt"
+    source.write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    hidden: list[list[Path]] = []
+    tab._model.hide_removed_paths = lambda paths: hidden.append(list(paths)) or 0
+
+    tab._hide_paths_that_left_current_directory(
+        FileOperationRequest([source], tmp_path / "dest", "copy")
+    )
+
+    assert hidden == []
+
+
+def test_navigation_edge_row_maps_home_and_end() -> None:
+    assert navigation_edge_row(Qt.Key.Key_Home, 10) == 0
+    assert navigation_edge_row(Qt.Key.Key_End, 10) == 9
+    # 対象外のキーと空のビューでは何も返さない。
+    assert navigation_edge_row(Qt.Key.Key_Down, 10) is None
+    assert navigation_edge_row(Qt.Key.Key_End, 0) is None
+
+
+def test_end_key_reaches_the_last_row_before_layout_finishes(qtbot, tmp_path: Path) -> None:
+    """レイアウトが終わる前でも End が最終行へ届くこと。
+
+    タイル表示（``QListView`` の ``Batched`` レイアウト）では、``moveCursor`` に
+    任せると「レイアウト済みの最終行」＝バッチ境界（既定128行目）で止まる。
+    大きなフォルダを開いた直後に End を押すと末尾へ行けなかった。
+    """
+    entry_count = tile_layout_batch_size() * 3
+    for index in range(entry_count):
+        (tmp_path / f"f{index:05d}.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    tab.navigate_to(tmp_path)
+    qtbot.waitUntil(lambda: tab._model.rowCount() == entry_count, timeout=5000)
+
+    view = tab._active_view()
+    view.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_End, Qt.KeyboardModifier.NoModifier)
+    )
+
+    assert view.currentIndex().row() == entry_count - 1
+
+    view.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Home, Qt.KeyboardModifier.NoModifier)
+    )
+
+    assert view.currentIndex().row() == 0
+
+
+def tile_layout_batch_size() -> int:
+    """タイル表示のレイアウトバッチ幅（テストの意図を読みやすくするための別名）。"""
+    from omnidesk.ui.file_browser.views import _FileTileView
+
+    return _FileTileView.LAYOUT_BATCH_SIZE
+
+
+def test_forced_refresh_waits_for_the_scan_to_finish(qtbot, tmp_path: Path) -> None:
+    """明示的な再読込は、走査結果が反映されてから並べ替えと選択復元を行うこと。
+
+    時間で待つ実装だと、走査が遅いときに古い一覧のまま仕上げが走ってしまう。
+    """
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    qtbot.waitUntil(lambda: tab._model.rowCount() == 1, timeout=5000)
+
+    rows_when_completed: list[int] = []
+    original = tab._complete_refresh
+    tab._complete_refresh = lambda target, *, force=False: (
+        rows_when_completed.append(tab._model.rowCount()),
+        original(target, force=force),
+    )[1]
+
+    # 再読込の直前にファイルを増やす。仕上げの時点で新しい件数が見えているはず。
+    (tmp_path / "b.txt").write_text("x", encoding="utf-8")
+    tab.refresh(force=True)
+
+    qtbot.waitUntil(lambda: bool(rows_when_completed), timeout=5000)
+    assert rows_when_completed == [2]
+    assert tab._deferred_refresh_target is None
+
+
+def test_broken_symlink_that_failed_to_delete_is_not_hidden(qtbot, tmp_path: Path) -> None:
+    """リンク切れの削除に失敗したら、行を伏せないこと。
+
+    ``Path.exists()`` はリンク先を辿るのでリンク切れでは False になる。それで
+    判定すると、削除に失敗して実際には残っているエントリまで「消えた」と
+    誤判定して画面から消してしまう。
+    """
+    broken = tmp_path / "broken"
+    try:
+        broken.symlink_to(tmp_path / "no-such-target")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"シンボリックリンクを作成できません: {exc}")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    hidden: list[list[Path]] = []
+    tab._model.hide_removed_paths = lambda paths: hidden.append(list(paths)) or 0
+
+    # 削除は失敗し、リンク自体はまだ残っている。
+    tab._hide_paths_that_left_current_directory(FileOperationRequest([broken], None, "delete"))
+
+    assert hidden == []
+
+
+def test_forced_refresh_timeout_abandons_instead_of_finishing(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """完了通知が来ないまま時間切れになっても、仕上げてしまわないこと。
+
+    単に走査が遅いだけのとき（UNC、スピンダウンした外付けドライブなど）に
+    時間で仕上げると、古い一覧のまま並べ替えと選択復元が走る。
+    """
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    qtbot.waitUntil(lambda: tab._model.rowCount() == 1, timeout=5000)
+    completions: list[Path] = []
+    monkeypatch.setattr(
+        tab, "_complete_refresh", lambda target, *, force=False: completions.append(target)
+    )
+    # 完了通知が来ない状況を作り、保険タイマーだけを即発火させる。
+    monkeypatch.setattr(tab._model, "rescan", lambda: None)
+    tab._deferred_refresh_timer.setInterval(0)
+
+    tab.refresh(force=True)
+
+    qtbot.waitUntil(lambda: tab._deferred_refresh_target is None, timeout=3000)
+    assert completions == []
+    assert not tab._sort_refresh_controller.active

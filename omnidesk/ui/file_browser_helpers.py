@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
+from .file_browser_navigation import navigation_key
 from .file_operations import (
     delete_paths as delete_paths,
 )
@@ -41,23 +42,33 @@ def file_action_states(
 
 
 def deletion_replacement_path(
-    ordered_paths: list[Path],
+    path_at: Callable[[int], Path | None],
+    row_count: int,
     selected_rows: set[int],
-    deleted_paths: set[Path],
+    deleted_paths: Iterable[Path],
 ) -> Path | None:
-    """Return the item to select after deleting rows from an ordered directory."""
+    """Return the item to select after deleting rows from an ordered directory.
+
+    ``path_at`` は行番号からパスを取り出すコールバック。以前は全行ぶんの
+    ``Path`` を事前に作って渡していたが、削除確認ダイアログを出す**前**に
+    7,500件ぶんのモデル往復と ``Path`` 生成が走り、体感できる待ちになっていた。
+    探索順（選択行の直前から前方へ、見つからなければ直後から後方へ）は変えず、
+    実際に調べる行だけを遅延で取り出す。
+
+    突き合わせは実I/Oを伴わない :func:`navigation_key` で行う。
+    """
     if not selected_rows:
         return None
 
+    deleted_keys = {navigation_key(path) for path in deleted_paths}
+
     def candidate_at(row: int) -> Path | None:
-        if row < 0 or row >= len(ordered_paths):
+        if row < 0 or row >= row_count:
             return None
-        candidate = ordered_paths[row]
-        try:
-            if candidate.resolve() in deleted_paths:
-                return None
-        except Exception:
-            logger.debug("削除後の選択候補の解決に失敗しました: %s", candidate, exc_info=True)
+        candidate = path_at(row)
+        if candidate is None:
+            return None
+        if navigation_key(candidate) in deleted_keys:
             return None
         return candidate
 
@@ -66,7 +77,7 @@ def deletion_replacement_path(
         if candidate is not None:
             return candidate
 
-    for row in range(max(selected_rows) + 1, len(ordered_paths)):
+    for row in range(max(selected_rows) + 1, row_count):
         candidate = candidate_at(row)
         if candidate is not None:
             return candidate

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -15,6 +15,10 @@ from send2trash import send2trash
 from omnidesk.utils.config import DEFAULT_CONFIG_DIR
 
 logger = logging.getLogger(__name__)
+
+# ゴミ箱へまとめて送るときの1回あたりの件数。1回のシェル呼び出しは中断できないため、
+# 「呼び出し回数を減らす」と「キャンセルできる粒度を残す」の折り合いを取る値。
+TRASH_BATCH_SIZE = 256
 
 FileOperationMode = Literal["copy", "move", "delete"]
 
@@ -70,10 +74,28 @@ def delete_paths_with_result(
     *,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> FileOperationResult:
-    """Delete files or directories and return errors plus directories that changed."""
+    """Delete files or directories and return errors plus directories that changed.
+
+    ゴミ箱への移動は、対象をまとめて1回のシェル呼び出しで行う。1件ずつ呼ぶと
+    Windowsのシェル操作の固定コストが件数ぶんかかる（14件で実測515ms）うえ、
+    ディレクトリの変更通知も件数ぶん飛ぶ。旧実装（``QFileSystemModel``）では通知の
+    たびにディレクトリ全体を再構築していたため、7,500件のフォルダで再走査が数秒に
+    わたって繰り返され、その間ずっと表示が落ち着かなかった。現在の
+    :class:`omnidesk.ui.directory_model.DirectoryModel` は通知をまとめて差分だけを
+    反映するが、シェル呼び出しの固定コストは変わらないので、まとめる価値は残る。
+
+    まとめての呼び出しが失敗したときだけ、どの対象が原因かを示すために1件ずつ
+    再試行する。
+
+    1回のシェル呼び出し自体は中断できないので、``TRASH_BATCH_SIZE`` 件ずつに
+    区切って、その境目でキャンセルを見る。通常の選択数なら呼び出しは1回で済み、
+    巨大な選択でも中断できる粒度が残る。
+    """
     errors: list[str] = []
     changed_dirs: list[Path] = []
     logger.info("Deleting %d path(s)", len(paths))
+
+    targets: list[Path] = []
     for path in paths:
         if is_cancelled is not None and is_cancelled():
             return FileOperationResult(errors, changed_dirs, cancelled=True)
@@ -85,13 +107,69 @@ def delete_paths_with_result(
             logger.warning("Path does not exist, cannot move to trash: %s", path)
             errors.append(f"Missing: {path}")
             continue
+        targets.append(path)
+
+    if not targets:
+        return FileOperationResult(errors, changed_dirs)
+
+    for chunk in _chunked(targets, TRASH_BATCH_SIZE):
+        if is_cancelled is not None and is_cancelled():
+            return FileOperationResult(errors, changed_dirs, cancelled=True)
+        try:
+            send2trash([str(path) for path in chunk])
+        except Exception:  # pragma: no cover - send2trash/backend dependent
+            logger.warning(
+                "まとめてのゴミ箱移動に失敗しました。原因を特定するため1件ずつ再試行します",
+                exc_info=True,
+            )
+            retry_errors, cancelled = _delete_paths_individually(
+                chunk, changed_dirs, is_cancelled=is_cancelled
+            )
+            errors.extend(retry_errors)
+            if cancelled:
+                return FileOperationResult(errors, changed_dirs, cancelled=True)
+            continue
+        changed_dirs.extend(path.parent for path in chunk)
+    return FileOperationResult(errors, changed_dirs)
+
+
+def _chunked(paths: list[Path], size: int) -> Iterator[list[Path]]:
+    for start in range(0, len(paths), size):
+        yield paths[start : start + size]
+
+
+def _delete_paths_individually(
+    targets: list[Path],
+    changed_dirs: list[Path],
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> tuple[list[str], bool]:
+    """1件ずつゴミ箱へ移し、``(エラー, 中断したか)`` を返す。
+
+    まとめての呼び出しが途中まで成功していることがあるため、既に消えているものは
+    成功として扱う（重複したエラーを出さない）。
+
+    ここは「まとめての呼び出しが失敗した」ときだけ通る、最も遅くなり得る経路。
+    1件ごとにシェル操作が走るので、1件ごとにキャンセルを見る。
+    """
+    errors: list[str] = []
+    for path in targets:
+        # まとめての呼び出しは中断できないので、その実行中にキャンセルされる窓がある。
+        # ここへ来た時点で既にキャンセル済みのことがあるため、1件目から確認する
+        # （契約は「キャンセル後に新しい対象の削除を開始しない」）。
+        if is_cancelled is not None and is_cancelled():
+            return errors, True
+        if not os.path.lexists(path):
+            # まとめての呼び出しで移動できていた分。
+            changed_dirs.append(path.parent)
+            continue
         try:
             send2trash(str(path))
             changed_dirs.append(path.parent)
         except Exception as exc:  # pragma: no cover - send2trash/backend dependent
             logger.exception("Failed to move path to trash: %s", path)
             errors.append(f"{path}: {exc}")
-    return FileOperationResult(errors, changed_dirs)
+    return errors, False
 
 
 def perform_copy_or_move(sources: list[Path], dest_dir: Path, *, move: bool) -> list[str]:

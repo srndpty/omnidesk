@@ -230,3 +230,51 @@ def test_clear_disk_removes_png_files_only(tmp_path: Path) -> None:
 
     assert not png.exists()
     assert txt.exists()
+
+
+def test_maybe_enforce_disk_budget_throttles_full_scans(tmp_path: Path) -> None:
+    """保存1件ごとにキャッシュフォルダを全走査しないこと。
+
+    非同期保存の完了コールバックが間引きなしの ``enforce_disk_budget`` を
+    呼んでいたため、サムネイル1枚ごとに最大15,000ファイルの走査が走り、
+    共有スレッドプールとディスクを占有していた。
+    """
+    cache = PersistentThumbnailCache[str](
+        namespace="throttle",
+        root=tmp_path,
+        budget_check_interval=5,
+    )
+    scans = 0
+
+    def count_scan() -> None:
+        nonlocal scans
+        scans += 1
+
+    cache._enforce_disk_budget = count_scan  # type: ignore[method-assign]
+
+    for _ in range(12):
+        cache.maybe_enforce_disk_budget()
+
+    assert scans == 2
+
+
+def test_enforce_disk_budget_drops_oldest_files_over_item_limit(tmp_path: Path) -> None:
+    """走査を os.scandir へ変えても、古い順に削る挙動が変わらないこと。"""
+    cache = PersistentThumbnailCache[str](
+        namespace="budget",
+        root=tmp_path,
+        disk_max_items=2,
+    )
+    root = tmp_path / "budget"
+    names = ["old.png", "mid.png", "new.png"]
+    for index, name in enumerate(names):
+        path = root / name
+        path.write_bytes(b"x" * 10)
+        os.utime(path, (1_000_000 + index * 100, 1_000_000 + index * 100))
+    # 対象外の拡張子は走査から外れる。
+    (root / "notes.txt").write_bytes(b"keep")
+
+    cache.enforce_disk_budget()
+
+    remaining = sorted(entry.name for entry in root.iterdir())
+    assert remaining == ["mid.png", "new.png", "notes.txt"]

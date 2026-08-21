@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from PyQt6.QtCore import QMimeData, QSize, Qt, QUrl
+from PyQt6.QtCore import QFileInfo, QMimeData, QSize, Qt, QUrl
 from PyQt6.QtGui import QIcon, QImage, QPixmap
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QFileIconProvider
 
 import omnidesk.ui.media_file_system_model as model_module
 from omnidesk import app as app_module
@@ -189,9 +189,13 @@ def test_normalise_key_cache_is_cleared_on_navigation(tmp_path: Path) -> None:
 
 
 def test_thumbnail_change_only_notifies_item_data(qtbot, tmp_path: Path) -> None:
+    # フラットなモデルではルートディレクトリ自身が行にならないので、
+    # 通知対象は中のエントリにする。
+    target = tmp_path / "picture.png"
+    target.write_bytes(b"x")
     model = MediaFileSystemModel()
-    model.setRootPath(str(tmp_path))
-    qtbot.waitUntil(lambda: model.index(str(tmp_path)).isValid())
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
     data_changes: list[tuple[object, object, list[int]]] = []
     header_changes: list[tuple[Qt.Orientation, int, int]] = []
     model.dataChanged.connect(lambda first, last, roles: data_changes.append((first, last, roles)))
@@ -199,7 +203,7 @@ def test_thumbnail_change_only_notifies_item_data(qtbot, tmp_path: Path) -> None
         lambda orientation, first, last: header_changes.append((orientation, first, last))
     )
 
-    model._emit_thumbnail_changed(str(tmp_path))
+    model._emit_thumbnail_changed(model._normalise_key(target))
 
     assert len(data_changes) == 1
     assert data_changes[0][2] == [Qt.ItemDataRole.DecorationRole]
@@ -374,10 +378,16 @@ def test_media_file_system_model_thumbnail_ready_saves_with_request_edge(
     model._visible_keys.add(key)
     model._pending.add(key)
 
+    jobs: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", jobs.append)
+
     model._handle_thumbnail_ready(key, icon, token.generation)
 
     assert saved_edges == [96]
-    assert requested_edges == [160]
+    # 大きい辺への張り直しも、まず 160 のディスクキャッシュを worker で確かめる。
+    # 無ければ _handle_cache_loaded が request_thumbnail(160) へ回す。
+    assert requested_edges == []
+    assert any(isinstance(job, model_module.CacheLoadJob) for job in jobs)
     assert model._request_edges[key] == 160
     assert key in model._pending
 
@@ -537,15 +547,24 @@ def test_cache_pixmap_for_edge_scales_down_large_pixmap() -> None:
     assert image.pixelColor(80, 0).alpha() == 0
 
 
-def test_media_file_system_model_flags_for_invalid_and_directory(monkeypatch) -> None:
+def test_media_file_system_model_flags_for_invalid_and_directory(qtbot, tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
     model = MediaFileSystemModel()
-    invalid_flags = model.flags(model.index(""))
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
 
-    monkeypatch.setattr(model, "isDir", lambda index: True)
-    directory_flags = model.flags(model.index("C:/"))
+    invalid_flags = model.flags(model.index(""))
+    directory_flags = model.flags(model.index_for_path(tmp_path / "sub"))
+    file_flags = model.flags(model.index_for_path(tmp_path / "a.txt"))
 
     assert directory_flags & Qt.ItemFlag.ItemIsDragEnabled
+    # フォルダだけがドロップ先になる。
     assert directory_flags & Qt.ItemFlag.ItemIsDropEnabled
+    assert file_flags & Qt.ItemFlag.ItemIsDragEnabled
+    assert not (file_flags & Qt.ItemFlag.ItemIsDropEnabled)
+    # 名前列はF2のインプレースリネームのため編集可能。
+    assert file_flags & Qt.ItemFlag.ItemIsEditable
     assert invalid_flags is not None
 
 
@@ -607,16 +626,60 @@ def test_media_file_system_model_request_visible_skips_small_folder_preview(tmp_
     assert str(tmp_path) not in model._pending
 
 
-def test_media_file_system_model_request_visible_starts_folder_scan(
+def test_media_file_system_model_request_visible_loads_cache_on_worker(
     monkeypatch, tmp_path: Path
 ) -> None:
+    """ディスクキャッシュの有無をGUIスレッドで調べないこと。
+
+    以前は disk_path()（stat + is_dir）と exists() をGUIスレッドで呼んでおり、
+    可視アイテム数 × タイマー発火回数ぶんの同期I/Oが走っていた。存在確認は
+    CacheLoadJob が worker で行い、無ければ _handle_cache_loaded が
+    生成経路へフォールバックする（キャッシュミス時の分岐は別テストで固定済み）。
+    """
     model = MediaFileSystemModel()
-    started: list[Path] = []
-    monkeypatch.setattr(model, "_ensure_folder_thumbnail", started.append)
+    key = model._normalise_key(tmp_path)
+    scanned: list[Path] = []
+    jobs: list[object] = []
+    monkeypatch.setattr(model, "_ensure_folder_thumbnail", scanned.append)
+    monkeypatch.setattr(model._scan_pool, "start", jobs.append)
 
-    assert model._request_visible_key(str(tmp_path), tmp_path, is_dir=True)
+    assert model._request_visible_key(key, tmp_path, is_dir=True)
 
-    assert started == [tmp_path]
+    assert scanned == []
+    assert len(jobs) == 1
+    assert isinstance(jobs[0], model_module.CacheLoadJob)
+    assert key in model._pending
+
+
+def test_media_file_system_model_request_visible_skips_non_media_without_io(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """サムネイルを持ち得ないファイルは、I/Oもジョブ投入もせず落とすこと。"""
+    model = MediaFileSystemModel()
+    target = tmp_path / "notes.txt"
+    key = model._normalise_key(target)
+    jobs: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", jobs.append)
+
+    assert not model._request_visible_key(key, target, is_dir=False)
+
+    assert jobs == []
+    assert key not in model._pending
+
+
+def test_media_file_system_model_request_visible_skips_folder_preview_when_icon_small(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """小さいアイコン表示ではフォルダプレビューを起こさないこと。"""
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(32)
+    key = model._normalise_key(tmp_path)
+    jobs: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", jobs.append)
+
+    assert not model._request_visible_key(key, tmp_path, is_dir=True)
+
+    assert jobs == []
 
 
 def test_media_file_system_model_ensure_folder_thumbnail_ignores_duplicate(
@@ -886,6 +949,9 @@ def test_media_file_system_model_save_cache_async_uses_requested_edge_for_small_
         def enforce_disk_budget(self) -> None:
             pass
 
+        def maybe_enforce_disk_budget(self) -> None:
+            pass
+
     pixmap = QPixmap(96, 96)
     pixmap.fill()
     started: list[object] = []
@@ -897,6 +963,45 @@ def test_media_file_system_model_save_cache_async_uses_requested_edge_for_small_
     assert len(started) == 1
 
 
+def test_media_file_system_model_save_cache_async_uses_throttled_budget_check(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """保存1件ごとにキャッシュフォルダを全走査しないこと。
+
+    間引きのない ``enforce_disk_budget`` を渡していたため、サムネイル1枚保存する
+    たびに最大15,000ファイルの走査が走り、共有スレッドプールを占有していた。
+    """
+    model = MediaFileSystemModel()
+
+    class FakeCache:
+        def __init__(self) -> None:
+            self.enforced = 0
+            self.maybe_enforced = 0
+
+        def disk_path(self, _key: str, *, hint_edge: int | None = None) -> Path:
+            return tmp_path / "cache.png"
+
+        def enforce_disk_budget(self) -> None:
+            self.enforced += 1
+
+        def maybe_enforce_disk_budget(self) -> None:
+            self.maybe_enforced += 1
+
+    cache = FakeCache()
+    pixmap = QPixmap(96, 96)
+    pixmap.fill()
+    jobs: list[object] = []
+    monkeypatch.setattr(model._scan_pool, "start", jobs.append)
+
+    model._save_cache_async(cache, "key", pixmap, hint_edge=96)
+
+    assert len(jobs) == 1
+    jobs[0].run()
+    assert cache.maybe_enforced == 1
+    assert cache.enforced == 0
+
+
 def test_media_file_system_model_save_cache_async_ignores_null_pixmap(monkeypatch) -> None:
     model = MediaFileSystemModel()
     started: list[object] = []
@@ -905,3 +1010,119 @@ def test_media_file_system_model_save_cache_async_ignores_null_pixmap(monkeypatc
     model._save_cache_async(file_thumbnail_cache, "key", QPixmap())
 
     assert started == []
+
+
+def test_media_file_system_model_disables_custom_directory_icons() -> None:
+    """フォルダごとの独自アイコン参照（desktop.ini）を止めていること。
+
+    未訪問のフォルダが並ぶディレクトリで初回だけ大きく待たされる主因。
+    Qtのドキュメントも、ネットワーク／リムーバブルドライブで大きな性能影響が
+    あると明記している。
+    """
+    model = MediaFileSystemModel()
+
+    assert model._icon_provider.options() & QFileIconProvider.Option.DontUseCustomDirectoryIcons
+
+
+def test_media_file_system_model_caches_icons_per_extension(qtbot, tmp_path: Path) -> None:
+    """アイコンを拡張子ごとに1回だけ作って使い回すこと。
+
+    エントリごとにシェルへ問い合わせると、大量ファイルのフォルダで描画が止まる。
+    """
+    for index in range(3):
+        (tmp_path / f"f{index}.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "image.png").write_bytes(b"x")
+    (tmp_path / "sub").mkdir()
+    model = MediaFileSystemModel()
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
+
+    for row in range(model.rowCount()):
+        model.data(model.index(row, 0), Qt.ItemDataRole.DecorationRole)
+
+    # フォルダ・txt・png の3種類だけ。txt が3件あっても1回。
+    assert set(model._type_icons) == {model_module._FOLDER_ICON_KEY, "txt", "png"}
+
+
+def test_media_file_system_model_does_not_share_icons_between_executables(
+    qtbot, tmp_path: Path
+) -> None:
+    """ファイルごとに絵が違う拡張子で、1つ目のアイコンを使い回さないこと。
+
+    ``a.exe`` と ``b.exe`` は別々の埋め込みアイコンを持てる。拡張子単位で
+    キャッシュすると、まったく別のアプリのアイコンを表示してしまう。
+    """
+    for name in ("a.exe", "b.exe", "shortcut.lnk", "notes.txt"):
+        (tmp_path / name).write_bytes(b"x")
+    model = MediaFileSystemModel()
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
+    looked_up: list[object] = []
+    original = model._icon_provider.icon
+    model._icon_provider.icon = lambda arg: looked_up.append(arg) or original(arg)
+
+    for row in range(model.rowCount()):
+        model.data(model.index(row, 0), Qt.ItemDataRole.DecorationRole)
+
+    # exe / lnk は種別の汎用アイコンへ寄せる（パスからは引かない）。
+    assert not any(
+        isinstance(arg, QFileInfo) and arg.suffix() in ("exe", "lnk") for arg in looked_up
+    )
+    assert model_module._GENERIC_FILE_ICON_KEY in model._type_icons
+    assert "exe" not in model._type_icons
+    assert "lnk" not in model._type_icons
+    # 関連付けで決まる拡張子は従来どおり拡張子単位。
+    assert "txt" in model._type_icons
+
+
+def test_media_file_system_model_reuses_folder_base_pixmap_per_edge() -> None:
+    """フォルダの土台画像をエッジごとに1枚だけ作って使い回すこと。
+
+    描き込み先として使うため、呼び出しごとに別インスタンス（コピー）を返す必要がある。
+    """
+    model = MediaFileSystemModel()
+
+    first = model._folder_base_pixmap_for_edge(160)
+    second = model._folder_base_pixmap_for_edge(160)
+
+    assert first is not second
+    assert first.size() == second.size()
+    assert set(model._folder_base_pixmaps) == {160}
+
+    model._folder_base_pixmap_for_edge(96)
+    assert set(model._folder_base_pixmaps) == {96, 160}
+
+
+def test_media_file_system_model_thumbnail_ready_does_not_stat_target(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """完成通知のたびに Path.is_dir() を呼ばないこと。
+
+    以前は同じ関数内で2回呼んでおり、サムネイルが1件完成するたびにGUIスレッドで
+    実I/Oが走っていた。種別はモデルが既に把握している。
+    """
+    model = MediaFileSystemModel()
+    target = tmp_path / "image.png"
+    target.write_bytes(b"")
+    key = model._normalise_key(target)
+    monkeypatch.setattr(model, "_save_cache_async", lambda *args, **kwargs: None)
+    monkeypatch.setattr(model, "_emit_thumbnail_changed", lambda changed_key: None)
+    monkeypatch.setattr(model, "_request_current_edge_if_needed", lambda *args: None)
+
+    # 行が存在する状態にしてから、Path.is_dir() を呼んだら落ちるようにする。
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
+    assert model.index_for_path(target).isValid()
+
+    def fail_is_dir(self: Path) -> bool:
+        raise AssertionError("完成通知の経路で Path.is_dir() を呼んではいけない")
+
+    monkeypatch.setattr(Path, "is_dir", fail_is_dir)
+
+    pixmap = QPixmap(96, 96)
+    pixmap.fill()
+    token = model._new_token(key)
+    model._visible_keys.add(key)
+    model._pending.add(key)
+
+    model._handle_thumbnail_ready(key, QIcon(pixmap), token.generation)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -10,6 +12,7 @@ from typing import TYPE_CHECKING
 from PyQt6.QtCore import QThreadPool
 from PyQt6.QtWidgets import QAbstractItemView, QInputDialog, QMessageBox, QWidget
 
+from .. import job_priority
 from ..file_browser_drop import has_blocked_self_move
 from ..file_browser_navigation import same_navigation_path
 from ..file_operation_jobs import FileOperationJob, FileOperationSignals
@@ -59,6 +62,9 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         ]
         _file_operation_jobs: list[FileOperationJob]
         _file_operation_job_seq: int
+        _file_operation_requested_at: dict[int, float]
+        _file_operation_requests: dict[int, FileOperationRequest]
+        _pending_rows_changed_since: float | None
         _file_operation_signals: FileOperationSignals
         _inline_rename_seed: tuple[Path, str | None] | None
         _model: SortedFileSystemModel
@@ -79,7 +85,7 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
 
         def focus_view(self) -> None: ...
 
-        def refresh(self) -> None: ...
+        def refresh(self, *, force: bool = False) -> None: ...
 
     def _rename_selected(self) -> None:
         paths = self._selected_paths()
@@ -315,10 +321,18 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         job_id = self._file_operation_job_seq
         job = FileOperationJob(request, self._file_operation_signals, job_id)
         self._file_operation_completions[job_id] = (select_after, error_title, on_finished)
+        requested_at = time.monotonic()
+        self._file_operation_requested_at[job_id] = requested_at
+        self._file_operation_requests[job_id] = request
+        # 行がモデルへ反映されるまでの計測基準。QFileSystemWatcher による行の増減は
+        # 完了通知より先に届くことがあるため、基準は操作の起点に置く必要がある
+        # （ここを完了通知側に置くと、先に届いた分を取りこぼす）。
+        self._pending_rows_changed_since = requested_at
         self._file_operation_jobs.append(job)
         pool = QThreadPool.globalInstance()
         assert pool is not None
-        pool.start(job)
+        # サムネイル系の待ち行列を追い越させる。ユーザーは結果を待っている。
+        pool.start(job, job_priority.INTERACTIVE)
         return job
 
     def _handle_file_operation_job_finished(self, job_id: int, result: object) -> None:
@@ -331,6 +345,8 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         if not is_alive(self):
             return
         completion = self._file_operation_completions.pop(job_id, None)
+        requested_at = self._file_operation_requested_at.pop(job_id, None)
+        request = self._file_operation_requests.pop(job_id, None)
         self._file_operation_jobs = [
             job for job in self._file_operation_jobs if job.job_id != job_id
         ]
@@ -339,6 +355,8 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         if not isinstance(result, FileOperationResult) or result.cancelled:
             return
         select_after, error_title, on_finished = completion
+        gui_started_at = time.monotonic()
+        self._hide_paths_that_left_current_directory(request)
         self._handle_file_operation_finished(
             result,
             select_after=select_after,
@@ -346,6 +364,38 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         )
         if on_finished is not None:
             on_finished(result)
+        applied_at = time.monotonic()
+        # total_ms: ジョブ投入から、GUI側の後始末が終わるまで。
+        # gui_ms: そのうちGUIスレッドで使った時間（refresh・並べ替え・選択復元）。
+        # 差分がワーカー側（待ち行列 + 実処理）で、その内訳は FileOperationJob が出す。
+        logger.info(
+            "ファイル操作の反映: job_id=%d total_ms=%d gui_ms=%d",
+            job_id,
+            round((applied_at - requested_at) * 1000) if requested_at is not None else -1,
+            round((applied_at - gui_started_at) * 1000),
+        )
+
+    def _hide_paths_that_left_current_directory(self, request: FileOperationRequest | None) -> None:
+        """元の場所から消えたパスを、監視の通知を待たずに伏せる。
+
+        モデルはディレクトリの変更通知を受けてから走査し直すため、行が実際に消える
+        まで待ちが入る。削除はこちらが実行して結果も確認できるので、待つ理由はない。
+        詳細は :meth:`SortedFileSystemModel.hide_removed_paths`。
+
+        判定はディスク上の実在で行うので、一部だけ失敗した操作でも、消えたものだけが
+        伏せられる。存在確認には ``os.path.lexists`` を使う。``Path.exists()`` は
+        リンク先を辿るため、**リンク切れのシンボリックリンクで False になる**。
+        リンク切れのエントリは一覧に残す仕様（``DirectoryScanJob._build_entry``）
+        なので、``exists()`` だと削除に失敗しても消えたと誤判定して伏せてしまう。
+        """
+        if request is None or request.mode not in ("delete", "move"):
+            return
+        removed = [source for source in request.sources if not os.path.lexists(source)]
+        if not removed:
+            return
+        hidden = self._model.hide_removed_paths(removed)
+        if hidden:
+            logger.debug("再走査を待たずに %d 行を伏せました", hidden)
 
     def _handle_file_operation_finished(
         self,

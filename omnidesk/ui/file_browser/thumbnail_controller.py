@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,9 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         _deferred_refresh_timer: QTimer
         _file_operation_completions: dict[int, object]
         _file_operation_jobs: list[FileOperationJob]
+        _file_operation_requested_at: dict[int, float]
+        _file_operation_requests: dict[int, object]
+        _pending_rows_changed_since: float | None
         _is_active: bool
         _is_scrolling_for_thumbnails: bool
         _model: SortedFileSystemModel
@@ -67,6 +71,9 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
             return
         logger.debug("Activating tab for %s", self._current_path)
         self._is_active = True
+        # 非アクティブ中に外で変わっているかもしれないので、監視を戻して読み直す。
+        self._model.resume_watching()
+        self._model.rescan()
         self._restart_thumbnail_requests()
         self._resume_status_item_counts()
 
@@ -82,6 +89,8 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         """Cancel work that is only useful while this tab is visible."""
         self._thumbnail_scheduler.cancel()
         self._model.cancel_background_work()
+        # 見えていないタブのディレクトリを監視し続ける理由はない。再走査も止まる。
+        self._model.stop_watching()
         self._deactivate_status_item_counts()
 
     def cancel_all_work_for_shutdown(self) -> None:
@@ -97,6 +106,9 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         for job in self._file_operation_jobs:
             job.cancel()
         self._file_operation_jobs.clear()
+        self._file_operation_requested_at.clear()
+        self._file_operation_requests.clear()
+        self._pending_rows_changed_since = None
         # 完了通知が遅れて届いても、破棄中のタブへ反映しない。
         self._file_operation_completions.clear()
 
@@ -124,12 +136,39 @@ class FileBrowserThumbnailMixin(_ThumbnailMixinBase):
         self._restart_thumbnail_requests()
 
     def _on_rows_inserted(self, parent: QModelIndex, first: int, last: int) -> None:
-        _ = (parent, first, last)
+        _ = parent
+        self._log_file_operation_rows_applied("inserted", last - first + 1)
         self._on_model_rows_changed()
 
     def _on_rows_removed(self, parent: QModelIndex, first: int, last: int) -> None:
-        _ = (parent, first, last)
+        _ = parent
+        self._log_file_operation_rows_applied("removed", last - first + 1)
         self._on_model_rows_changed()
+
+    def _log_file_operation_rows_applied(self, change: str, rows: int) -> None:
+        """ファイル操作を確定してから、行が実際に増減するまでの時間を記録する。
+
+        refresh がモデルを作り直さなくなったため、行の増減は
+        ``QFileSystemWatcher`` の通知と、それを受けた ``QFileSystemModel`` の
+        ディレクトリ再走査を待つ。ユーザーが見ている「OKを押してから反映されるまで」は
+        この時間なので、基準は操作の起点に置いてある。
+
+        ``FileOperationJob`` が出す ``queue_wait_ms`` / ``work_ms`` と突き合わせると、
+        待ちの正体が切り分けられる。
+
+        * ``applied_ms`` ≒ ``queue_wait_ms + work_ms`` → 実処理（ゴミ箱移動など）が遅い
+        * ``applied_ms`` がそれより大きい → 監視の通知とディレクトリ再走査が遅い
+        """
+        since = self._pending_rows_changed_since
+        if since is None:
+            return
+        self._pending_rows_changed_since = None
+        logger.info(
+            "ファイル操作の行反映: change=%s rows=%d applied_ms=%d",
+            change,
+            rows,
+            round((time.monotonic() - since) * 1000),
+        )
 
     def _on_model_rows_changed(self) -> None:
         """行の増減後に、現在の描画領域をサムネイル対象として再評価する。"""

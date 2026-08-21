@@ -34,14 +34,27 @@ def should_record_history(current: Path, destination: Path, *, from_history: boo
     return not same_navigation_path(current, destination)
 
 
+def navigation_key(path: Path | str) -> str:
+    """パスを、ファイルシステムへ問い合わせずに比較用へ正規化する。
+
+    ``Path.resolve()`` はシンボリックリンクを辿るため実I/Oを伴う。この関数は
+    80msのリトライタイマー（選択復元・遅延スクロール）や、削除対象の突き合わせで
+    繰り返し呼ばれるため、1回でも実I/Oが混じると低速ドライブやネットワーク
+    ドライブでGUIスレッドが止まる。
+
+    契約は「同じ**字句的絶対パス**が同じ文字列になること」。シンボリックリンク
+    経由と実体パスは別キーになるが、これは実I/Oを避けるための意図的な割り切りで、
+    ``MediaFileSystemModel._resolve_key`` のサムネイルキーと同じ判断。
+    """
+    try:
+        return os.path.normcase(os.path.abspath(str(path)))
+    except (OSError, ValueError):
+        return os.path.normcase(str(path))
+
+
 def same_navigation_path(left: Path, right: Path) -> bool:
     """Return whether two paths refer to the same navigation target."""
-    try:
-        return os.path.normcase(str(left.resolve(strict=False))) == os.path.normcase(
-            str(right.resolve(strict=False))
-        )
-    except OSError:
-        return os.path.normcase(str(left.absolute())) == os.path.normcase(str(right.absolute()))
+    return navigation_key(left) == navigation_key(right)
 
 
 def directory_fingerprint(path: Path) -> DirectoryFingerprint | None:
