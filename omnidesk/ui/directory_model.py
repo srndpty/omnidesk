@@ -25,9 +25,10 @@ from __future__ import annotations
 import logging
 import os
 import stat as stat_module
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 
 from PyQt6.QtCore import (
     QAbstractTableModel,
@@ -134,6 +135,28 @@ class DirectoryEntry:
         self.mtime_ms = other.mtime_ms
 
 
+class EntryIdAllocator:
+    """行IDを配る、スレッド安全な採番器。
+
+    走査ジョブは同時に複数走り得る（遅いディレクトリの走査中に、F5や監視由来の
+    再走査が重なる）。ジェネレーターを共有すると複数スレッドから同時に ``next()``
+    が呼ばれ、``ValueError: generator already executing`` になる。Pythonの
+    ジェネレーターは並行実行に対応していない。
+
+    IDは使い回さない（詳細は :class:`DirectoryEntry` の ``entry_id``）。
+    """
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._next = 1
+
+    def allocate(self) -> int:
+        with self._lock:
+            value = self._next
+            self._next += 1
+            return value
+
+
 class DirectoryScanSignals(QObject):
     """走査ジョブが共有する、GUIスレッド常駐のシグナル置き場。
 
@@ -153,13 +176,13 @@ class DirectoryScanJob(QRunnable):
         path: str,
         generation: int,
         signals: DirectoryScanSignals,
-        next_entry_id: Iterator[int],
+        entry_ids: EntryIdAllocator,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._path = path
         self._generation = generation
-        self._next_entry_id = next_entry_id
+        self._entry_ids = entry_ids
         self.signals = signals
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
@@ -174,6 +197,12 @@ class DirectoryScanJob(QRunnable):
         except OSError as exc:
             error = str(exc)
             logger.info("ディレクトリの走査に失敗しました: %s error=%s", self._path, exc)
+        except Exception as exc:
+            # 想定外の失敗でも、必ず結果を返して終わること。ここで抜けると
+            # 完了通知が出ず、一覧も再読込の保留状態も更新されないまま止まる。
+            error = str(exc)
+            entries = []
+            logger.exception("ディレクトリの走査で想定外の失敗: %s", self._path)
         self.signals.scanned.emit(self._path, self._generation, entries, error)
 
     def _build_entry(self, item: os.DirEntry[str]) -> DirectoryEntry | None:
@@ -208,7 +237,7 @@ class DirectoryScanJob(QRunnable):
         if is_hidden_entry(name, stat_result):
             return None
         return DirectoryEntry(
-            entry_id=next(self._next_entry_id),
+            entry_id=self._entry_ids.allocate(),
             key=normalise_entry_key(item.path),
             path=item.path,
             name=name,
@@ -261,7 +290,7 @@ class DirectoryModel(QAbstractTableModel):
         # 監視を張るまでの取りこぼしを拾うため、ディレクトリを開いた直後だけ
         # 追いつき走査を1回入れる（下記 _handle_scan_result 参照）。
         self._needs_catch_up_scan = False
-        self._entry_ids = _entry_id_sequence()
+        self._entry_ids = EntryIdAllocator()
         self._locale = QLocale()
         self._type_names: dict[str, str] = {}
         # 走査ジョブはワーカースレッドで破棄されるため、シグナル用QObjectは
@@ -633,18 +662,6 @@ class DirectoryModel(QAbstractTableModel):
         """監視を張り直す。"""
         self._watching_enabled = True
         self._watch_current_root()
-
-
-def _entry_id_sequence() -> Iterator[int]:
-    """使い回さない行IDを配る。
-
-    ``QFileSystemModel`` の ``internalId()`` は内部ノードのアドレスで、ノードが
-    消えると別のエントリへ割り当てられ得た。単調増加のIDならその危険がない。
-    """
-    value = 1
-    while True:
-        yield value
-        value += 1
 
 
 def entry_keys(entries: Iterable[DirectoryEntry]) -> set[str]:

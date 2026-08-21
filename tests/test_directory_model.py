@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import stat as stat_module
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -18,7 +20,7 @@ from omnidesk.ui.directory_model import (
     DirectoryModel,
     DirectoryScanJob,
     DirectoryScanSignals,
-    _entry_id_sequence,
+    EntryIdAllocator,
     contiguous_descending_ranges,
     is_hidden_entry,
     normalise_entry_key,
@@ -499,7 +501,7 @@ def test_scan_follows_links_for_type_but_not_for_metadata(tmp_path: Path) -> Non
     * メタdataを辿ると、``DirEntry`` が走査時に得た情報を使えず追加のsyscallになり、
       リンク切れのエントリも一覧から消えてしまう。
     """
-    job = DirectoryScanJob(str(tmp_path), 1, DirectoryScanSignals(), _entry_id_sequence())
+    job = DirectoryScanJob(str(tmp_path), 1, DirectoryScanSignals(), EntryIdAllocator())
     item = _StubDirEntry(str(tmp_path / "link"), is_dir=True, size=0, mtime=1_700_000_000.0)
 
     entry = job._build_entry(item)  # type: ignore[arg-type]
@@ -677,3 +679,70 @@ def test_the_catch_up_scan_runs_only_once_per_directory(qtbot, tmp_path: Path) -
 
     # refresh は1回ぶんしか世代を進めない。
     assert model._generation == generation_after_open + 1
+
+
+def test_entry_id_allocator_is_thread_safe() -> None:
+    """複数スレッドから同時に採番しても、失敗せず重複もしないこと。
+
+    走査ジョブは同時に複数走り得る（遅いディレクトリの走査中にF5や監視由来の
+    再走査が重なる）。ジェネレーターを共有していた頃は、同時に ``next()`` が
+    呼ばれて ``ValueError: generator already executing`` になり得た。
+    """
+    allocator = EntryIdAllocator()
+    failures: list[str] = []
+    allocated: list[int] = []
+    collect_lock = threading.Lock()
+    start = threading.Barrier(6)
+    original_interval = sys.getswitchinterval()
+
+    def worker() -> None:
+        start.wait()
+        try:
+            values = [allocator.allocate() for _ in range(5_000)]
+        except BaseException as exc:  # noqa: BLE001 - 失敗の種類ごと記録したい
+            failures.append(f"{type(exc).__name__}: {exc}")
+            return
+        with collect_lock:
+            allocated.extend(values)
+
+    # スレッド切替を細かくして、競合が起きやすい状態で確かめる。
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        sys.setswitchinterval(original_interval)
+
+    assert failures == []
+    assert len(allocated) == 30_000
+    assert len(set(allocated)) == 30_000
+
+
+def test_scan_reports_even_when_it_fails_unexpectedly(qtbot, tmp_path: Path) -> None:
+    """想定外の失敗でも、必ず結果を返して終わること。
+
+    完了通知を出さずに抜けると、一覧も再読込の保留状態も更新されないまま止まる。
+    """
+    _make_tree(tmp_path)
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    failures: list[tuple[str, str]] = []
+    model.scanFailed.connect(lambda path, error: failures.append((path, error)))
+
+    def explode(self, item):  # noqa: ANN001 - テスト用の差し替え
+        raise ValueError("想定外")
+
+    original = DirectoryScanJob._build_entry
+    DirectoryScanJob._build_entry = explode  # type: ignore[method-assign]
+    try:
+        with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+            model.refresh()
+    finally:
+        DirectoryScanJob._build_entry = original  # type: ignore[method-assign]
+
+    assert len(failures) == 1
+    assert "想定外" in failures[0][1]
+    assert model.rowCount() == 0
