@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat as stat_module
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,25 @@ WATCH_DEBOUNCE_MS = 200
 
 # これを超える走査時間は体感に出る。再発時に原因を追えるよう記録する。
 SLOW_SCAN_WARNING_MS = 400
+
+
+def is_hidden_entry(name: str, stat_result: os.stat_result) -> bool:
+    """一覧から隠すエントリかを返す。
+
+    ``QFileInfo.isHidden()`` と同じ判定にする。旧実装は
+    ``QDir.AllEntries | QDir.NoDotAndDotDot`` を指定しており、``QDir.Hidden`` を
+    含めていなかったため隠し項目は出ていなかった。走査へ移った際にこの絞り込みが
+    抜けると、``.git`` などが一覧に現れて操作・削除の対象になってしまう。
+
+    * Windows: ``FILE_ATTRIBUTE_HIDDEN`` が立っているエントリ。名前が ``.`` で
+      始まるだけの項目は**隠さない**（Qt も Windows では属性だけを見るため、
+      旧実装でもドットファイルは表示されていた）。
+    * それ以外のOS: 名前が ``.`` で始まるエントリ。
+    """
+    attributes = getattr(stat_result, "st_file_attributes", None)
+    if attributes is not None:
+        return bool(attributes & stat_module.FILE_ATTRIBUTE_HIDDEN)
+    return name.startswith(".")
 
 
 def normalise_entry_key(path: Path | str) -> str:
@@ -169,6 +189,8 @@ class DirectoryScanJob(QRunnable):
         * ``stat`` は**辿らない**。リンク自身の情報で表示には足り、リンク切れの
           エントリも一覧から消えずに残る。``DirEntry`` が走査時に得た情報を
           そのまま使えるので、エントリごとの追加syscallも発生しない。
+
+        隠し項目は ``None`` を返して一覧から落とす（:func:`is_hidden_entry`）。
         """
         try:
             stat_result = item.stat(follow_symlinks=False)
@@ -183,6 +205,8 @@ class DirectoryScanJob(QRunnable):
             logger.debug("リンク先を判定できませんでした: %s", item.path, exc_info=True)
             is_dir = False
         name = item.name
+        if is_hidden_entry(name, stat_result):
+            return None
         return DirectoryEntry(
             entry_id=next(self._next_entry_id),
             key=normalise_entry_key(item.path),
@@ -234,6 +258,9 @@ class DirectoryModel(QAbstractTableModel):
         self._root_key = ""
         self._generation = 0
         self._last_completed_generation = 0
+        # 監視を張るまでの取りこぼしを拾うため、ディレクトリを開いた直後だけ
+        # 追いつき走査を1回入れる（下記 _handle_scan_result 参照）。
+        self._needs_catch_up_scan = False
         self._entry_ids = _entry_id_sequence()
         self._locale = QLocale()
         self._type_names: dict[str, str] = {}
@@ -413,6 +440,7 @@ class DirectoryModel(QAbstractTableModel):
         self._unwatch_all()
         if root_changed:
             self._clear_entries()
+        self._needs_catch_up_scan = True
         self._start_scan()
         return QModelIndex()
 
@@ -483,6 +511,7 @@ class DirectoryModel(QAbstractTableModel):
         self._apply_entries(entries)
         self._last_completed_generation = generation
         self._watch_current_root()
+        self._start_catch_up_scan_if_needed()
         self.directoryLoaded.emit(path)
 
     def _apply_entries(self, scanned: list[DirectoryEntry]) -> None:
@@ -538,6 +567,24 @@ class DirectoryModel(QAbstractTableModel):
         watched = self._watcher.directories()
         if watched:
             self._watcher.removePaths(watched)
+
+    def _start_catch_up_scan_if_needed(self) -> None:
+        """ディレクトリを開いた直後だけ、追いつき用の走査を1回入れる。
+
+        監視は走査が成功してから張る（そうしないと、到達できないパスの登録で
+        GUIスレッドが止まり得る）。その結果、``os.scandir`` が走っている間から
+        監視を張り終えるまでの短い時間に作られた・消えたエントリは、走査結果にも
+        変更通知にも入らない。放っておくと次の外部変更かF5まで一覧が古いままになる。
+
+        そこで開いた直後に一度だけ走査し直して、この隙間を埋める。走査はワーカー
+        スレッドで走り、差分が無ければ通知も出ないのでGUI側の負荷はほぼ無い。
+        監視由来の再走査ではフラグを立てないので、走査が連鎖することはない。
+        """
+        if not self._needs_catch_up_scan:
+            return
+        self._needs_catch_up_scan = False
+        if self._watching_enabled and self._root_path:
+            self._start_scan()
 
     def _watch_current_root(self) -> None:
         """走査が成功したディレクトリを監視対象にする。

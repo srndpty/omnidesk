@@ -180,13 +180,19 @@ def test_thumbnail_only_data_changed_keeps_sort_cache(qtbot, tmp_path: Path) -> 
 
     # 名前やサイズが変わり得る通知（ロール指定なし）では捨てる。ただし
     # 捨てるのは通知された行だけ（全体を捨てると再走査のたびに全件を作り直す）。
+    # プロキシは通知を受けて並べ替え直すので、通知された行のメタdataは作り直され得る。
+    # 見たいのは「他の行を巻き添えにしない」こと。
     before = dict(tab._model._meta_cache)
     source.dataChanged.emit(index, index, [])
     after = tab._model._meta_cache
 
     assert index.internalId() in before
-    assert index.internalId() not in after
-    assert set(after) == set(before) - {index.internalId()}
+    untouched = {
+        entry_id: meta for entry_id, meta in before.items() if entry_id != index.internalId()
+    }
+    assert untouched
+    for entry_id, meta in untouched.items():
+        assert after[entry_id] is meta
 
 
 def test_wide_data_changed_clears_the_whole_sort_cache(qtbot, tmp_path: Path) -> None:
@@ -206,9 +212,14 @@ def test_wide_data_changed_clears_the_whole_sort_cache(qtbot, tmp_path: Path) ->
     root = source.index(str(tmp_path))
     # 5件のディレクトリで広範囲扱いになるよう、しきい値だけ下げる。
     tab._model.ROW_SCOPED_INVALIDATION_LIMIT = 1
+    before = dict(tab._model._meta_cache)
     source.dataChanged.emit(source.index(0, 0, root), source.index(2, 0, root), [])
+    after = tab._model._meta_cache
 
-    assert not tab._model._meta_cache
+    # 通知範囲外の行も含めて、キャッシュはいちど全部捨てられている
+    # （並べ替え直しで作り直された分は別インスタンスになる）。
+    for entry_id, meta in before.items():
+        assert after.get(entry_id) is not meta
 
 
 def test_data_changed_with_unresolvable_range_clears_the_whole_sort_cache(
@@ -569,3 +580,28 @@ def test_resuming_restarts_the_reconciliation_timer_when_rows_are_still_hidden(
     tab._model.resume_watching()
 
     assert tab._model._hidden_reconcile_timer.isActive()
+
+
+def test_size_sorting_follows_an_external_size_change(qtbot, tmp_path: Path) -> None:
+    """サイズ列で並べ替え中に中身が変わったら、表示順が追従すること。
+
+    プロキシは ``dataChanged`` を受けて並べ替え直す。その前に古いソートキーを
+    捨てておかないと、古いキーのまま位置が決まり、表示順が更新されないまま残る。
+    """
+    (tmp_path / "a.txt").write_bytes(b"x" * 10)
+    (tmp_path / "b.txt").write_bytes(b"x" * 20)
+    (tmp_path / "c.txt").write_bytes(b"x" * 30)
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_entries(qtbot, tab, 3)
+    tab._model.sort(1, Qt.SortOrder.AscendingOrder)
+    assert _visible_names(tab) == ["a.txt", "b.txt", "c.txt"]
+
+    (tmp_path / "a.txt").write_bytes(b"x" * 100)
+    tab._source_model.refresh()
+
+    qtbot.waitUntil(
+        lambda: _visible_names(tab) == ["b.txt", "c.txt", "a.txt"],
+        timeout=5000,
+    )

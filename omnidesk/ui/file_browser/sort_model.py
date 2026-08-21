@@ -208,6 +208,14 @@ class SortedFileSystemModel(QSortFilterProxyModel):
         self._hidden_keys.clear()
         self._hidden_names.clear()
         self._hidden_reconcile_timer.stop()
+        if isinstance(source, MediaFileSystemModel):
+            # ``dataChanged`` の受け口だけは ``super().setSourceModel()`` より**先**に
+            # 繋ぐ。スロットは接続順に呼ばれ、``QSortFilterProxyModel`` は自前の
+            # 受け口をそこで登録して、動的な並べ替えの中で ``lessThan`` を呼ぶ。
+            # あとから繋ぐと「古いソートキーで並べ替える → そのあとキャッシュを捨てる」
+            # 順序になり、サイズ列や更新日時列で並べ替えているときに、中身が変わった
+            # ファイルの位置が古いまま残る。
+            source.dataChanged.connect(self._handle_source_data_changed)
         super().setSourceModel(source)
         if isinstance(source, MediaFileSystemModel):
             source.directoryLoaded.connect(self.directoryLoaded)
@@ -215,7 +223,6 @@ class SortedFileSystemModel(QSortFilterProxyModel):
             source.modelReset.connect(self._clear_meta_cache)
             source.rowsAboutToBeRemoved.connect(self._handle_source_rows_about_to_be_removed)
             source.rowsRemoved.connect(self._handle_source_rows_removed)
-            source.dataChanged.connect(self._handle_source_data_changed)
 
     # ------------------------------------------------------------------
     # 並べ替え用メタdataのキャッシュ

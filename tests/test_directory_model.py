@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat as stat_module
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from omnidesk.ui.directory_model import (
     DirectoryScanSignals,
     _entry_id_sequence,
     contiguous_descending_ranges,
+    is_hidden_entry,
     normalise_entry_key,
 )
 
@@ -36,8 +38,17 @@ def _names(model: DirectoryModel) -> list[str]:
 
 
 def _load(qtbot, model: DirectoryModel, directory: Path) -> None:
+    """ディレクトリを開き、開いた直後の走査がすべて終わるまで待つ。
+
+    開いた直後は、監視を張るまでの隙間を埋める追いつき走査がもう1回走る。
+    そこまで待たないと、後続の操作に対する ``directoryLoaded`` と取り違える。
+    """
     with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
         model.setRootPath(str(directory))
+    qtbot.waitUntil(
+        lambda: model.last_completed_scan_generation == model.scan_generation,
+        timeout=5000,
+    )
 
 
 def test_scan_lists_directory_entries(qtbot, tmp_path: Path) -> None:
@@ -566,3 +577,103 @@ def test_stopping_watching_during_the_debounce_cancels_the_rescan(qtbot, tmp_pat
     model._rescan_current_root()
 
     assert model._generation == generation_before
+
+
+def test_hidden_entries_are_excluded(qtbot, tmp_path: Path) -> None:
+    """隠し項目を一覧に出さないこと。
+
+    旧実装は ``QDir.AllEntries | QDir.NoDotAndDotDot`` で ``QDir.Hidden`` を
+    含めていなかったため、隠し項目は出ていなかった。走査へ移った際にこの絞り込みが
+    抜けると、``.git`` などが操作・削除の対象になってしまう。
+    """
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    hidden = tmp_path / "hidden.txt"
+    hidden.write_text("x", encoding="utf-8")
+    if os.name == "nt":
+        if os.system(f'attrib +H "{hidden}" >nul 2>&1') != 0:
+            pytest.skip("隠し属性を設定できません")
+    else:
+        hidden = hidden.rename(tmp_path / ".hidden.txt")
+
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+
+    assert _names(model) == ["visible.txt"]
+
+
+def test_dotfiles_follow_the_platform_convention(qtbot, tmp_path: Path) -> None:
+    """ドットファイルの扱いを ``QFileInfo.isHidden()`` と揃えること。
+
+    Windows は属性だけを見るのでドットファイルは表示され、それ以外のOSでは隠れる。
+    旧実装（Qt）もこの判定だった。
+    """
+    (tmp_path / ".dotfile").write_text("x", encoding="utf-8")
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+
+    assert (".dotfile" in _names(model)) == (os.name == "nt")
+
+
+def test_is_hidden_entry_uses_windows_attributes_when_available() -> None:
+    """判定ロジック自体を、プラットフォームに依らず固定する。"""
+    plain = os.stat_result((0o100644, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    assert is_hidden_entry("notes.txt", plain) is False
+    # 属性が取れないOSでは名前で判定する。
+    assert is_hidden_entry(".bashrc", plain) is True
+
+    hidden_attrs = os.stat_result(
+        (0o100644, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        {"st_file_attributes": stat_module.FILE_ATTRIBUTE_HIDDEN},
+    )
+    visible_attrs = os.stat_result(
+        (0o100644, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        {"st_file_attributes": stat_module.FILE_ATTRIBUTE_ARCHIVE},
+    )
+    assert is_hidden_entry("notes.txt", hidden_attrs) is True
+    # 属性が取れるOS（Windows）では、ドットファイルは隠さない。
+    assert is_hidden_entry(".dotfile", visible_attrs) is False
+
+
+def test_a_catch_up_scan_picks_up_changes_made_during_the_first_scan(qtbot, tmp_path: Path) -> None:
+    """監視を張るまでの隙間で作られたエントリを取りこぼさないこと。
+
+    監視は走査の成功後に張るため、``os.scandir`` 実行中から登録完了までの間の
+    変更は、走査結果にも変更通知にも入らない。開いた直後に一度だけ走査し直す。
+    """
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    created: list[bool] = []
+    original_run = DirectoryScanJob.run
+
+    def run_with_concurrent_change(self) -> None:
+        if not created:
+            created.append(True)
+            (tmp_path / "sneaked-in.txt").write_text("x", encoding="utf-8")
+        original_run(self)
+
+    DirectoryScanJob.run = run_with_concurrent_change  # type: ignore[method-assign]
+    try:
+        model = DirectoryModel()
+        _load(qtbot, model, tmp_path)
+        qtbot.waitUntil(lambda: "sneaked-in.txt" in _names(model), timeout=5000)
+    finally:
+        DirectoryScanJob.run = original_run  # type: ignore[method-assign]
+
+    assert _names(model) == ["a.txt", "sneaked-in.txt"]
+
+
+def test_the_catch_up_scan_runs_only_once_per_directory(qtbot, tmp_path: Path) -> None:
+    """追いつき走査が連鎖しないこと（監視由来の再走査では起こさない）。"""
+    _make_tree(tmp_path)
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    # 開いた直後の追いつき走査ぶんまで進む。
+    qtbot.waitUntil(lambda: not model._needs_catch_up_scan, timeout=5000)
+    qtbot.wait(100)
+    generation_after_open = model._generation
+
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.refresh()
+    qtbot.wait(100)
+
+    # refresh は1回ぶんしか世代を進めない。
+    assert model._generation == generation_after_open + 1
