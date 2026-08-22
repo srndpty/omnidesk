@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 from omnidesk.ui.file_browser import address_bar_controller as address_module
 from omnidesk.ui.file_browser.address_bar_controller import AddressBarController
 
 
-def _controller(
-    mocker, qtbot, current_path: Path
-) -> tuple[AddressBarController, dict[str, object]]:
+def _controller(mocker, qtbot, current_path: Path) -> tuple[AddressBarController, dict[str, Mock]]:
     parent = address_module.QWidget()
     qtbot.addWidget(parent)
     calls = {
@@ -64,9 +63,11 @@ def test_execute_command_builds_cmd_batch_and_exe_arguments(
     monkeypatch.setenv("COMSPEC", "C:\\Windows\\cmd.exe")
 
     controller.execute_command("cmd")
-    mocker.patch.object(controller, "resolve_program", return_value=("C:\\tools\\job.cmd", True))
+    resolve_program = mocker.patch.object(
+        controller, "resolve_program", return_value=("C:\\tools\\job.cmd", True)
+    )
     controller.execute_command('job.cmd "two words"')
-    controller.resolve_program.return_value = ("C:\\tools\\viewer.exe", False)
+    resolve_program.return_value = ("C:\\tools\\viewer.exe", False)
     controller.execute_command("viewer.exe --safe")
 
     assert started.call_args_list == [

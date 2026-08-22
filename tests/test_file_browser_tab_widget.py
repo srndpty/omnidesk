@@ -688,7 +688,7 @@ def test_file_browser_tab_pending_selection_survives_deferred_refresh(
     qtbot.addWidget(tab)
     tab._pending_selection_path = target
     tab._deferred_refresh_target = tmp_path
-    monkeypatch.setattr(tab, "_select_path", lambda path: True)
+    monkeypatch.setattr(tab, "_select_path", lambda path, *args, **kwargs: True)
 
     assert tab._select_pending_path_if_ready()
     assert tab._pending_selection_path == target
@@ -794,7 +794,9 @@ def test_file_browser_tab_refresh_sort_does_not_override_new_user_selection(
     tab._refresh_sort_retries = 3
     tab._refresh_selection_path = old_selection
     monkeypatch.setattr(tab, "_selected_index_path", lambda: new_selection)
-    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
+    monkeypatch.setattr(
+        tab, "_select_path", lambda path, *args, **kwargs: selected.append(path) or True
+    )
 
     tab._apply_refresh_sort()
 
@@ -1591,7 +1593,9 @@ def test_file_browser_tab_apply_rename_success(monkeypatch, qtbot, tmp_path: Pat
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
-    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
+    monkeypatch.setattr(
+        tab, "_select_path", lambda path, *args, **kwargs: selected.append(path) or True
+    )
 
     tab._apply_rename(original, "new.txt")
 
@@ -1678,7 +1682,7 @@ def test_file_browser_tab_apply_rename_clips_after_confirmation(
     tab = FileBrowserTab()
     qtbot.addWidget(tab)
     monkeypatch.setattr(tab, "refresh", lambda: None)
-    monkeypatch.setattr(tab, "_select_path", lambda path: True)
+    monkeypatch.setattr(tab, "_select_path", lambda path, *args, **kwargs: True)
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
         lambda _parent, title, text, *args: (
@@ -1795,7 +1799,9 @@ def test_file_browser_tab_create_new_file_and_folder_success(
     qtbot.addWidget(tab)
     tab.navigate_to(tmp_path)
     monkeypatch.setattr(tab, "refresh", lambda: refreshed.append(True))
-    monkeypatch.setattr(tab, "_select_path", lambda path: selected.append(path) or True)
+    monkeypatch.setattr(
+        tab, "_select_path", lambda path, *args, **kwargs: selected.append(path) or True
+    )
     names = iter([("created.txt", True), ("created-folder", True)])
     monkeypatch.setattr(
         "omnidesk.ui.file_browser.operations_controller.QInputDialog.getText",
@@ -2492,7 +2498,68 @@ def test_file_browser_tab_delete_selected_confirms_deletes_and_refreshes(
     qtbot.waitUntil(lambda: not tab._file_operation_jobs, timeout=3000)
     assert not source.exists()
     assert tab._pending_selection_path == tmp_path
+    # 削除後に選び直す項目は画面中央へ寄せる。
+    assert tab._pending_selection_scroll_hint == QAbstractItemView.ScrollHint.PositionAtCenter
     assert refreshed == [True]
+
+
+def test_file_browser_tab_drop_move_out_of_current_directory_centers_replacement(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    """タブ内D&Dで現在のディレクトリから出す移動でも、直前の項目を中央へ寄せる。"""
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    replacement = tmp_path / "keep.txt"
+    replacement.write_text("keep", encoding="utf-8")
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(tab, "_selection_path_before_deleted_items", lambda paths: replacement)
+    started: list[tuple[list[Path], Path, bool, list[Path] | None]] = []
+    monkeypatch.setattr(
+        tab,
+        "_start_copy_or_move",
+        lambda sources, target, *, move, select_after=None, on_finished=None: started.append(
+            (sources, target, move, select_after)
+        ),
+    )
+
+    assert tab._handle_external_drop([source], dest_dir, True)
+
+    assert started == [([source], dest_dir, True, [replacement])]
+
+
+def test_file_browser_tab_drop_move_into_current_directory_keeps_selection(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    """現在のディレクトリへ入ってくる移動では、代替選択を差し込まない。"""
+    external = tmp_path / "outside"
+    external.mkdir()
+    source = external / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    current = tmp_path / "current"
+    current.mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(current)
+    started: list[list[Path] | None] = []
+    monkeypatch.setattr(
+        tab,
+        "_start_copy_or_move",
+        lambda sources, target, *, move, select_after=None, on_finished=None: started.append(
+            select_after
+        ),
+    )
+
+    assert tab._handle_external_drop([source], current, True)
+
+    assert started == [None]
 
 
 def test_file_browser_tab_delete_selected_runs_outside_gui_thread(
@@ -2753,7 +2820,7 @@ def test_file_browser_tab_request_status_counts_keeps_previous_counts_until_read
 
     class NoopThreadPool:
         def __init__(self) -> None:
-            self.jobs: list[object] = []
+            self.jobs: list[tuple[object, int]] = []
 
         def start(self, job: object, priority: int = 0) -> None:
             self.jobs.append((job, priority))

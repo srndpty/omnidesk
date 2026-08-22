@@ -3,11 +3,12 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import cast
 
 import pytest
 from PyQt6.QtCore import QDir, QModelIndex, QPoint, QPointF, Qt, QUrl
 from PyQt6.QtGui import QIcon, QKeyEvent, QKeySequence, QWheelEvent
-from PyQt6.QtWidgets import QListView, QWidget
+from PyQt6.QtWidgets import QAbstractItemView, QListView, QWidget
 
 import omnidesk.ui.column_browser as column_browser_module
 import omnidesk.ui.column_browser_model as column_browser_model_module
@@ -1195,7 +1196,10 @@ def test_file_selection_does_not_show_empty_preview_column(qtbot, tmp_path: Path
     preview = browser._view.previewWidget()
     leaf_artifacts = [
         view
-        for view in browser._view.findChildren(column_browser_module.QAbstractItemView)
+        for view in cast(
+            list[QAbstractItemView],
+            browser._view.findChildren(column_browser_module.QAbstractItemView),
+        )
         if type(view).__name__ != "_ColumnListView"
     ]
     assert image not in visible_roots
