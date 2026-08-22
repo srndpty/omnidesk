@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from PyQt6.QtCore import QFileInfo, QMimeData, QSize, Qt, QUrl
+from PyQt6.QtCore import QFileInfo, QMimeData, QRunnable, QSize, Qt, QUrl
 from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QFileIconProvider
 
@@ -991,7 +991,7 @@ def test_media_file_system_model_save_cache_async_uses_throttled_budget_check(
     cache = FakeCache()
     pixmap = QPixmap(96, 96)
     pixmap.fill()
-    jobs: list[object] = []
+    jobs: list[QRunnable] = []
     monkeypatch.setattr(model._scan_pool, "start", jobs.append)
 
     model._save_cache_async(cache, "key", pixmap, hint_edge=96)
@@ -1045,7 +1045,7 @@ def test_media_file_system_model_caches_icons_per_extension(qtbot, tmp_path: Pat
 
 
 def test_media_file_system_model_does_not_share_icons_between_executables(
-    qtbot, tmp_path: Path
+    monkeypatch, qtbot, tmp_path: Path
 ) -> None:
     """ファイルごとに絵が違う拡張子で、1つ目のアイコンを使い回さないこと。
 
@@ -1059,7 +1059,14 @@ def test_media_file_system_model_does_not_share_icons_between_executables(
         model.setRootPath(str(tmp_path))
     looked_up: list[object] = []
     original = model._icon_provider.icon
-    model._icon_provider.icon = lambda arg: looked_up.append(arg) or original(arg)
+
+    def record_icon(arg):
+        looked_up.append(arg)
+        return original(arg)
+
+    # QFileIconProvider.icon はオーバーロードされており直接代入は型検査に通らないため、
+    # monkeypatch 経由で差し替える。
+    monkeypatch.setattr(model._icon_provider, "icon", record_icon)
 
     for row in range(model.rowCount()):
         model.data(model.index(row, 0), Qt.ItemDataRole.DecorationRole)

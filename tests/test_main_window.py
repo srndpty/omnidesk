@@ -183,7 +183,7 @@ def test_main_window_restores_column_session(monkeypatch, qtbot, tmp_path: Path)
 
     assert not window._is_tab_mode()
     assert window._tab_container.name_column_width == 222
-    assert window._column_browser.enable_local_shortcuts is False
+    assert cast(FakeColumnBrowser, window._column_browser).enable_local_shortcuts is False
     assert window._tab_container.tab_paths() == [first, second]
     assert window._tab_container.tab_pinned_states() == [True, False]
     assert window._column_browser.current_path() == second
@@ -318,7 +318,10 @@ def test_main_window_view_toggle_is_corner_widget(monkeypatch, qtbot, tmp_path: 
     window = MainWindow()
     qtbot.addWidget(window)
 
-    corner = window.menuBar().cornerWidget(Qt.Corner.TopRightCorner)
+    corner = cast(
+        main_window_module.QToolButton,
+        window.menuBar().cornerWidget(Qt.Corner.TopRightCorner),
+    )
     assert corner is not None
     assert corner.defaultAction() is window._toggle_view_action
 
