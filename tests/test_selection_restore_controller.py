@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from PyQt6.QtCore import QObject
+from PyQt6.QtWidgets import QAbstractItemView
 
 from omnidesk.ui.file_browser.selection_restore_controller import SelectionRestoreController
 
@@ -49,5 +50,20 @@ def test_select_pending_path_clears_state_after_success(mocker, qtbot, tmp_path:
 
     assert controller.select_pending_path_if_ready()
 
-    apply_selection.assert_called_once_with(target, None)
+    apply_selection.assert_called_once_with(target, QAbstractItemView.ScrollHint.EnsureVisible)
     assert controller.pending_path is None
+
+
+def test_select_pending_path_uses_pending_scroll_hint(mocker, qtbot, tmp_path: Path) -> None:
+    """削除・移動後の中央寄せ指定は、モデル準備完了時の復元にも引き継ぐ。"""
+    target = tmp_path / "created.txt"
+    target.write_text("created", encoding="utf-8")
+    apply_selection = mocker.Mock(return_value=True)
+    parent = QObject()
+    controller = _controller(mocker, parent, apply_selection=apply_selection)
+    controller.pending_path = target
+    controller.scroll_hint = QAbstractItemView.ScrollHint.PositionAtCenter
+
+    assert controller.select_pending_path_if_ready()
+
+    apply_selection.assert_called_once_with(target, QAbstractItemView.ScrollHint.PositionAtCenter)

@@ -410,10 +410,14 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         if result.errors:
             QMessageBox.warning(self, error_title, "\n".join(result.errors))
         if not result.errors and select_after:
-            self._pending_selection_path = next(
+            replacement = next(
                 (path for path in select_after if path.exists()),
                 None,
             )
+            self._pending_selection_path = replacement
+            if replacement is not None:
+                # 削除・移動で消えた行の代わりに選ぶ項目は、画面中央へ寄せる。
+                self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.PositionAtCenter
         self.refresh()
         self._select_pending_path_if_ready()
 
@@ -472,6 +476,10 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
                 "Blocked moving a folder into itself: paths=%s target=%s", paths, target_dir
             )
             return False
+        if select_after is None and move:
+            # タブ内のD&Dで現在のディレクトリから出ていく場合は、削除と同じく
+            # 直前の項目へフォーカスを移し、その位置を画面中央へ寄せる。
+            select_after = self._selection_after_paths_leave_current_directory(paths, target_dir)
         self._start_copy_or_move(
             paths,
             target_dir,
@@ -480,6 +488,19 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
             on_finished=on_finished,
         )
         return True
+
+    def _selection_after_paths_leave_current_directory(
+        self,
+        paths: list[Path],
+        target_dir: Path,
+    ) -> list[Path] | None:
+        """移動元が現在のディレクトリのとき、移動後に選ぶ項目を返す。"""
+        if same_navigation_path(target_dir, self._current_path):
+            return None
+        if not any(same_navigation_path(path.parent, self._current_path) for path in paths):
+            return None
+        replacement = self._selection_path_before_deleted_items(paths)
+        return [replacement] if replacement is not None else None
 
     def selection_replacement_for_removed_paths(self, paths: list[Path]) -> Path | None:
         return self._selection_path_before_deleted_items(paths)
@@ -496,6 +517,8 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         ):
             return
         self._pending_selection_path = replacement
+        # 移動で消えた行の代わりに選ぶ項目は、画面中央へ寄せる。
+        self._pending_selection_scroll_hint = QAbstractItemView.ScrollHint.PositionAtCenter
         self.refresh()
         self._select_pending_path_if_ready()
         self.focus_view()

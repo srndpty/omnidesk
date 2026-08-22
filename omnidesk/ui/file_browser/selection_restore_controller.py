@@ -94,7 +94,9 @@ class SelectionRestoreController:
 
     def select_pending_path_if_ready(self) -> bool:
         pending = self._pending_path
-        if pending is None or not self._apply_selection(pending, None):
+        # 保留中のスクロール指定（削除・移動後の中央寄せなど）をここでも尊重する。
+        # 以前は常に既定の EnsureVisible で復元していたため、中央寄せが失われていた。
+        if pending is None or not self._apply_selection(pending, self._scroll_hint):
             return False
         if self._has_deferred_refresh():
             return True
