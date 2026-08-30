@@ -233,6 +233,36 @@ def test_entry_ids_are_never_reused(qtbot, tmp_path: Path) -> None:
     assert fresh.entry_id != stale_id
 
 
+def test_stale_index_does_not_resolve_to_the_row_that_took_its_place(qtbot, tmp_path: Path) -> None:
+    """行が詰まったあとの古いインデックスが、別のファイルを指さないこと。
+
+    ``activated`` などのシグナルで受け取ったインデックスは、処理する時点では
+    走査によって行が入れ替わっていることがある。行番号しか見ないと、消えた
+    ファイルの代わりにその位置へ来た別のファイルを開く・消すことになる。
+    ``entry_id`` は使い回さないので、これで古いインデックスと判別できる。
+    """
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    stale_index = model.index_for_path(tmp_path / "b.txt")
+    stale_row = stale_index.row()
+
+    (tmp_path / "b.txt").unlink()
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.refresh()
+
+    # 消えた行の位置には、別のファイル（別のID）が詰めてきている。
+    replacement = model.index(stale_row, COLUMN_NAME)
+    assert replacement.isValid()
+    assert replacement.internalId() != stale_index.internalId()
+
+    assert model.entry(stale_index) is None
+    assert model.filePath(stale_index) == ""
+    assert model.fileName(stale_index) == ""
+    assert model.isDir(stale_index) is False
+
+
 def test_changed_content_emits_data_changed_for_that_row_only(qtbot, tmp_path: Path) -> None:
     _make_tree(tmp_path)
     model = DirectoryModel()
