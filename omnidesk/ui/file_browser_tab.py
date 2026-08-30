@@ -119,13 +119,15 @@ class FileBrowserTab(
         self._model.layoutChanged.connect(self._on_layout_changed)
         self._model.rowsInserted.connect(self._on_rows_inserted)
         self._model.rowsRemoved.connect(self._on_rows_removed)
-
         self._tree_view = _FileTreeView(self)
         self._tree_view.setModel(self._model)
         self._tree_view.setAlternatingRowColors(True)
         self._tree_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._tree_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self._tree_view.doubleClicked.connect(self._handle_index_activated)
+        # ``activated`` はダブルクリックとEnterの両方で出る。``doubleClicked`` も
+        # つなぐと1回のダブルクリックでハンドラが2回走り、2回目は最初の遷移で
+        # 作り直された行に対する古いインデックスを受け取る。空パスを開こうとして
+        # カレントディレクトリ（インストール先）がエクスプローラーで開いていた。
         self._tree_view.activated.connect(self._handle_index_activated)
         self._tree_view.setRootIsDecorated(False)
         self._tree_view.setUniformRowHeights(True)
@@ -144,7 +146,6 @@ class FileBrowserTab(
 
         self._tile_view = _FileTileView(self)
         self._tile_view.setModel(self._model)
-        self._tile_view.doubleClicked.connect(self._handle_index_activated)
         self._tile_view.activated.connect(self._handle_index_activated)
         self._tile_view.setIconSize(QSize(128, 128))
 

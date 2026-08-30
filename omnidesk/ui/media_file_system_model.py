@@ -71,6 +71,39 @@ def folder_base_pixmap(base_icon: QIcon, edge: int) -> QPixmap:
     return canvas
 
 
+def icon_with_enlarged_pixmap(base_icon: QIcon, edge: int) -> QIcon:
+    """``edge`` に届く絵を持たないアイコンに、拡大した絵を足したアイコンを返す。
+
+    シェルのフォルダアイコンは 48px 程度までしか持たないことがあり、``QIcon`` は
+    持っている絵より大きくは描かない。タイル表示ではサムネイルだけが 160px で
+    描かれ、プレビューを作れないフォルダのアイコンだけが小さく見えていた。
+
+    元の絵は残したまま拡大版を足すので、小さいサイズを要求する経路
+    （ツリー表示の 32px など）では、これまでどおり実寸の絵が使われる。
+    """
+    if edge <= 0:
+        return base_icon
+    sizes = base_icon.availableSizes()
+    if not sizes:
+        return base_icon
+    largest = max(sizes, key=lambda size: size.width() * size.height())
+    if largest.width() >= edge or largest.height() >= edge:
+        return base_icon
+    source = base_icon.pixmap(largest)
+    if source.isNull():
+        return base_icon
+    enlarged = QIcon(base_icon)
+    enlarged.addPixmap(
+        source.scaled(
+            edge,
+            edge,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    )
+    return enlarged
+
+
 def cache_pixmap_for_edge(pixmap: QPixmap, edge: int) -> QPixmap:
     """Return a cache pixmap whose outer edge matches the requested cache edge."""
     target_size = QSize(edge, edge)
@@ -155,6 +188,8 @@ class MediaFileSystemModel(DirectoryModel):
         self._type_icons: dict[str, QIcon] = {}
         # フォルダプレビューの土台画像はエッジごとに1枚あれば足りる（下記参照）。
         self._folder_base_pixmaps: dict[int, QPixmap] = {}
+        # プレビューが無いフォルダ用のアイコン。表示サイズ（エッジ）ごとに1つ。
+        self._folder_icons: dict[int, QIcon] = {}
         # ジョブはワーカースレッドで破棄されるため、シグナル用QObjectはジョブに
         # 持たせず1つだけ用意して共有する。寿命はモデルではなく QApplication に
         # 預ける（サムネイル生成中にタブを閉じても壊れないようにするため）。
@@ -231,7 +266,7 @@ class MediaFileSystemModel(DirectoryModel):
         比例しない。
         """
         if entry.is_dir:
-            return self._cached_type_icon(_FOLDER_ICON_KEY, QFileIconProvider.IconType.Folder)
+            return self._folder_type_icon()
         if entry.suffix in PER_FILE_ICON_SUFFIXES:
             return self._cached_type_icon(_GENERIC_FILE_ICON_KEY, QFileIconProvider.IconType.File)
 
@@ -241,6 +276,16 @@ class MediaFileSystemModel(DirectoryModel):
             if cached.isNull():
                 cached = self._icon_provider.icon(QFileIconProvider.IconType.File)
             self._type_icons[entry.suffix] = cached
+        return cached
+
+    def _folder_type_icon(self) -> QIcon:
+        """プレビューが無いフォルダのアイコンを、サムネイルと同じ大きさで返す。"""
+        edge = self._thumbnail_edge
+        cached = self._folder_icons.get(edge)
+        if cached is None:
+            base = self._cached_type_icon(_FOLDER_ICON_KEY, QFileIconProvider.IconType.Folder)
+            cached = icon_with_enlarged_pixmap(base, edge)
+            self._folder_icons[edge] = cached
         return cached
 
     def _cached_type_icon(self, cache_key: str, icon_type: QFileIconProvider.IconType) -> QIcon:

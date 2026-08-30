@@ -321,6 +321,13 @@ class FileBrowserNavigationMixin(_NavigationMixinBase):
         self._apply_name_column_width()
 
     def _handle_index_activated(self, index: QModelIndex) -> None:
+        # 行が消えた直後などに古いインデックスが届くと、モデルは空パスを返す。
+        # ``Path("")`` は "." になり、そのまま開くとカレントディレクトリ
+        # （インストール先）がエクスプローラーで開いてしまうので、ここで弾く。
+        raw_path = self._model.filePath(index)
+        if not raw_path:
+            logger.debug("活性化されたインデックスにパスがありません: row=%s", index.row())
+            return
         file_info = self._model.fileInfo(index)
         target = Path(file_info.absoluteFilePath())
         if file_info.isDir():

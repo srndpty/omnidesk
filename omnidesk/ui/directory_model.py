@@ -396,13 +396,24 @@ class DirectoryModel(QAbstractTableModel):
     # エントリへのアクセス
     # ------------------------------------------------------------------
     def entry(self, index: QModelIndex) -> DirectoryEntry | None:
-        """インデックスに対応するエントリを返す。無ければ ``None``。"""
+        """インデックスに対応するエントリを返す。無ければ ``None``。
+
+        行番号だけでなく ``entry_id``（``internalId()``）も突き合わせる。
+        イベントキューに残った古いインデックスは、行が詰まったあとでは
+        別のファイルの行番号を指す。行番号しか見ないと、``filePath()`` などは
+        「もっともらしい別のファイル」を返し、開く・消すの対象を取り違える。
+        ``entry_id`` は使い回さないので、一致しなければ古いインデックスと
+        判断してよい（:class:`DirectoryEntry` の ``entry_id`` 参照）。
+        """
         if not index.isValid():
             return None
         row = index.row()
         if not (0 <= row < len(self._entries)):
             return None
-        return self._entries[row]
+        entry = self._entries[row]
+        if index.internalId() != entry.entry_id:
+            return None
+        return entry
 
     def entry_for_key(self, key: str) -> DirectoryEntry | None:
         row = self._row_by_key.get(key)
