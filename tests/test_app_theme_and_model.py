@@ -21,6 +21,7 @@ from omnidesk.ui.media_file_system_model import (
     folder_preview_cache,
     folder_thumbnail_preview_edge,
     folder_thumbnail_rect,
+    icon_with_enlarged_pixmap,
 )
 
 
@@ -1133,3 +1134,37 @@ def test_media_file_system_model_thumbnail_ready_does_not_stat_target(
     model._pending.add(key)
 
     model._handle_thumbnail_ready(key, QIcon(pixmap), token.generation)
+
+
+def _icon_with_size(edge: int) -> QIcon:
+    pixmap = QPixmap(edge, edge)
+    pixmap.fill(Qt.GlobalColor.blue)
+    return QIcon(pixmap)
+
+
+def test_icon_with_enlarged_pixmap_adds_missing_large_size(qapp: QApplication) -> None:
+    """小さい絵しか持たないアイコンに、要求サイズの絵を足すこと。"""
+    icon = icon_with_enlarged_pixmap(_icon_with_size(48), 160)
+
+    assert QSize(160, 160) in icon.availableSizes()
+    # 元の絵は残すので、小さいサイズを要求する経路は実寸のままで済む。
+    assert QSize(48, 48) in icon.availableSizes()
+
+
+def test_icon_with_enlarged_pixmap_keeps_icon_that_is_large_enough(qapp: QApplication) -> None:
+    base = _icon_with_size(256)
+
+    assert icon_with_enlarged_pixmap(base, 160) is base
+    assert icon_with_enlarged_pixmap(QIcon(), 160).availableSizes() == []
+
+
+def test_folder_type_icon_matches_thumbnail_edge(qapp: QApplication, tmp_path: Path) -> None:
+    """プレビューを作れないフォルダのアイコンも、サムネイルと同じ大きさで描けること。"""
+    model = MediaFileSystemModel()
+    model.set_thumbnail_edge(160)
+
+    icon = model._folder_type_icon()
+
+    assert max(size.width() for size in icon.availableSizes()) >= 160
+    # 同じエッジでは作り直さない（描画のたびに拡大しない）。
+    assert model._folder_type_icon() is icon

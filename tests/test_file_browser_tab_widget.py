@@ -3100,3 +3100,129 @@ def test_forced_refresh_timeout_abandons_instead_of_finishing(
     qtbot.waitUntil(lambda: tab._deferred_refresh_target is None, timeout=3000)
     assert completions == []
     assert not tab._sort_refresh_controller.active
+
+
+def _wait_for_directory_load(qtbot, tab: FileBrowserTab, path: Path) -> None:
+    """走査結果が反映されるまで待つ。"""
+    qtbot.waitUntil(
+        lambda: (
+            {entry.name for entry in tab._source_model.entries()}
+            == {child.name for child in path.iterdir()}
+        ),
+        timeout=3000,
+    )
+
+
+def test_activation_ignores_stale_index_instead_of_opening_current_directory(
+    monkeypatch,
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    """行が消えた直後の古いインデックスで、カレントディレクトリを開かないこと。
+
+    以前は空パスが ``Path(".")`` になり、インストール先フォルダが
+    エクスプローラーで開いてしまっていた。
+    """
+    opened: list[Path] = []
+    navigated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    monkeypatch.setattr(tab, "_open_file", opened.append)
+    monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
+
+    tab._handle_index_activated(QModelIndex())
+
+    assert opened == []
+    assert navigated == []
+    _quiesce(qtbot, tab)
+
+
+def test_activation_signal_opens_folder_only_once(monkeypatch, qtbot, tmp_path: Path) -> None:
+    """フォルダを開く経路が ``activated`` の1本だけになっていること。
+
+    ``doubleClicked`` と ``activated`` の両方をつないでいたため、1回の
+    ダブルクリックでハンドラが2回走っていた。2回目は最初の遷移で作り直された
+    行に対する古いインデックスを受け取り、空パス（＝カレントディレクトリ）を
+    エクスプローラーで開いてしまっていた。``activated`` はダブルクリックでも
+    Enterでも出るので、こちらだけで両方を賄える。
+    """
+    child = tmp_path / "child"
+    child.mkdir()
+    navigated: list[Path] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    monkeypatch.setattr(tab, "navigate_to", lambda path: navigated.append(path) or True)
+
+    index = tab._model.index(str(child))
+    for view in (tab._tile_view, tab._tree_view):
+        navigated.clear()
+        view.doubleClicked.emit(index)
+        assert navigated == []
+        view.activated.emit(index)
+        assert navigated == [child]
+
+    _quiesce(qtbot, tab)
+
+
+def test_external_removal_keeps_tile_scroll_position(qtbot, tmp_path: Path) -> None:
+    """外部からファイルが消えても、タイル表示のスクロール位置が飛ばないこと。
+
+    タイル表示は Batched レイアウトなので、行が減るとレイアウトがやり直され、
+    途中の小さいスクロール範囲へ現在値が丸められていた。再生中の動画を外部
+    アプリで移動しただけで、見ていた位置が上へ飛ぶ原因だった。
+    """
+    for number in range(300):
+        (tmp_path / f"f{number:03d}.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    qtbot.wait(100)
+
+    view = tab._active_view()
+    assert isinstance(view, QListView)
+    scroll_bar = view.verticalScrollBar()
+    assert scroll_bar is not None
+    scroll_bar.setValue(scroll_bar.maximum() // 2)
+    qtbot.wait(50)
+    before = scroll_bar.value()
+    assert before > 0
+
+    (tmp_path / "f150.txt").unlink()
+    tab._source_model.refresh()
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    qtbot.wait(100)
+
+    assert scroll_bar.value() == before
+    _quiesce(qtbot, tab)
+
+
+def test_explicit_scroll_wins_over_remembered_position(qtbot, tmp_path: Path) -> None:
+    """明示的なスクロール（選択の復元など）は、覚えた位置に上書きされないこと。"""
+    for number in range(300):
+        (tmp_path / f"f{number:03d}.txt").write_text("x", encoding="utf-8")
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    qtbot.wait(100)
+
+    scroll_bar = tab._tile_view.verticalScrollBar()
+    assert scroll_bar is not None
+    scroll_bar.setValue(scroll_bar.maximum() // 2)
+    qtbot.wait(50)
+    tab._tile_view._scroll_keeper.remember()
+
+    assert tab._select_path(tmp_path / "f000.txt", QAbstractItemView.ScrollHint.PositionAtTop)
+
+    assert tab._tile_view._scroll_keeper.pending_value is None
+    _quiesce(qtbot, tab)

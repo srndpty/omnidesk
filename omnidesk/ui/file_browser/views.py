@@ -38,6 +38,7 @@ from ..file_browser_drop import (
 from ..file_browser_selection import rubber_band_intersecting_rows, rubber_band_target_rows
 from ..file_browser_visible import visible_row_range
 from .delegates import _DropTargetItemDelegate, _TwoLineTileNameDelegate
+from .scroll_keeper import BatchedLayoutScrollKeeper
 from .sort_model import SortedFileSystemModel
 
 logger = logging.getLogger(__name__)
@@ -588,3 +589,35 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionRectVisible(True)
         self.setItemDelegate(_TwoLineTileNameDelegate(self))
+        scroll_bar = self.verticalScrollBar()
+        assert scroll_bar is not None
+        # Batched レイアウトのやり直しでスクロール位置が飛ぶのを防ぐ。
+        self._scroll_keeper = BatchedLayoutScrollKeeper(scroll_bar, self)
+
+    def setModel(self, model) -> None:  # noqa: N802
+        super().setModel(model)
+        if model is None:
+            return
+        # ビュー自身の接続より後につなぐ。こうすると、行の増減に伴う
+        # 選択の移動（自動スクロール）が済んだあとの位置を覚えられる。
+        # バッチレイアウトによる丸めはさらに後で起きるので、間に合う。
+        model.rowsRemoved.connect(self._remember_scroll_position)
+        model.rowsInserted.connect(self._remember_scroll_position)
+
+    def _remember_scroll_position(self, parent: QModelIndex, first: int, last: int) -> None:
+        _ = parent, first, last
+        self._scroll_keeper.remember()
+
+    def setRootIndex(self, index: QModelIndex) -> None:  # noqa: N802
+        # 別のディレクトリを表示するときは、前の位置を持ち越さない。
+        self._scroll_keeper.cancel()
+        super().setRootIndex(index)
+
+    def scrollTo(  # noqa: N802
+        self,
+        index: QModelIndex,
+        hint: QAbstractItemView.ScrollHint = QAbstractItemView.ScrollHint.EnsureVisible,
+    ) -> None:
+        # 明示的なスクロール（選択の復元など）が入ったら、そちらを優先する。
+        self._scroll_keeper.cancel()
+        super().scrollTo(index, hint)
