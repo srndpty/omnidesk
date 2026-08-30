@@ -21,7 +21,8 @@ from omnidesk.ui.media_file_system_model import (
     folder_preview_cache,
     folder_thumbnail_preview_edge,
     folder_thumbnail_rect,
-    icon_with_enlarged_pixmap,
+    high_resolution_folder_icon,
+    icon_scaled_to_edge,
 )
 
 
@@ -1041,8 +1042,10 @@ def test_media_file_system_model_caches_icons_per_extension(qtbot, tmp_path: Pat
     for row in range(model.rowCount()):
         model.data(model.index(row, 0), Qt.ItemDataRole.DecorationRole)
 
-    # フォルダ・txt・png の3種類だけ。txt が3件あっても1回。
-    assert set(model._type_icons) == {model_module._FOLDER_ICON_KEY, "txt", "png"}
+    # txt・png の2種類だけ。txt が3件あっても1回。
+    assert set(model._type_icons) == {"txt", "png"}
+    # フォルダは大きさを揃える都合で別のキャッシュに載る（エッジごとに1つ）。
+    assert list(model._folder_icons) == [model._thumbnail_edge]
 
 
 def test_media_file_system_model_does_not_share_icons_between_executables(
@@ -1136,26 +1139,54 @@ def test_media_file_system_model_thumbnail_ready_does_not_stat_target(
     model._handle_thumbnail_ready(key, QIcon(pixmap), token.generation)
 
 
-def _icon_with_size(edge: int) -> QIcon:
+def _pixmap(edge: int) -> QPixmap:
     pixmap = QPixmap(edge, edge)
     pixmap.fill(Qt.GlobalColor.blue)
-    return QIcon(pixmap)
+    return pixmap
 
 
-def test_icon_with_enlarged_pixmap_adds_missing_large_size(qapp: QApplication) -> None:
-    """小さい絵しか持たないアイコンに、要求サイズの絵を足すこと。"""
-    icon = icon_with_enlarged_pixmap(_icon_with_size(48), 160)
+def _icon_with_size(edge: int) -> QIcon:
+    return QIcon(_pixmap(edge))
+
+
+def test_icon_scaled_to_edge_adds_exact_size_and_keeps_small_ones(qapp: QApplication) -> None:
+    """要求サイズちょうどの絵を持たせ、小さい絵も引き継ぐこと。"""
+    base = QIcon()
+    base.addPixmap(_pixmap(32))
+    base.addPixmap(_pixmap(256))
+
+    icon = icon_scaled_to_edge(base, 160)
 
     assert QSize(160, 160) in icon.availableSizes()
-    # 元の絵は残すので、小さいサイズを要求する経路は実寸のままで済む。
-    assert QSize(48, 48) in icon.availableSizes()
+    # ツリー表示（32px）は、これまでどおり実寸の絵から描ける。
+    assert QSize(32, 32) in icon.availableSizes()
+    # 拡大の元になった大きい絵は、縮小済みなので持ち回らない。
+    assert QSize(256, 256) not in icon.availableSizes()
 
 
-def test_icon_with_enlarged_pixmap_keeps_icon_that_is_large_enough(qapp: QApplication) -> None:
-    base = _icon_with_size(256)
+def test_icon_scaled_to_edge_handles_empty_icon(qapp: QApplication) -> None:
+    empty = QIcon()
 
-    assert icon_with_enlarged_pixmap(base, 160) is base
-    assert icon_with_enlarged_pixmap(QIcon(), 160).availableSizes() == []
+    assert icon_scaled_to_edge(empty, 160) is empty
+    assert icon_scaled_to_edge(_icon_with_size(48), 0).availableSizes() == [QSize(48, 48)]
+
+
+def test_high_resolution_folder_icon_prefers_the_shell_icon(qapp: QApplication) -> None:
+    """汎用アイコンより大きく描けるなら、シェルのフォルダアイコンを使うこと。
+
+    ``QFileIconProvider.icon(IconType.Folder)`` は 16/32px しか持たないため、
+    タイル表示（160px）へ拡大するとぼやける。
+    """
+    provider = QFileIconProvider()
+    provider.setOptions(QFileIconProvider.Option.DontUseCustomDirectoryIcons)
+
+    icon = high_resolution_folder_icon(provider, 160)
+
+    assert not icon.isNull()
+    generic = provider.icon(QFileIconProvider.IconType.Folder)
+    largest = max(size.width() for size in icon.availableSizes())
+    generic_largest = max(size.width() for size in generic.availableSizes())
+    assert largest >= generic_largest
 
 
 def test_folder_type_icon_matches_thumbnail_edge(qapp: QApplication, tmp_path: Path) -> None:
