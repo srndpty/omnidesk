@@ -31,6 +31,11 @@ from .column_browser_helpers import normalize_directory_key
 
 logger = logging.getLogger(__name__)
 
+# GetFileAttributesW の戻り値のビット。stat.FILE_ATTRIBUTE_* は Windows でしか
+# 定義されないため、他OSでも読めるようここで定義する。
+_FILE_ATTRIBUTE_HIDDEN = 0x2
+_FILE_ATTRIBUTE_SYSTEM = 0x4
+
 _SCAN_BATCH_SIZE = 256
 _WINDOWS_LOGICAL_COMPARE: Callable[[str, str], int] | None = None
 _NATURAL_PART_RE = re.compile(r"(\d+)")
@@ -274,13 +279,23 @@ def _entry_matches_filters(name: str, path: str, is_dir: bool, filters: int) -> 
 
 
 def _is_hidden_entry(name: str, path: str) -> bool:
-    if name.startswith("."):
-        return True
-    return bool(_windows_file_attributes(path) & 0x2)
+    """一覧から隠すエントリかを返す。
+
+    タブ表示（:func:`omnidesk.ui.directory_model.is_hidden_entry`）と同じ判定に
+    する。同じ「隠しファイルを表示」設定が両方のビューへ効くので、隠しの定義が
+    ビューごとに違うと、Windowsでドットファイルだけカラム表示から消える。
+
+    * Windows: ``FILE_ATTRIBUTE_HIDDEN`` が立っているエントリ。名前が ``.`` で
+      始まるだけの項目は**隠さない**。
+    * それ以外のOS: 名前が ``.`` で始まるエントリ。
+    """
+    if os.name == "nt":
+        return bool(_windows_file_attributes(path) & _FILE_ATTRIBUTE_HIDDEN)
+    return name.startswith(".")
 
 
 def _is_system_entry(path: str) -> bool:
-    return bool(_windows_file_attributes(path) & 0x4)
+    return bool(_windows_file_attributes(path) & _FILE_ATTRIBUTE_SYSTEM)
 
 
 def _windows_file_attributes(path: str) -> int:

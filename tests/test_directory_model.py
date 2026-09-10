@@ -661,6 +661,36 @@ def test_set_show_hidden_reloads_the_current_directory(qtbot, tmp_path: Path) ->
     assert sorted(_names(model)) == sorted([hidden.name, "visible.txt"])
 
 
+def test_set_show_hidden_does_not_scan_while_not_watching(qtbot, tmp_path: Path) -> None:
+    """見えていないタブでは、切り替えで走査を起こさないこと。
+
+    非アクティブなタブは ``stop_watching()`` 済みで、再表示時に ``refresh()`` が
+    走る。ここで走査すると、開いているタブの数だけ不要なI/Oがまとめて起きる
+    （UNCや停止中のディスクを開いていると特に痛い）。
+    """
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    hidden = _make_hidden_file(tmp_path)
+
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    model.stop_watching()
+    generation_before = model.scan_generation
+
+    model.set_show_hidden(False)
+
+    # 値だけ更新し、走査は起こさない。
+    assert model.show_hidden is False
+    assert model.scan_generation == generation_before
+    assert sorted(_names(model)) == sorted([hidden.name, "visible.txt"])
+
+    # 再表示時の読み直しで、新しい値が効く。
+    model.resume_watching()
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.refresh()
+
+    assert _names(model) == ["visible.txt"]
+
+
 def test_dotfiles_follow_the_platform_convention(qtbot, tmp_path: Path) -> None:
     """ドットファイルの扱いを ``QFileInfo.isHidden()`` と揃えること。
 

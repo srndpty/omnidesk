@@ -34,6 +34,7 @@ from omnidesk.ui.column_browser_model import (
     _ScanToken,
     _sort_entries,
 )
+from omnidesk.ui.directory_model import is_hidden_entry
 
 
 def test_set_root_path_accepts_directory_and_file(qtbot, tmp_path: Path) -> None:
@@ -904,10 +905,14 @@ def test_set_filter_is_passed_to_directory_scan_job(qtbot, tmp_path, monkeypatch
 
 def test_column_model_filter_excludes_hidden_system_and_wrong_entry_type(tmp_path) -> None:
     filters = int((QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot).value)
+    hidden = tmp_path / "hidden.txt"
+    hidden.write_text("x", encoding="utf-8")
+    if os.name == "nt" and os.system(f'attrib +H "{hidden}" >nul 2>&1') != 0:
+        pytest.skip("隠し属性を設定できません")
 
     assert _entry_matches_filters("folder", str(tmp_path / "folder"), True, filters) is True
     assert _entry_matches_filters("file.txt", str(tmp_path / "file.txt"), False, filters) is True
-    assert _entry_matches_filters(".secret", str(tmp_path / ".secret"), False, filters) is False
+    assert _entry_matches_filters(hidden.name, str(hidden), False, filters) is False
     assert _entry_matches_filters(".", str(tmp_path / "."), True, filters) is False
 
     dirs_only = int((QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot).value)
@@ -917,7 +922,23 @@ def test_column_model_filter_excludes_hidden_system_and_wrong_entry_type(tmp_pat
     show_hidden = int(
         (QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot | QDir.Filter.Hidden).value
     )
-    assert _entry_matches_filters(".secret", str(tmp_path / ".secret"), False, show_hidden) is True
+    assert _entry_matches_filters(hidden.name, str(hidden), False, show_hidden) is True
+
+
+def test_column_model_hidden_predicate_matches_the_tab_view(tmp_path) -> None:
+    """隠しの定義をタブ表示と揃えること。
+
+    同じ「隠しファイルを表示」設定が両方のビューへ効くため、ここが食い違うと
+    Windowsでドットファイルだけカラム表示から消える。
+    """
+    filters = int((QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot).value)
+    dotfile = tmp_path / ".dotfile"
+    dotfile.write_text("x", encoding="utf-8")
+
+    listed = _entry_matches_filters(dotfile.name, str(dotfile), False, filters)
+
+    assert listed == (os.name == "nt")
+    assert listed == (not is_hidden_entry(dotfile.name, os.stat(dotfile, follow_symlinks=False)))
 
 
 def test_column_model_set_show_hidden_toggles_the_filter_and_drops_the_cache(tmp_path) -> None:

@@ -514,13 +514,16 @@ class DirectoryModel(QAbstractTableModel):
         """隠し項目の表示を切り替える。
 
         絞り込みは走査時に効くため、現在の一覧はそのままでは変わらない。値が
-        変わったときだけ読み直す。
+        変わり、かつ表示中（監視中）のときだけ読み直す。見えていないタブでは
+        値の更新だけに留める。再表示時の :meth:`rescan` が新しい値で走るので、
+        表示設定を変えただけで全タブぶんの走査を起こさなくてよい。
         """
         show = bool(show)
         if show == self._show_hidden:
             return
         self._show_hidden = show
-        self.refresh()
+        if self.is_watching:
+            self.refresh()
 
     @property
     def scan_generation(self) -> int:
