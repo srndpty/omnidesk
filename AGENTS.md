@@ -16,7 +16,7 @@
   - Full validation: `.\dev.ps1 check` -> `scripts\check.ps1`
   - Clean: `.\dev.ps1 clean`（生成物のみ削除。`tmp\` 直下の利用者ファイルは削除しません）
   - Help: `.\dev.ps1 help`
-- `test` / `gui` / `build` / `check` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。
+- `test` / `gui` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。`build` / `check` / `clean` は追加引数を受け取りません（委譲先の `scripts\*.ps1` が引数を持たないため、渡すとエラーで止まります）。
 - 失敗時は `dev` 自身も non-zero で終了します。
 - 従来どおり `scripts/*.ps1` を直接実行しても構いません。`dev` は入口を短くするだけで、既存手順を置き換えるものではありません。
 

@@ -692,6 +692,35 @@ def test_set_show_hidden_does_not_scan_while_not_watching(qtbot, tmp_path: Path)
     assert _names(model) == ["visible.txt"]
 
 
+def test_set_show_hidden_with_reload_false_skips_the_scan_while_watching(
+    qtbot, tmp_path: Path
+) -> None:
+    """監視中でも ``reload=False`` なら走査を起こさないこと。
+
+    カラム表示中のタブは監視を続けたまま見えていない状態になる。ここで走査すると、
+    旧ディレクトリの完了通知がステータスバーとウィンドウタイトルを上書きしうる。
+    """
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    hidden = _make_hidden_file(tmp_path)
+
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    assert model.is_watching
+    generation_before = model.scan_generation
+
+    model.set_show_hidden(False, reload=False)
+
+    assert model.show_hidden is False
+    assert model.scan_generation == generation_before
+    assert sorted(_names(model)) == sorted([hidden.name, "visible.txt"])
+
+    # タブ表示へ戻るときに通る setRootPath で、新しい値のまま読み直される。
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
+
+    assert _names(model) == ["visible.txt"]
+
+
 def test_protected_system_entries_stay_hidden_even_when_showing_hidden(
     qtbot, tmp_path: Path
 ) -> None:

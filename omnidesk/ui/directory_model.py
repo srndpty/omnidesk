@@ -530,19 +530,23 @@ class DirectoryModel(QAbstractTableModel):
         """隠し項目を一覧に出しているか。"""
         return self._show_hidden
 
-    def set_show_hidden(self, show: bool) -> None:
+    def set_show_hidden(self, show: bool, *, reload: bool = True) -> None:
         """隠し項目の表示を切り替える。
 
         絞り込みは走査時に効くため、現在の一覧はそのままでは変わらない。値が
-        変わり、かつ表示中（監視中）のときだけ読み直す。見えていないタブでは
-        値の更新だけに留める。再表示時の :meth:`rescan` が新しい値で走るので、
-        表示設定を変えただけで全タブぶんの走査を起こさなくてよい。
+        変わり、かつ表示中（監視中）のときだけ読み直す。見えていないタブは
+        ``stop_watching()`` 済みなので値の更新だけに留まり、再表示時の
+        :meth:`rescan` が新しい値で走る。
+
+        カラム表示中はタブ自体が見えていない（が現在タブは監視を続けている）ため、
+        呼び出し側が ``reload=False`` を渡す。タブ表示へ戻るときは
+        :meth:`setRootPath` を必ず通るので、そこで新しい値のまま走査される。
         """
         show = bool(show)
         if show == self._show_hidden:
             return
         self._show_hidden = show
-        if self.is_watching:
+        if reload and self.is_watching:
             self.refresh()
 
     @property

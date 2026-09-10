@@ -89,6 +89,23 @@ function Invoke-RepoScript {
     }
 }
 
+# 委譲先が追加引数を受け取らないコマンドで、黙って捨てないための門番。
+# scripts\build-windows.ps1 と scripts\check.ps1 は param ブロックを持たず $args も
+# 見ないため、渡しても無視される。効いたと誤解させないよう、ここで失敗させる。
+function Assert-NoExtraArguments {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string[]]$Arguments = @()
+    )
+
+    if ($Arguments.Count -eq 0) { return $true }
+
+    Write-Host "$Name は追加引数を受け取りません: $($Arguments -join ' ')" -ForegroundColor Red
+    Write-Host "個別のオプションが必要な場合は、委譲先を直接実行してください。" -ForegroundColor Red
+    $script:ExitCode = 2
+    return $false
+}
+
 function Show-Help {
     Write-Host @"
 dev - OmniDesk 開発コマンド
@@ -108,9 +125,9 @@ dev - OmniDesk 開発コマンド
   help      このヘルプを表示
 
 補足:
-  - test / gui / build / check の追加引数はそのまま委譲先へ渡ります。
-    例: .\dev.ps1 test -k thumbnail
+  - test / gui の追加引数はそのまま委譲先へ渡ります。例: .\dev.ps1 test -k thumbnail
   - lint の追加引数は ruff check にだけ渡ります（3つのツールへ同じ引数は渡せないため）。
+  - build / check / clean は追加引数を受け取りません（渡すとエラーで止まります）。
   - このリポジトリに CLI アプリはないため、run は gui の別名です。
   - check はこのリポジトリの canonical な品質ゲートをそのまま呼びます。
   - 並列テストや依存再生成など、ここに無い手順は AGENTS.md / README.md を参照してください。
@@ -159,8 +176,10 @@ Push-Location $RepoRoot
 try {
     switch ($Command.ToLowerInvariant()) {
         "build" {
-            Write-Step "build (scripts\build-windows.ps1)"
-            Invoke-RepoScript -Name "build-windows.ps1" -Arguments $Rest
+            if (Assert-NoExtraArguments -Name "build" -Arguments $Rest) {
+                Write-Step "build (scripts\build-windows.ps1)"
+                Invoke-RepoScript -Name "build-windows.ps1"
+            }
         }
         { $_ -in @("run", "gui") } {
             Write-Step "gui (python -m omnidesk)"
@@ -182,12 +201,16 @@ try {
             }
         }
         "check" {
-            Write-Step "check (scripts\check.ps1)"
-            Invoke-RepoScript -Name "check.ps1" -Arguments $Rest
+            if (Assert-NoExtraArguments -Name "check" -Arguments $Rest) {
+                Write-Step "check (scripts\check.ps1)"
+                Invoke-RepoScript -Name "check.ps1"
+            }
         }
         "clean" {
-            Write-Step "clean"
-            Invoke-Clean
+            if (Assert-NoExtraArguments -Name "clean" -Arguments $Rest) {
+                Write-Step "clean"
+                Invoke-Clean
+            }
         }
         { $_ -in @("help", "-h", "--help", "/?") } {
             Show-Help

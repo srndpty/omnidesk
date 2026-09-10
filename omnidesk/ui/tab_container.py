@@ -444,8 +444,15 @@ class TabContainer(QWidget):
     def show_hidden(self) -> bool:
         return self._show_hidden
 
-    def set_show_hidden(self, show: bool) -> None:
-        """全タブの隠し項目表示をまとめて切り替える。新しいタブにも引き継ぐ。"""
+    def set_show_hidden(self, show: bool, *, reload: bool = True) -> None:
+        """全タブの隠し項目表示をまとめて切り替える。新しいタブにも引き継ぐ。
+
+        カラム表示中は ``reload=False`` を渡すこと。現在タブは監視を続けている
+        ため、そのままだと見えていないタブの旧ディレクトリを走査してしまい、
+        その完了通知がステータスバーとウィンドウタイトルを上書きしうる。
+        タブ表示へ戻るときは ``navigate_to()`` を必ず通るので、そこで新しい値の
+        まま読み直される。
+        """
         show = bool(show)
         if show == self._show_hidden:
             return
@@ -453,7 +460,7 @@ class TabContainer(QWidget):
         for index in range(self._tabs.count()):
             widget = self._tabs.widget(index)
             if isinstance(widget, FileBrowserTab):
-                widget.set_show_hidden(show)
+                widget.set_show_hidden(show, reload=reload)
 
     def is_tab_pinned(self, index: int) -> bool:
         return (

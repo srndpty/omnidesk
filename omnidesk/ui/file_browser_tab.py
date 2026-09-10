@@ -352,6 +352,10 @@ class FileBrowserTab(
         """隠し項目を一覧に出しているか。"""
         return self._source_model.show_hidden
 
-    def set_show_hidden(self, show: bool) -> None:
-        """隠し項目の表示を切り替える（モデル側で読み直しが走る）。"""
-        self._source_model.set_show_hidden(show)
+    def set_show_hidden(self, show: bool, *, reload: bool = True) -> None:
+        """隠し項目の表示を切り替える。
+
+        表示中のタブでは、モデル側で読み直しが走る。``reload=False`` なら値の
+        更新だけに留める（見えていないビューのために走査を起こさないため）。
+        """
+        self._source_model.set_show_hidden(show, reload=reload)

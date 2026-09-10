@@ -113,9 +113,11 @@ class FakeTabContainer(QWidget):
     def select_previous_tab(self) -> None:
         self.calls.append("previous")
 
-    def set_show_hidden(self, show: bool) -> None:
+    def set_show_hidden(self, show: bool, *, reload: bool = True) -> None:
         self.show_hidden = show
-        self.calls.append(f"show_hidden:{show}")
+        self.calls.append(f"show_hidden:{show}:reload={reload}")
+        if reload:
+            self.calls.append("refresh")
 
 
 class FakeColumnBrowser(QWidget):
@@ -612,6 +614,55 @@ def test_toggling_show_hidden_in_tab_mode_does_not_reload_the_column_browser(
 
     assert not window._is_tab_mode()
     assert [call for call in column_browser.calls if call.startswith("set_root:")]
+
+
+def test_toggling_show_hidden_in_column_mode_does_not_rescan_the_tabs(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """見えていないタブ側を走査し直さないこと。
+
+    カラム表示中も現在のタブは監視を続けているため、ここで読み直すと旧ディレクトリの
+    走査完了通知がステータスバーとウィンドウタイトルを上書きしうる。
+    """
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {"session": {"view_mode": "columns"}}, tmp_path, saved)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._switch_to_columns()
+    assert not window._is_tab_mode()
+    tab_container = cast(FakeTabContainer, window._tab_container)
+    tab_container.calls.clear()
+
+    window._show_hidden_action.setChecked(False)
+
+    assert tab_container.show_hidden is False
+    assert "refresh" not in tab_container.calls
+
+    # タブ表示へ戻るときは navigate_to() を通るので、そこで読み直される。
+    window._handle_toggle_view()
+
+    assert window._is_tab_mode()
+    assert [call for call in tab_container.calls if call.startswith("navigate:")]
+
+
+def test_toggling_show_hidden_in_tab_mode_rescans_the_active_tab(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """見えているタブは、その場で読み直すこと。"""
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._is_tab_mode()
+    tab_container = cast(FakeTabContainer, window._tab_container)
+    tab_container.calls.clear()
+
+    window._show_hidden_action.setChecked(False)
+
+    assert tab_container.show_hidden is False
+    assert "refresh" in tab_container.calls
 
 
 def test_toggling_show_hidden_in_column_mode_reloads_the_column_browser(
