@@ -82,6 +82,23 @@ def is_hidden_entry(name: str, stat_result: os.stat_result) -> bool:
     return name.startswith(".")
 
 
+def is_protected_system_entry(stat_result: os.stat_result) -> bool:
+    """「保護されたオペレーティングシステムファイル」かを返す。
+
+    Windows Explorer はこれを「隠しファイルを表示」とは**別**のオプションで扱い、
+    既定では隠したままにする。``Thumbs.db`` や ``desktop.ini`` が該当し、誤操作で
+    消すと困るので、表示切り替えの対象にせず常に一覧から落とす。
+
+    判定は隠し属性とシステム属性の**両方**が立っていること。システム属性だけの
+    項目は Explorer でも見えるので隠さない。
+    """
+    attributes = getattr(stat_result, "st_file_attributes", None)
+    if attributes is None:
+        return False
+    protected = stat_module.FILE_ATTRIBUTE_HIDDEN | stat_module.FILE_ATTRIBUTE_SYSTEM
+    return attributes & protected == protected
+
+
 def normalise_entry_key(path: Path | str) -> str:
     """パスを、ファイルシステムへ問い合わせずに比較用へ正規化する。
 
@@ -223,7 +240,8 @@ class DirectoryScanJob(QRunnable):
           そのまま使えるので、エントリごとの追加syscallも発生しない。
 
         隠し項目は ``show_hidden`` が偽のときだけ ``None`` を返して一覧から落とす
-        （:func:`is_hidden_entry`）。
+        （:func:`is_hidden_entry`）。保護されたOSファイルは表示切り替えに関係なく
+        常に落とす（:func:`is_protected_system_entry`）。
         """
         try:
             stat_result = item.stat(follow_symlinks=False)
@@ -238,6 +256,8 @@ class DirectoryScanJob(QRunnable):
             logger.debug("リンク先を判定できませんでした: %s", item.path, exc_info=True)
             is_dir = False
         name = item.name
+        if is_protected_system_entry(stat_result):
+            return None
         if not self._show_hidden and is_hidden_entry(name, stat_result):
             return None
         return DirectoryEntry(

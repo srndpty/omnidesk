@@ -925,6 +925,30 @@ def test_column_model_filter_excludes_hidden_system_and_wrong_entry_type(tmp_pat
     assert _entry_matches_filters(hidden.name, str(hidden), False, show_hidden) is True
 
 
+def test_column_model_filter_keeps_protected_system_entries_out(tmp_path) -> None:
+    """``Thumbs.db`` のような保護されたOSファイルは、Hidden を許しても出さないこと。
+
+    タブ表示と同じく、隠し属性とシステム属性の両方が立っているものだけが対象。
+    システム属性だけの項目は Explorer でも見えるので隠さない。
+    """
+    if os.name != "nt":
+        pytest.skip("システム属性を扱えるのはWindowsだけ")
+    show_hidden = int(
+        (QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot | QDir.Filter.Hidden).value
+    )
+    protected = tmp_path / "Thumbs.db"
+    protected.write_text("x", encoding="utf-8")
+    system_only = tmp_path / "system.txt"
+    system_only.write_text("x", encoding="utf-8")
+    if os.system(f'attrib +H +S "{protected}" >nul 2>&1') != 0:
+        pytest.skip("隠し・システム属性を設定できません")
+    if os.system(f'attrib +S "{system_only}" >nul 2>&1') != 0:
+        pytest.skip("システム属性を設定できません")
+
+    assert _entry_matches_filters(protected.name, str(protected), False, show_hidden) is False
+    assert _entry_matches_filters(system_only.name, str(system_only), False, show_hidden) is True
+
+
 def test_column_model_hidden_predicate_matches_the_tab_view(tmp_path) -> None:
     """隠しの定義をタブ表示と揃えること。
 

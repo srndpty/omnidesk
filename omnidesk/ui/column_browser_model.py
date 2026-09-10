@@ -295,7 +295,14 @@ def _is_hidden_entry(name: str, path: str) -> bool:
 
 
 def _is_system_entry(path: str) -> bool:
-    return bool(_windows_file_attributes(path) & _FILE_ATTRIBUTE_SYSTEM)
+    """「保護されたオペレーティングシステムファイル」かを返す。
+
+    タブ表示（:func:`omnidesk.ui.directory_model.is_protected_system_entry`）と
+    同じく、隠し属性とシステム属性の**両方**が立っているものだけを対象にする。
+    ``Thumbs.db`` などがこれで、Explorer も既定では隠したままにする。
+    """
+    protected = _FILE_ATTRIBUTE_HIDDEN | _FILE_ATTRIBUTE_SYSTEM
+    return _windows_file_attributes(path) & protected == protected
 
 
 def _windows_file_attributes(path: str) -> int:

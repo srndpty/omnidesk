@@ -23,6 +23,7 @@ from omnidesk.ui.directory_model import (
     EntryIdAllocator,
     contiguous_descending_ranges,
     is_hidden_entry,
+    is_protected_system_entry,
     normalise_entry_key,
 )
 
@@ -689,6 +690,50 @@ def test_set_show_hidden_does_not_scan_while_not_watching(qtbot, tmp_path: Path)
         model.refresh()
 
     assert _names(model) == ["visible.txt"]
+
+
+def test_protected_system_entries_stay_hidden_even_when_showing_hidden(
+    qtbot, tmp_path: Path
+) -> None:
+    """``Thumbs.db`` のような保護されたOSファイルは、表示をONにしても出さないこと。
+
+    Explorer はこれを「隠しファイルを表示」とは別のオプションで扱い、既定では
+    隠したままにする。誤って消されると困るので、こちらも常に一覧から落とす。
+    """
+    if os.name != "nt":
+        pytest.skip("システム属性を扱えるのはWindowsだけ")
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    protected = tmp_path / "Thumbs.db"
+    protected.write_text("x", encoding="utf-8")
+    if os.system(f'attrib +H +S "{protected}" >nul 2>&1') != 0:
+        pytest.skip("隠し・システム属性を設定できません")
+
+    model = DirectoryModel()
+    assert model.show_hidden is True
+    _load(qtbot, model, tmp_path)
+
+    assert _names(model) == ["visible.txt"]
+
+
+def test_is_protected_system_entry_requires_both_attributes() -> None:
+    """判定ロジック自体を、プラットフォームに依らず固定する。"""
+
+    def _stat(attributes: int | None) -> os.stat_result:
+        base = (0o100644, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        if attributes is None:
+            return os.stat_result(base)
+        return os.stat_result(base, {"st_file_attributes": attributes})
+
+    hidden = stat_module.FILE_ATTRIBUTE_HIDDEN
+    system = stat_module.FILE_ATTRIBUTE_SYSTEM
+
+    assert is_protected_system_entry(_stat(hidden | system)) is True
+    # 片方だけなら保護対象ではない。システム属性だけの項目は Explorer でも見える。
+    assert is_protected_system_entry(_stat(hidden)) is False
+    assert is_protected_system_entry(_stat(system)) is False
+    assert is_protected_system_entry(_stat(stat_module.FILE_ATTRIBUTE_ARCHIVE)) is False
+    # 属性が取れないOSでは対象なし。
+    assert is_protected_system_entry(_stat(None)) is False
 
 
 def test_dotfiles_follow_the_platform_convention(qtbot, tmp_path: Path) -> None:
