@@ -6,8 +6,22 @@
 - god class化を避け、UIイベント処理・純粋ロジック・ファイル操作・設定/ログ処理を適宜分離してください。
 - 動作変更を伴うリファクタリングでは、先に小さなヘルパーへ切り出し、同等挙動をテストで固定してください。
 
+## 開発コマンド
+- 日常的な操作は、リポジトリルートの統一入口 `.\dev.ps1 <command>` を推奨します（cmd.exe からは `dev.cmd <command>`）。
+- `dev` は既存手順の薄い front-end です。実処理は `scripts/*.ps1` と既存ツールへそのまま委譲し、新しいビルドシステムやテストランナーは導入していません。
+  - Build: `.\dev.ps1 build` -> `scripts\build-windows.ps1`
+  - Run GUI: `.\dev.ps1 gui`（`.\dev.ps1 run` も同じ） -> `python -m omnidesk`
+  - Test: `.\dev.ps1 test` -> `python -m pytest`
+  - Lint / 静的解析: `.\dev.ps1 lint` -> `ruff check` / `ruff format --check` / `pyright`
+  - Full validation: `.\dev.ps1 check` -> `scripts\check.ps1`
+  - Clean: `.\dev.ps1 clean`（生成物のみ削除。`tmp\` 直下の利用者ファイルは削除しません）
+  - Help: `.\dev.ps1 help`
+- `test` / `gui` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。`build` / `check` / `clean` は追加引数を受け取りません（委譲先の `scripts\*.ps1` が引数を持たないため、渡すとエラーで止まります）。
+- 失敗時は `dev` 自身も non-zero で終了します。
+- 従来どおり `scripts/*.ps1` を直接実行しても構いません。`dev` は入口を短くするだけで、既存手順を置き換えるものではありません。
+
 ## 品質ゲート
-- 通常の作業完了前に、可能な範囲で `.\scripts\check.ps1` を実行してください。
+- 通常の作業完了前に、可能な範囲で `.\dev.ps1 check`（= `.\scripts\check.ps1`）を実行してください。
 - `scripts/check.ps1` は以下を順に実行します。
   - `pytest -q`
   - `python -m ruff check . --no-cache`
@@ -61,6 +75,6 @@
 - 通常の開発環境は `python -m pip install -r requirements-dev.txt` で準備してください。
 - 依存追加・更新は `requirements.in`（ランタイム）または `requirements-dev.in`（開発用）を編集し、`.\scripts\compile-requirements.ps1` で `requirements.txt` と `requirements-dev.txt` を再生成してください。
 - CIはWindows上でRuff、Pyright、pytest、coverage、PyInstaller smoke buildを実行します。
-- Windowsビルド確認は `.\scripts\build-windows.ps1` を使ってください。`build_windows.bat` は互換用ラッパーです。
+- Windowsビルド確認は `.\dev.ps1 build`（= `.\scripts\build-windows.ps1`）を使ってください。`build_windows.bat` は互換用ラッパーです。
 - PyInstallerを手動実行する場合は以下を使ってください。
   - `pyinstaller --clean --noconfirm --workpath tmp\pyinstaller-build --distpath dist packaging\pyinstaller\OmniDesk.spec`

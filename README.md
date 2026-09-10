@@ -45,6 +45,22 @@ python -m pip install -r requirements-dev.txt
 python -m omnidesk
 ```
 
+## 開発コマンド
+
+よく使う操作は、リポジトリルートの `dev` から実行できます。既存の `scripts/*.ps1` と既存ツールを呼び出す薄いラッパーで、新しいビルドシステムやテストランナーは追加していません。
+
+```powershell
+.\dev.ps1 help     # 利用できるコマンド一覧
+.\dev.ps1 gui      # アプリを起動 (python -m omnidesk)。run も同じ
+.\dev.ps1 test     # python -m pytest
+.\dev.ps1 lint     # ruff check / ruff format --check / pyright
+.\dev.ps1 check    # コミット前の品質ゲート (scripts\check.ps1)
+.\dev.ps1 build    # Windows ビルド (scripts\build-windows.ps1)
+.\dev.ps1 clean    # 生成物のみ削除
+```
+
+`test` / `gui` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。`build` / `check` / `clean` は追加引数を受け取りません（委譲先の `scripts\*.ps1` が引数を持たないため、渡すとエラーで止まります）。cmd.exe からは `dev.cmd <command>` を使ってください。従来どおり `scripts/*.ps1` を直接実行しても構いません。
+
 ## ログとクラッシュ調査
 
 Windowsでは、ログは既定で `%LOCALAPPDATA%\OmniDesk\logs` に保存されます。「ヘルプ」→「ログフォルダーを開く」から実際の出力先を開けます。
@@ -75,7 +91,7 @@ python -m pip install -r requirements-dev.txt
 
 pytest と pytest-qt を使った自動テストを用意しています。ハング対策として pytest-timeout も有効化しており、既定では各テスト30秒、セッション全体300秒で停止します。
 
-CI相当の品質確認は次のスクリプトで一括実行できます。
+CI相当の品質確認は次のスクリプトで一括実行できます（`.\dev.ps1 check` からも実行できます）。
 
 ```powershell
 .\scripts\check.ps1

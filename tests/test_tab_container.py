@@ -19,10 +19,12 @@ class FakeBrowserTab(QWidget):
     statusChanged = pyqtSignal(object)
     DEFAULT_NAME_COLUMN_WIDTH = 420
 
-    def __init__(self, parent=None, *, name_column_width=None):
+    def __init__(self, parent=None, *, name_column_width=None, show_hidden=True):
         super().__init__(parent)
         self._path = Path.cwd()
         self.name_column_width = name_column_width
+        self.show_hidden = show_hidden
+        self.reload_requests: list[bool] = []
         self.calls: list[str] = []
         self.selection_replacement: Path | None = None
         self.drop_result = True
@@ -57,6 +59,10 @@ class FakeBrowserTab(QWidget):
 
     def set_name_column_width(self, width: int) -> None:
         self.name_column_width = width
+
+    def set_show_hidden(self, show: bool, *, reload: bool = True) -> None:
+        self.show_hidden = show
+        self.reload_requests.append(reload)
 
     def _handle_external_drop(
         self,
@@ -636,3 +642,43 @@ def test_double_click_empty_tab_bar_duplicates_current_tab(
     assert container.tab_paths() == [tmp_path / "one", tmp_path / "one", tmp_path / "two"]
     assert container.tab_pinned_states() == [True, True, False]
     assert container._tabs.currentIndex() == 1
+
+
+def test_set_show_hidden_applies_to_existing_and_new_tabs(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """隠し項目の表示は、開いているタブにも後から開くタブにも効くこと。"""
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    existing = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "one"))
+
+    container.set_show_hidden(False)
+
+    assert container.show_hidden is False
+    assert existing.show_hidden is False
+
+    added = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "two"))
+
+    assert added.show_hidden is False
+
+
+def test_set_show_hidden_forwards_the_reload_request_to_tabs(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """読み直すかどうかの指定を、そのまま各タブへ渡すこと。
+
+    カラム表示中は見えていないタブを走査し直さないため、``reload=False`` で呼ばれる。
+    """
+    monkeypatch.setattr(tab_container_module, "FileBrowserTab", FakeBrowserTab)
+    container = TabContainer()
+    qtbot.addWidget(container)
+    tab = cast(FakeBrowserTab, container.open_in_new_tab(tmp_path / "one"))
+
+    container.set_show_hidden(False, reload=False)
+
+    assert tab.reload_requests == [False]
+
+    container.set_show_hidden(True)
+
+    assert tab.reload_requests == [False, True]

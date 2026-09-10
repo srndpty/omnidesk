@@ -84,6 +84,7 @@ class FileBrowserTab(
         parent: QWidget | None = None,
         *,
         name_column_width: int | None = None,
+        show_hidden: bool = True,
     ) -> None:
         QWidget.__init__(self, parent)
         self._current_path = Path.home()
@@ -343,4 +344,18 @@ class FileBrowserTab(
             scroll_bar.valueChanged.connect(self._on_scroll)
 
         self._model.directoryLoaded.connect(self._on_directory_loaded)
+        self._source_model.set_show_hidden(show_hidden)
         self._apply_media_mode()
+
+    @property
+    def show_hidden(self) -> bool:
+        """隠し項目を一覧に出しているか。"""
+        return self._source_model.show_hidden
+
+    def set_show_hidden(self, show: bool, *, reload: bool = True) -> None:
+        """隠し項目の表示を切り替える。
+
+        表示中のタブでは、モデル側で読み直しが走る。``reload=False`` なら値の
+        更新だけに留める（見えていないビューのために走査を起こさないため）。
+        """
+        self._source_model.set_show_hidden(show, reload=reload)

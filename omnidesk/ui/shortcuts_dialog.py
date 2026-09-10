@@ -40,6 +40,7 @@ SHORTCUT_ENTRIES: tuple[ShortcutEntry, ...] = (
     ShortcutEntry("Ctrl+N", "現在のフォルダに新規ファイルを作成"),
     ShortcutEntry("Ctrl+Shift+N", "現在のフォルダに新規フォルダを作成"),
     ShortcutEntry("F5", "表示を更新"),
+    ShortcutEntry("Ctrl+H", "隠しファイル・隠しフォルダーの表示を切り替え"),
 )
 
 

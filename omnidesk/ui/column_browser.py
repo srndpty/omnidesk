@@ -80,10 +80,15 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         parent: QWidget | None = None,
         *,
         enable_local_shortcuts: bool = True,
+        show_hidden: bool = True,
     ) -> None:
         super().__init__(parent)
         self._model = _ColumnFileSystemModel(self)
-        self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
+        self._show_hidden = bool(show_hidden)
+        filters = QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot
+        if self._show_hidden:
+            filters |= QDir.Filter.Hidden
+        self._model.setFilter(filters)
         self._model.setResolveSymlinks(True)
         self._model.setReadOnly(True)
         self._clipboard: _ClipboardPayload | None = None
@@ -188,6 +193,29 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
 
     def current_path(self) -> Path:
         return self._current_path
+
+    @property
+    def show_hidden(self) -> bool:
+        """隠し項目を一覧に出しているか。"""
+        return self._show_hidden
+
+    def set_show_hidden(self, show: bool, *, reload: bool = True) -> None:
+        """隠し項目の表示を切り替える。
+
+        モデルのキャッシュを捨てるため、開いていた列は作り直しになる。
+
+        見えていないとき（タブ表示中）は ``reload=False`` を渡すこと。表示設定を
+        変えただけで、隠れているビューのために走査を起こさないためで、タブ表示の
+        非アクティブタブと同じ方針。カラム表示へ切り替えるときは必ず
+        :meth:`set_root_path` を通るので、そこで新しい設定のまま読み直される。
+        """
+        show = bool(show)
+        if show == self._show_hidden:
+            return
+        self._show_hidden = show
+        self._model.set_show_hidden(show)
+        if reload:
+            self.set_root_path(self._root_path)
 
     def go_up(self) -> None:
         # 親へ移動する基準は「選択中アイテム」ではなく「表示中のベースディレクトリ」。

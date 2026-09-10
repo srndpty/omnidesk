@@ -256,3 +256,26 @@ def test_application_icon_path_falls_back_to_png(monkeypatch, tmp_path: Path) ->
     monkeypatch.setattr(resources, "_resource_root", lambda: tmp_path)
 
     assert resources.application_icon_path() == tmp_path / "icons" / "app_icon.png"
+
+
+def test_app_settings_show_hidden_files_defaults_to_true() -> None:
+    assert config.AppSettings().show_hidden_files() is True
+    assert (
+        config.AppSettings.from_raw({"file_browser": {"show_hidden": "yes"}}).show_hidden_files()
+        is True
+    )
+    assert (
+        config.AppSettings.from_raw({"file_browser": {"show_hidden": False}}).show_hidden_files()
+        is False
+    )
+
+
+def test_app_settings_set_show_hidden_files_reports_changes() -> None:
+    settings = config.AppSettings()
+
+    assert settings.set_show_hidden_files(False) is True
+    assert settings.show_hidden_files() is False
+    # 同じ値なら保存不要。
+    assert settings.set_show_hidden_files(False) is False
+    assert settings.set_show_hidden_files(True) is True
+    assert settings.as_dict()["file_browser"]["show_hidden"] is True

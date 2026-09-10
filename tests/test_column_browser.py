@@ -34,6 +34,7 @@ from omnidesk.ui.column_browser_model import (
     _ScanToken,
     _sort_entries,
 )
+from omnidesk.ui.directory_model import is_hidden_entry
 
 
 def test_set_root_path_accepts_directory_and_file(qtbot, tmp_path: Path) -> None:
@@ -904,10 +905,14 @@ def test_set_filter_is_passed_to_directory_scan_job(qtbot, tmp_path, monkeypatch
 
 def test_column_model_filter_excludes_hidden_system_and_wrong_entry_type(tmp_path) -> None:
     filters = int((QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot).value)
+    hidden = tmp_path / "hidden.txt"
+    hidden.write_text("x", encoding="utf-8")
+    if os.name == "nt" and os.system(f'attrib +H "{hidden}" >nul 2>&1') != 0:
+        pytest.skip("隠し属性を設定できません")
 
     assert _entry_matches_filters("folder", str(tmp_path / "folder"), True, filters) is True
     assert _entry_matches_filters("file.txt", str(tmp_path / "file.txt"), False, filters) is True
-    assert _entry_matches_filters(".secret", str(tmp_path / ".secret"), False, filters) is False
+    assert _entry_matches_filters(hidden.name, str(hidden), False, filters) is False
     assert _entry_matches_filters(".", str(tmp_path / "."), True, filters) is False
 
     dirs_only = int((QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot).value)
@@ -917,7 +922,101 @@ def test_column_model_filter_excludes_hidden_system_and_wrong_entry_type(tmp_pat
     show_hidden = int(
         (QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot | QDir.Filter.Hidden).value
     )
-    assert _entry_matches_filters(".secret", str(tmp_path / ".secret"), False, show_hidden) is True
+    assert _entry_matches_filters(hidden.name, str(hidden), False, show_hidden) is True
+
+
+def test_column_model_filter_keeps_protected_system_entries_out(tmp_path) -> None:
+    """``Thumbs.db`` のような保護されたOSファイルは、Hidden を許しても出さないこと。
+
+    タブ表示と同じく、隠し属性とシステム属性の両方が立っているものだけが対象。
+    システム属性だけの項目は Explorer でも見えるので隠さない。
+    """
+    if os.name != "nt":
+        pytest.skip("システム属性を扱えるのはWindowsだけ")
+    show_hidden = int(
+        (QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot | QDir.Filter.Hidden).value
+    )
+    protected = tmp_path / "Thumbs.db"
+    protected.write_text("x", encoding="utf-8")
+    system_only = tmp_path / "system.txt"
+    system_only.write_text("x", encoding="utf-8")
+    if os.system(f'attrib +H +S "{protected}" >nul 2>&1') != 0:
+        pytest.skip("隠し・システム属性を設定できません")
+    if os.system(f'attrib +S "{system_only}" >nul 2>&1') != 0:
+        pytest.skip("システム属性を設定できません")
+
+    assert _entry_matches_filters(protected.name, str(protected), False, show_hidden) is False
+    assert _entry_matches_filters(system_only.name, str(system_only), False, show_hidden) is True
+
+
+def test_column_model_hidden_predicate_matches_the_tab_view(tmp_path) -> None:
+    """隠しの定義をタブ表示と揃えること。
+
+    同じ「隠しファイルを表示」設定が両方のビューへ効くため、ここが食い違うと
+    Windowsでドットファイルだけカラム表示から消える。
+    """
+    filters = int((QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot).value)
+    dotfile = tmp_path / ".dotfile"
+    dotfile.write_text("x", encoding="utf-8")
+
+    listed = _entry_matches_filters(dotfile.name, str(dotfile), False, filters)
+
+    assert listed == (os.name == "nt")
+    assert listed == (not is_hidden_entry(dotfile.name, os.stat(dotfile, follow_symlinks=False)))
+
+
+def test_set_show_hidden_without_reload_skips_the_root_rescan(qtbot, tmp_path: Path) -> None:
+    """見えていないときは、値の更新とキャッシュ破棄だけに留めること。
+
+    タブ表示中に Ctrl+H を押しただけで、隠れているカラム表示のために走査を
+    起こさないための契約。カラム表示へ切り替えるときは必ず ``set_root_path()``
+    を通るので、そこで新しい設定のまま読み直される。
+    """
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    reloads: list[Path] = []
+    browser.set_root_path = lambda path: reloads.append(path)  # type: ignore[method-assign]
+
+    browser.set_show_hidden(False, reload=False)
+
+    assert browser.show_hidden is False
+    assert reloads == []
+    # 読み込み済みノードは捨ててあるので、次の set_root_path で必ず読み直される。
+    assert not browser._model._nodes_by_key
+
+
+def test_set_show_hidden_with_reload_rescans_from_the_root(qtbot, tmp_path: Path) -> None:
+    """見えているときは、その場でルートから読み直すこと。"""
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    reloads: list[Path] = []
+    browser.set_root_path = lambda path: reloads.append(path)  # type: ignore[method-assign]
+
+    browser.set_show_hidden(False)
+
+    assert browser.show_hidden is False
+    assert reloads == [tmp_path]
+
+
+def test_column_model_set_show_hidden_toggles_the_filter_and_drops_the_cache(tmp_path) -> None:
+    """隠し項目の表示切り替えで、絞り込みと読み込み済みノードが入れ替わること。"""
+    model = _ColumnFileSystemModel()
+    model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
+    model.setRootPath(str(tmp_path))
+    assert model._nodes_by_key
+
+    model.set_show_hidden(True)
+
+    assert model._filters & int(QDir.Filter.Hidden.value)
+    assert not model._nodes_by_key
+
+    model.setRootPath(str(tmp_path))
+    model.set_show_hidden(False)
+
+    assert not model._filters & int(QDir.Filter.Hidden.value)
+    assert not model._nodes_by_key
 
 
 def test_cancel_scan_try_takes_queued_job(qtbot, tmp_path, monkeypatch) -> None:

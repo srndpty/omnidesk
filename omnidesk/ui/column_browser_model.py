@@ -31,6 +31,11 @@ from .column_browser_helpers import normalize_directory_key
 
 logger = logging.getLogger(__name__)
 
+# GetFileAttributesW の戻り値のビット。stat.FILE_ATTRIBUTE_* は Windows でしか
+# 定義されないため、他OSでも読めるようここで定義する。
+_FILE_ATTRIBUTE_HIDDEN = 0x2
+_FILE_ATTRIBUTE_SYSTEM = 0x4
+
 _SCAN_BATCH_SIZE = 256
 _WINDOWS_LOGICAL_COMPARE: Callable[[str, str], int] | None = None
 _NATURAL_PART_RE = re.compile(r"(\d+)")
@@ -274,13 +279,30 @@ def _entry_matches_filters(name: str, path: str, is_dir: bool, filters: int) -> 
 
 
 def _is_hidden_entry(name: str, path: str) -> bool:
-    if name.startswith("."):
-        return True
-    return bool(_windows_file_attributes(path) & 0x2)
+    """一覧から隠すエントリかを返す。
+
+    タブ表示（:func:`omnidesk.ui.directory_model.is_hidden_entry`）と同じ判定に
+    する。同じ「隠しファイルを表示」設定が両方のビューへ効くので、隠しの定義が
+    ビューごとに違うと、Windowsでドットファイルだけカラム表示から消える。
+
+    * Windows: ``FILE_ATTRIBUTE_HIDDEN`` が立っているエントリ。名前が ``.`` で
+      始まるだけの項目は**隠さない**。
+    * それ以外のOS: 名前が ``.`` で始まるエントリ。
+    """
+    if os.name == "nt":
+        return bool(_windows_file_attributes(path) & _FILE_ATTRIBUTE_HIDDEN)
+    return name.startswith(".")
 
 
 def _is_system_entry(path: str) -> bool:
-    return bool(_windows_file_attributes(path) & 0x4)
+    """「保護されたオペレーティングシステムファイル」かを返す。
+
+    タブ表示（:func:`omnidesk.ui.directory_model.is_protected_system_entry`）と
+    同じく、隠し属性とシステム属性の**両方**が立っているものだけを対象にする。
+    ``Thumbs.db`` などがこれで、Explorer も既定では隠したままにする。
+    """
+    protected = _FILE_ATTRIBUTE_HIDDEN | _FILE_ATTRIBUTE_SYSTEM
+    return _windows_file_attributes(path) & protected == protected
 
 
 def _windows_file_attributes(path: str) -> int:
@@ -324,6 +346,24 @@ class _ColumnFileSystemModel(QAbstractItemModel):
     # QFileSystemModel-compatible setup used by ColumnBrowser.
     def setFilter(self, filters: Any) -> None:  # noqa: N802
         self._filters = _filter_value(filters)
+
+    def set_show_hidden(self, show: bool) -> None:
+        """隠し項目の表示を切り替える。
+
+        絞り込みは走査時に効くため、読み込み済みノードは全部捨てて読み直させる。
+        保護されたOSファイル（隠し属性とシステム属性の両方）はこの設定に関係なく
+        除外したままで、システム属性だけの項目は引き続き表示する
+        （:func:`_is_system_entry`）。
+        """
+        hidden = int(QDir.Filter.Hidden.value)
+        filters = self._filters | hidden if show else self._filters & ~hidden
+        if filters == self._filters:
+            return
+        self._filters = filters
+        self._cancel_all_scans()
+        self.beginResetModel()
+        self._nodes_by_key.clear()
+        self.endResetModel()
 
     def setResolveSymlinks(self, enable: bool) -> None:  # noqa: N802
         self._resolve_symlinks = bool(enable)

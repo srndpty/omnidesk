@@ -82,6 +82,23 @@ def is_hidden_entry(name: str, stat_result: os.stat_result) -> bool:
     return name.startswith(".")
 
 
+def is_protected_system_entry(stat_result: os.stat_result) -> bool:
+    """「保護されたオペレーティングシステムファイル」かを返す。
+
+    Windows Explorer はこれを「隠しファイルを表示」とは**別**のオプションで扱い、
+    既定では隠したままにする。``Thumbs.db`` や ``desktop.ini`` が該当し、誤操作で
+    消すと困るので、表示切り替えの対象にせず常に一覧から落とす。
+
+    判定は隠し属性とシステム属性の**両方**が立っていること。システム属性だけの
+    項目は Explorer でも見えるので隠さない。
+    """
+    attributes = getattr(stat_result, "st_file_attributes", None)
+    if attributes is None:
+        return False
+    protected = stat_module.FILE_ATTRIBUTE_HIDDEN | stat_module.FILE_ATTRIBUTE_SYSTEM
+    return attributes & protected == protected
+
+
 def normalise_entry_key(path: Path | str) -> str:
     """パスを、ファイルシステムへ問い合わせずに比較用へ正規化する。
 
@@ -177,12 +194,15 @@ class DirectoryScanJob(QRunnable):
         generation: int,
         signals: DirectoryScanSignals,
         entry_ids: EntryIdAllocator,
+        *,
+        show_hidden: bool = False,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._path = path
         self._generation = generation
         self._entry_ids = entry_ids
+        self._show_hidden = show_hidden
         self.signals = signals
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
@@ -219,7 +239,9 @@ class DirectoryScanJob(QRunnable):
           エントリも一覧から消えずに残る。``DirEntry`` が走査時に得た情報を
           そのまま使えるので、エントリごとの追加syscallも発生しない。
 
-        隠し項目は ``None`` を返して一覧から落とす（:func:`is_hidden_entry`）。
+        隠し項目は ``show_hidden`` が偽のときだけ ``None`` を返して一覧から落とす
+        （:func:`is_hidden_entry`）。保護されたOSファイルは表示切り替えに関係なく
+        常に落とす（:func:`is_protected_system_entry`）。
         """
         try:
             stat_result = item.stat(follow_symlinks=False)
@@ -234,7 +256,9 @@ class DirectoryScanJob(QRunnable):
             logger.debug("リンク先を判定できませんでした: %s", item.path, exc_info=True)
             is_dir = False
         name = item.name
-        if is_hidden_entry(name, stat_result):
+        if is_protected_system_entry(stat_result):
+            return None
+        if not self._show_hidden and is_hidden_entry(name, stat_result):
             return None
         return DirectoryEntry(
             entry_id=self._entry_ids.allocate(),
@@ -291,6 +315,9 @@ class DirectoryModel(QAbstractTableModel):
         # 追いつき走査を1回入れる（下記 _handle_scan_result 参照）。
         self._needs_catch_up_scan = False
         self._entry_ids = EntryIdAllocator()
+        # 隠し項目を一覧に出すか。既定は「出す」。除外は走査側で行うので、
+        # 切り替えたら読み直しが要る（:meth:`set_show_hidden`）。
+        self._show_hidden = True
         self._locale = QLocale()
         self._type_names: dict[str, str] = {}
         # 走査ジョブはワーカースレッドで破棄されるため、シグナル用QObjectは
@@ -499,6 +526,30 @@ class DirectoryModel(QAbstractTableModel):
             self._start_scan()
 
     @property
+    def show_hidden(self) -> bool:
+        """隠し項目を一覧に出しているか。"""
+        return self._show_hidden
+
+    def set_show_hidden(self, show: bool, *, reload: bool = True) -> None:
+        """隠し項目の表示を切り替える。
+
+        絞り込みは走査時に効くため、現在の一覧はそのままでは変わらない。値が
+        変わり、かつ表示中（監視中）のときだけ読み直す。見えていないタブは
+        ``stop_watching()`` 済みなので値の更新だけに留まり、再表示時の
+        :meth:`rescan` が新しい値で走る。
+
+        カラム表示中はタブ自体が見えていない（が現在タブは監視を続けている）ため、
+        呼び出し側が ``reload=False`` を渡す。タブ表示へ戻るときは
+        :meth:`setRootPath` を必ず通るので、そこで新しい値のまま走査される。
+        """
+        show = bool(show)
+        if show == self._show_hidden:
+            return
+        self._show_hidden = show
+        if reload and self.is_watching:
+            self.refresh()
+
+    @property
     def scan_generation(self) -> int:
         """最後に**開始した**走査の世代。"""
         return self._generation
@@ -532,6 +583,7 @@ class DirectoryModel(QAbstractTableModel):
             self._generation,
             self._scan_signals,
             self._entry_ids,
+            show_hidden=self._show_hidden,
         )
         self._scan_pool.start(job)
 

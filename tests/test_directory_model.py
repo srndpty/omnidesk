@@ -23,6 +23,7 @@ from omnidesk.ui.directory_model import (
     EntryIdAllocator,
     contiguous_descending_ranges,
     is_hidden_entry,
+    is_protected_system_entry,
     normalise_entry_key,
 )
 
@@ -611,36 +612,168 @@ def test_stopping_watching_during_the_debounce_cancels_the_rescan(qtbot, tmp_pat
     assert model._generation == generation_before
 
 
-def test_hidden_entries_are_excluded(qtbot, tmp_path: Path) -> None:
-    """隠し項目を一覧に出さないこと。
-
-    旧実装は ``QDir.AllEntries | QDir.NoDotAndDotDot`` で ``QDir.Hidden`` を
-    含めていなかったため、隠し項目は出ていなかった。走査へ移った際にこの絞り込みが
-    抜けると、``.git`` などが操作・削除の対象になってしまう。
-    """
-    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+def _make_hidden_file(tmp_path: Path) -> Path:
+    """隠し属性（Windows）またはドット名（それ以外）のファイルを作る。"""
     hidden = tmp_path / "hidden.txt"
     hidden.write_text("x", encoding="utf-8")
     if os.name == "nt":
         if os.system(f'attrib +H "{hidden}" >nul 2>&1') != 0:
             pytest.skip("隠し属性を設定できません")
-    else:
-        hidden = hidden.rename(tmp_path / ".hidden.txt")
+        return hidden
+    return hidden.rename(tmp_path / ".hidden.txt")
+
+
+def test_hidden_entries_are_listed_by_default(qtbot, tmp_path: Path) -> None:
+    """既定では隠し項目も一覧に出すこと。"""
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    hidden = _make_hidden_file(tmp_path)
 
     model = DirectoryModel()
     _load(qtbot, model, tmp_path)
 
+    assert sorted(_names(model)) == sorted([hidden.name, "visible.txt"])
+
+
+def test_hidden_entries_are_excluded_when_disabled(qtbot, tmp_path: Path) -> None:
+    """表示をオフにすると隠し項目が一覧から落ちること。"""
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    _make_hidden_file(tmp_path)
+
+    model = DirectoryModel()
+    model.set_show_hidden(False)
+    _load(qtbot, model, tmp_path)
+
     assert _names(model) == ["visible.txt"]
+
+
+def test_set_show_hidden_reloads_the_current_directory(qtbot, tmp_path: Path) -> None:
+    """切り替えたら、開いたままのディレクトリを読み直すこと。"""
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    hidden = _make_hidden_file(tmp_path)
+
+    model = DirectoryModel()
+    model.set_show_hidden(False)
+    _load(qtbot, model, tmp_path)
+    assert _names(model) == ["visible.txt"]
+
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.set_show_hidden(True)
+
+    assert sorted(_names(model)) == sorted([hidden.name, "visible.txt"])
+
+
+def test_set_show_hidden_does_not_scan_while_not_watching(qtbot, tmp_path: Path) -> None:
+    """見えていないタブでは、切り替えで走査を起こさないこと。
+
+    非アクティブなタブは ``stop_watching()`` 済みで、再表示時に ``refresh()`` が
+    走る。ここで走査すると、開いているタブの数だけ不要なI/Oがまとめて起きる
+    （UNCや停止中のディスクを開いていると特に痛い）。
+    """
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    hidden = _make_hidden_file(tmp_path)
+
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    model.stop_watching()
+    generation_before = model.scan_generation
+
+    model.set_show_hidden(False)
+
+    # 値だけ更新し、走査は起こさない。
+    assert model.show_hidden is False
+    assert model.scan_generation == generation_before
+    assert sorted(_names(model)) == sorted([hidden.name, "visible.txt"])
+
+    # 再表示時の読み直しで、新しい値が効く。
+    model.resume_watching()
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.refresh()
+
+    assert _names(model) == ["visible.txt"]
+
+
+def test_set_show_hidden_with_reload_false_skips_the_scan_while_watching(
+    qtbot, tmp_path: Path
+) -> None:
+    """監視中でも ``reload=False`` なら走査を起こさないこと。
+
+    カラム表示中のタブは監視を続けたまま見えていない状態になる。ここで走査すると、
+    旧ディレクトリの完了通知がステータスバーとウィンドウタイトルを上書きしうる。
+    """
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    hidden = _make_hidden_file(tmp_path)
+
+    model = DirectoryModel()
+    _load(qtbot, model, tmp_path)
+    assert model.is_watching
+    generation_before = model.scan_generation
+
+    model.set_show_hidden(False, reload=False)
+
+    assert model.show_hidden is False
+    assert model.scan_generation == generation_before
+    assert sorted(_names(model)) == sorted([hidden.name, "visible.txt"])
+
+    # タブ表示へ戻るときに通る setRootPath で、新しい値のまま読み直される。
+    with qtbot.waitSignal(model.directoryLoaded, timeout=5000):
+        model.setRootPath(str(tmp_path))
+
+    assert _names(model) == ["visible.txt"]
+
+
+def test_protected_system_entries_stay_hidden_even_when_showing_hidden(
+    qtbot, tmp_path: Path
+) -> None:
+    """``Thumbs.db`` のような保護されたOSファイルは、表示をONにしても出さないこと。
+
+    Explorer はこれを「隠しファイルを表示」とは別のオプションで扱い、既定では
+    隠したままにする。誤って消されると困るので、こちらも常に一覧から落とす。
+    """
+    if os.name != "nt":
+        pytest.skip("システム属性を扱えるのはWindowsだけ")
+    (tmp_path / "visible.txt").write_text("x", encoding="utf-8")
+    protected = tmp_path / "Thumbs.db"
+    protected.write_text("x", encoding="utf-8")
+    if os.system(f'attrib +H +S "{protected}" >nul 2>&1') != 0:
+        pytest.skip("隠し・システム属性を設定できません")
+
+    model = DirectoryModel()
+    assert model.show_hidden is True
+    _load(qtbot, model, tmp_path)
+
+    assert _names(model) == ["visible.txt"]
+
+
+def test_is_protected_system_entry_requires_both_attributes() -> None:
+    """判定ロジック自体を、プラットフォームに依らず固定する。"""
+
+    def _stat(attributes: int | None) -> os.stat_result:
+        base = (0o100644, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        if attributes is None:
+            return os.stat_result(base)
+        return os.stat_result(base, {"st_file_attributes": attributes})
+
+    hidden = stat_module.FILE_ATTRIBUTE_HIDDEN
+    system = stat_module.FILE_ATTRIBUTE_SYSTEM
+
+    assert is_protected_system_entry(_stat(hidden | system)) is True
+    # 片方だけなら保護対象ではない。システム属性だけの項目は Explorer でも見える。
+    assert is_protected_system_entry(_stat(hidden)) is False
+    assert is_protected_system_entry(_stat(system)) is False
+    assert is_protected_system_entry(_stat(stat_module.FILE_ATTRIBUTE_ARCHIVE)) is False
+    # 属性が取れないOSでは対象なし。
+    assert is_protected_system_entry(_stat(None)) is False
 
 
 def test_dotfiles_follow_the_platform_convention(qtbot, tmp_path: Path) -> None:
     """ドットファイルの扱いを ``QFileInfo.isHidden()`` と揃えること。
 
     Windows は属性だけを見るのでドットファイルは表示され、それ以外のOSでは隠れる。
-    旧実装（Qt）もこの判定だった。
+    旧実装（Qt）もこの判定だった。判定自体は表示をオフにしたときだけ効く。
     """
     (tmp_path / ".dotfile").write_text("x", encoding="utf-8")
     model = DirectoryModel()
+    model.set_show_hidden(False)
     _load(qtbot, model, tmp_path)
 
     assert (".dotfile" in _names(model)) == (os.name == "nt")
