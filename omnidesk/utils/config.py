@@ -35,6 +35,7 @@ class SessionSettings(TypedDict, total=False):
 
 class FileBrowserSettings(TypedDict, total=False):
     name_column_width: int
+    show_hidden: bool
 
 
 class SettingsData(TypedDict, total=False):
@@ -104,6 +105,23 @@ class AppSettings:
         if file_browser.get("name_column_width") == width:
             return False
         file_browser["name_column_width"] = width
+        return True
+
+    def show_hidden_files(self) -> bool:
+        """隠しファイル・隠しフォルダーを一覧に出すか。既定は出す。"""
+        file_browser = self.data.get("file_browser", {})
+        value = file_browser.get("show_hidden") if isinstance(file_browser, dict) else None
+        return value if isinstance(value, bool) else True
+
+    def set_show_hidden_files(self, show: bool) -> bool:
+        """設定を更新し、保存が必要かどうかを返す。"""
+        file_browser = self.data.setdefault("file_browser", {})
+        if not isinstance(file_browser, dict):
+            file_browser = {}
+            self.data["file_browser"] = file_browser
+        if file_browser.get("show_hidden") == show:
+            return False
+        file_browser["show_hidden"] = show
         return True
 
     def video_thumbnail_timeout_ms(self) -> int:

@@ -177,12 +177,15 @@ class DirectoryScanJob(QRunnable):
         generation: int,
         signals: DirectoryScanSignals,
         entry_ids: EntryIdAllocator,
+        *,
+        show_hidden: bool = False,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._path = path
         self._generation = generation
         self._entry_ids = entry_ids
+        self._show_hidden = show_hidden
         self.signals = signals
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
@@ -219,7 +222,8 @@ class DirectoryScanJob(QRunnable):
           エントリも一覧から消えずに残る。``DirEntry`` が走査時に得た情報を
           そのまま使えるので、エントリごとの追加syscallも発生しない。
 
-        隠し項目は ``None`` を返して一覧から落とす（:func:`is_hidden_entry`）。
+        隠し項目は ``show_hidden`` が偽のときだけ ``None`` を返して一覧から落とす
+        （:func:`is_hidden_entry`）。
         """
         try:
             stat_result = item.stat(follow_symlinks=False)
@@ -234,7 +238,7 @@ class DirectoryScanJob(QRunnable):
             logger.debug("リンク先を判定できませんでした: %s", item.path, exc_info=True)
             is_dir = False
         name = item.name
-        if is_hidden_entry(name, stat_result):
+        if not self._show_hidden and is_hidden_entry(name, stat_result):
             return None
         return DirectoryEntry(
             entry_id=self._entry_ids.allocate(),
@@ -291,6 +295,9 @@ class DirectoryModel(QAbstractTableModel):
         # 追いつき走査を1回入れる（下記 _handle_scan_result 参照）。
         self._needs_catch_up_scan = False
         self._entry_ids = EntryIdAllocator()
+        # 隠し項目を一覧に出すか。既定は「出す」。除外は走査側で行うので、
+        # 切り替えたら読み直しが要る（:meth:`set_show_hidden`）。
+        self._show_hidden = True
         self._locale = QLocale()
         self._type_names: dict[str, str] = {}
         # 走査ジョブはワーカースレッドで破棄されるため、シグナル用QObjectは
@@ -499,6 +506,23 @@ class DirectoryModel(QAbstractTableModel):
             self._start_scan()
 
     @property
+    def show_hidden(self) -> bool:
+        """隠し項目を一覧に出しているか。"""
+        return self._show_hidden
+
+    def set_show_hidden(self, show: bool) -> None:
+        """隠し項目の表示を切り替える。
+
+        絞り込みは走査時に効くため、現在の一覧はそのままでは変わらない。値が
+        変わったときだけ読み直す。
+        """
+        show = bool(show)
+        if show == self._show_hidden:
+            return
+        self._show_hidden = show
+        self.refresh()
+
+    @property
     def scan_generation(self) -> int:
         """最後に**開始した**走査の世代。"""
         return self._generation
@@ -532,6 +556,7 @@ class DirectoryModel(QAbstractTableModel):
             self._generation,
             self._scan_signals,
             self._entry_ids,
+            show_hidden=self._show_hidden,
         )
         self._scan_pool.start(job)
 

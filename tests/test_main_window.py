@@ -42,9 +42,10 @@ class FakeTabContainer(QWidget):
     tabCountChanged = pyqtSignal(int)
     nameColumnWidthChanged = pyqtSignal(int)
 
-    def __init__(self, parent=None, *, name_column_width=None):
+    def __init__(self, parent=None, *, name_column_width=None, show_hidden=True):
         super().__init__(parent)
         self.name_column_width = name_column_width
+        self.show_hidden = show_hidden
         self.tabs: list[FakeTab] = []
         self.pinned_tabs: list[bool] = []
         self.closed_tabs: list[tuple[Path, bool]] = []
@@ -112,13 +113,18 @@ class FakeTabContainer(QWidget):
     def select_previous_tab(self) -> None:
         self.calls.append("previous")
 
+    def set_show_hidden(self, show: bool) -> None:
+        self.show_hidden = show
+        self.calls.append(f"show_hidden:{show}")
+
 
 class FakeColumnBrowser(QWidget):
     currentPathChanged = pyqtSignal(Path)
 
-    def __init__(self, parent=None, *, enable_local_shortcuts=True):
+    def __init__(self, parent=None, *, enable_local_shortcuts=True, show_hidden=True):
         super().__init__(parent)
         self.enable_local_shortcuts = enable_local_shortcuts
+        self.show_hidden = show_hidden
         self._path = Path.cwd()
         self.calls: list[str] = []
 
@@ -137,6 +143,10 @@ class FakeColumnBrowser(QWidget):
 
     def focus_view(self) -> None:
         self.calls.append("focus")
+
+    def set_show_hidden(self, show: bool) -> None:
+        self.show_hidden = show
+        self.calls.append(f"show_hidden:{show}")
 
 
 def _patch_main_window(monkeypatch, settings: dict, default_path: Path, saved: list[dict]) -> None:
@@ -539,3 +549,36 @@ def test_main_window_status_path_elides_when_space_is_limited(
     assert window._status_path_label.toolTip() == str(nested)
     assert window._status_path_label.text() != str(nested)
     assert "…" in window._status_path_label.text()
+
+
+def test_main_window_applies_show_hidden_setting_to_both_views(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """設定の値で両方のビューを起動し、切り替えは設定へ残すこと。"""
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {"file_browser": {"show_hidden": False}}, tmp_path, saved)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window._tab_container.show_hidden is False
+    assert cast(FakeColumnBrowser, window._column_browser).show_hidden is False
+    assert window._show_hidden_action.isChecked() is False
+
+    window._show_hidden_action.setChecked(True)
+
+    assert window._tab_container.show_hidden is True
+    assert cast(FakeColumnBrowser, window._column_browser).show_hidden is True
+    assert saved[-1]["file_browser"]["show_hidden"] is True
+
+
+def test_main_window_shows_hidden_entries_by_default(monkeypatch, qtbot, tmp_path: Path) -> None:
+    """設定が無いときは隠し項目を表示すること。"""
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window._show_hidden_action.isChecked() is True
+    assert window._tab_container.show_hidden is True

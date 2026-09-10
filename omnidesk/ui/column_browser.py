@@ -80,10 +80,15 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
         parent: QWidget | None = None,
         *,
         enable_local_shortcuts: bool = True,
+        show_hidden: bool = True,
     ) -> None:
         super().__init__(parent)
         self._model = _ColumnFileSystemModel(self)
-        self._model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
+        self._show_hidden = bool(show_hidden)
+        filters = QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot
+        if self._show_hidden:
+            filters |= QDir.Filter.Hidden
+        self._model.setFilter(filters)
         self._model.setResolveSymlinks(True)
         self._model.setReadOnly(True)
         self._clipboard: _ClipboardPayload | None = None
@@ -188,6 +193,23 @@ class ColumnBrowser(ColumnBrowserOperationsMixin, QWidget):
 
     def current_path(self) -> Path:
         return self._current_path
+
+    @property
+    def show_hidden(self) -> bool:
+        """隠し項目を一覧に出しているか。"""
+        return self._show_hidden
+
+    def set_show_hidden(self, show: bool) -> None:
+        """隠し項目の表示を切り替え、ルートから読み直す。
+
+        モデルのキャッシュを捨てるため、開いていた列は作り直しになる。
+        """
+        show = bool(show)
+        if show == self._show_hidden:
+            return
+        self._show_hidden = show
+        self._model.set_show_hidden(show)
+        self.set_root_path(self._root_path)
 
     def go_up(self) -> None:
         # 親へ移動する基準は「選択中アイテム」ではなく「表示中のベースディレクトリ」。

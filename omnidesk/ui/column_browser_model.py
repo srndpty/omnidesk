@@ -325,6 +325,22 @@ class _ColumnFileSystemModel(QAbstractItemModel):
     def setFilter(self, filters: Any) -> None:  # noqa: N802
         self._filters = _filter_value(filters)
 
+    def set_show_hidden(self, show: bool) -> None:
+        """隠し項目の表示を切り替える。
+
+        絞り込みは走査時に効くため、読み込み済みノードは全部捨てて読み直させる。
+        ``QDir.Filter.System`` は含めないので、システム属性の項目は引き続き出ない。
+        """
+        hidden = int(QDir.Filter.Hidden.value)
+        filters = self._filters | hidden if show else self._filters & ~hidden
+        if filters == self._filters:
+            return
+        self._filters = filters
+        self._cancel_all_scans()
+        self.beginResetModel()
+        self._nodes_by_key.clear()
+        self.endResetModel()
+
     def setResolveSymlinks(self, enable: bool) -> None:  # noqa: N802
         self._resolve_symlinks = bool(enable)
 

@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
 
         self._settings = AppSettings.from_raw(load_settings())
         name_column_width = self._settings.name_column_width()
+        show_hidden = self._settings.show_hidden_files()
         self._status_path = get_default_start_path()
         self._status_summary = BrowserStatus()
         self._status_count_generation = 0
@@ -56,13 +57,21 @@ class MainWindow(QMainWindow):
         self._status_detail_label = QLabel(self)
         self._shortcuts_dialog: ShortcutHelpDialog | None = None
 
-        self._tab_container = TabContainer(self, name_column_width=name_column_width)
+        self._tab_container = TabContainer(
+            self,
+            name_column_width=name_column_width,
+            show_hidden=show_hidden,
+        )
         self._tab_container.currentPathChanged.connect(self._update_status_path)
         self._tab_container.statusChanged.connect(self._update_status_summary)
         self._tab_container.tabCountChanged.connect(self._update_action_state)
         self._tab_container.nameColumnWidthChanged.connect(self._handle_name_column_width_changed)
 
-        self._column_browser = ColumnBrowser(self, enable_local_shortcuts=False)
+        self._column_browser = ColumnBrowser(
+            self,
+            enable_local_shortcuts=False,
+            show_hidden=show_hidden,
+        )
         self._column_browser.currentPathChanged.connect(self._update_status_path)
 
         self._stack = QStackedWidget(self)
@@ -141,6 +150,12 @@ class MainWindow(QMainWindow):
         self._toggle_view_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
         self._toggle_view_action.triggered.connect(self._handle_toggle_view)
 
+        self._show_hidden_action = QAction("隠しファイルを表示", self)
+        self._show_hidden_action.setCheckable(True)
+        self._show_hidden_action.setChecked(self._settings.show_hidden_files())
+        self._show_hidden_action.setShortcut(QKeySequence("Ctrl+H"))
+        self._show_hidden_action.toggled.connect(self._handle_show_hidden_toggled)
+
         self._next_tab_action = QAction("次のタブ", self)
         self._next_tab_action.setShortcut(QKeySequence("Ctrl+Tab"))
         self._next_tab_action.triggered.connect(self._handle_next_tab)
@@ -165,6 +180,7 @@ class MainWindow(QMainWindow):
             self._refresh_action,
             self._go_up_action,
             self._toggle_view_action,
+            self._show_hidden_action,
             self._next_tab_action,
             self._previous_tab_action,
             self._shortcuts_action,
@@ -236,6 +252,7 @@ class MainWindow(QMainWindow):
             placeholder.setEnabled(False)
         menu.addSeparator()
         menu.addAction(self._toggle_view_action)
+        menu.addAction(self._show_hidden_action)
         menu.addSeparator()
         menu.addAction(self._next_tab_action)
         menu.addAction(self._previous_tab_action)
@@ -323,6 +340,13 @@ class MainWindow(QMainWindow):
 
     def _clear_shortcuts_dialog(self, _result: int | None = None) -> None:
         self._shortcuts_dialog = None
+
+    def _handle_show_hidden_toggled(self, show: bool) -> None:
+        """隠し項目の表示切り替えを両方のビューへ流し、設定へ残す。"""
+        self._tab_container.set_show_hidden(show)
+        self._column_browser.set_show_hidden(show)
+        if self._settings.set_show_hidden_files(show):
+            save_settings(self._settings.as_dict())
 
     def _handle_name_column_width_changed(self, width: int) -> None:
         if self._settings.set_name_column_width(width):

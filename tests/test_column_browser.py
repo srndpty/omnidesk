@@ -920,6 +920,25 @@ def test_column_model_filter_excludes_hidden_system_and_wrong_entry_type(tmp_pat
     assert _entry_matches_filters(".secret", str(tmp_path / ".secret"), False, show_hidden) is True
 
 
+def test_column_model_set_show_hidden_toggles_the_filter_and_drops_the_cache(tmp_path) -> None:
+    """隠し項目の表示切り替えで、絞り込みと読み込み済みノードが入れ替わること。"""
+    model = _ColumnFileSystemModel()
+    model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
+    model.setRootPath(str(tmp_path))
+    assert model._nodes_by_key
+
+    model.set_show_hidden(True)
+
+    assert model._filters & int(QDir.Filter.Hidden.value)
+    assert not model._nodes_by_key
+
+    model.setRootPath(str(tmp_path))
+    model.set_show_hidden(False)
+
+    assert not model._filters & int(QDir.Filter.Hidden.value)
+    assert not model._nodes_by_key
+
+
 def test_cancel_scan_try_takes_queued_job(qtbot, tmp_path, monkeypatch) -> None:
     # キャンセル時、まだ起動していない queued job は pool から tryTake で取り除き、
     # _jobs からも消すこと（巨大フォルダの順番待ちが新ルートを塞がないように）。
