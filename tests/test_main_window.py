@@ -144,9 +144,11 @@ class FakeColumnBrowser(QWidget):
     def focus_view(self) -> None:
         self.calls.append("focus")
 
-    def set_show_hidden(self, show: bool) -> None:
+    def set_show_hidden(self, show: bool, *, reload: bool = True) -> None:
         self.show_hidden = show
-        self.calls.append(f"show_hidden:{show}")
+        self.calls.append(f"show_hidden:{show}:reload={reload}")
+        if reload:
+            self.set_root_path(self._path)
 
 
 def _patch_main_window(monkeypatch, settings: dict, default_path: Path, saved: list[dict]) -> None:
@@ -582,3 +584,50 @@ def test_main_window_shows_hidden_entries_by_default(monkeypatch, qtbot, tmp_pat
 
     assert window._show_hidden_action.isChecked() is True
     assert window._tab_container.show_hidden is True
+
+
+def test_toggling_show_hidden_in_tab_mode_does_not_reload_the_column_browser(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """見えていないカラム表示のために走査を起こさないこと。
+
+    非アクティブなタブと同じ方針。カラム表示へ切り替えるときは必ず
+    ``set_root_path()`` を通るので、そこで新しい設定のまま読み直される。
+    """
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {}, tmp_path, saved)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._is_tab_mode()
+    column_browser = cast(FakeColumnBrowser, window._column_browser)
+    column_browser.calls.clear()
+
+    window._show_hidden_action.setChecked(False)
+
+    assert column_browser.show_hidden is False
+    assert not [call for call in column_browser.calls if call.startswith("set_root:")]
+
+    window._handle_toggle_view()
+
+    assert not window._is_tab_mode()
+    assert [call for call in column_browser.calls if call.startswith("set_root:")]
+
+
+def test_toggling_show_hidden_in_column_mode_reloads_the_column_browser(
+    monkeypatch, qtbot, tmp_path: Path
+) -> None:
+    """見えているカラム表示は、その場で読み直すこと。"""
+    saved: list[dict] = []
+    _patch_main_window(monkeypatch, {"session": {"view_mode": "columns"}}, tmp_path, saved)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._switch_to_columns()
+    column_browser = cast(FakeColumnBrowser, window._column_browser)
+    column_browser.calls.clear()
+
+    window._show_hidden_action.setChecked(False)
+
+    assert column_browser.show_hidden is False
+    assert [call for call in column_browser.calls if call.startswith("set_root:")]

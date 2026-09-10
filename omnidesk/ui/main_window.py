@@ -342,9 +342,14 @@ class MainWindow(QMainWindow):
         self._shortcuts_dialog = None
 
     def _handle_show_hidden_toggled(self, show: bool) -> None:
-        """隠し項目の表示切り替えを両方のビューへ流し、設定へ残す。"""
+        """隠し項目の表示切り替えを両方のビューへ流し、設定へ残す。
+
+        読み直すのは今見えているビューだけにする。カラム表示は切り替え時に必ず
+        :meth:`_switch_to_columns` で読み直されるので、タブ表示中に走査を起こす
+        必要はない（非アクティブなタブと同じ方針）。
+        """
         self._tab_container.set_show_hidden(show)
-        self._column_browser.set_show_hidden(show)
+        self._column_browser.set_show_hidden(show, reload=not self._is_tab_mode())
         if self._settings.set_show_hidden_files(show):
             save_settings(self._settings.as_dict())
 

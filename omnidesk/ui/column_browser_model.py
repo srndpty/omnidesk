@@ -351,7 +351,9 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         """隠し項目の表示を切り替える。
 
         絞り込みは走査時に効くため、読み込み済みノードは全部捨てて読み直させる。
-        ``QDir.Filter.System`` は含めないので、システム属性の項目は引き続き出ない。
+        保護されたOSファイル（隠し属性とシステム属性の両方）はこの設定に関係なく
+        除外したままで、システム属性だけの項目は引き続き表示する
+        （:func:`_is_system_entry`）。
         """
         hidden = int(QDir.Filter.Hidden.value)
         filters = self._filters | hidden if show else self._filters & ~hidden

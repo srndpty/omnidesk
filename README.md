@@ -59,7 +59,7 @@ python -m omnidesk
 .\dev.ps1 clean    # 生成物のみ削除
 ```
 
-追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。cmd.exe からは `dev.cmd <command>` を使ってください。従来どおり `scripts/*.ps1` を直接実行しても構いません。
+`test` / `gui` / `build` / `check` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。cmd.exe からは `dev.cmd <command>` を使ってください。従来どおり `scripts/*.ps1` を直接実行しても構いません。
 
 ## ログとクラッシュ調査
 

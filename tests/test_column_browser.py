@@ -965,6 +965,41 @@ def test_column_model_hidden_predicate_matches_the_tab_view(tmp_path) -> None:
     assert listed == (not is_hidden_entry(dotfile.name, os.stat(dotfile, follow_symlinks=False)))
 
 
+def test_set_show_hidden_without_reload_skips_the_root_rescan(qtbot, tmp_path: Path) -> None:
+    """見えていないときは、値の更新とキャッシュ破棄だけに留めること。
+
+    タブ表示中に Ctrl+H を押しただけで、隠れているカラム表示のために走査を
+    起こさないための契約。カラム表示へ切り替えるときは必ず ``set_root_path()``
+    を通るので、そこで新しい設定のまま読み直される。
+    """
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    reloads: list[Path] = []
+    browser.set_root_path = lambda path: reloads.append(path)  # type: ignore[method-assign]
+
+    browser.set_show_hidden(False, reload=False)
+
+    assert browser.show_hidden is False
+    assert reloads == []
+    # 読み込み済みノードは捨ててあるので、次の set_root_path で必ず読み直される。
+    assert not browser._model._nodes_by_key
+
+
+def test_set_show_hidden_with_reload_rescans_from_the_root(qtbot, tmp_path: Path) -> None:
+    """見えているときは、その場でルートから読み直すこと。"""
+    browser = ColumnBrowser()
+    qtbot.addWidget(browser)
+    browser.set_root_path(tmp_path)
+    reloads: list[Path] = []
+    browser.set_root_path = lambda path: reloads.append(path)  # type: ignore[method-assign]
+
+    browser.set_show_hidden(False)
+
+    assert browser.show_hidden is False
+    assert reloads == [tmp_path]
+
+
 def test_column_model_set_show_hidden_toggles_the_filter_and_drops_the_cache(tmp_path) -> None:
     """隠し項目の表示切り替えで、絞り込みと読み込み済みノードが入れ替わること。"""
     model = _ColumnFileSystemModel()

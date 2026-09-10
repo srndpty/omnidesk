@@ -108,7 +108,9 @@ dev - OmniDesk 開発コマンド
   help      このヘルプを表示
 
 補足:
-  - 追加引数はそのまま委譲先へ渡ります。例: .\dev.ps1 test -k thumbnail
+  - test / gui / build / check の追加引数はそのまま委譲先へ渡ります。
+    例: .\dev.ps1 test -k thumbnail
+  - lint の追加引数は ruff check にだけ渡ります（3つのツールへ同じ引数は渡せないため）。
   - このリポジトリに CLI アプリはないため、run は gui の別名です。
   - check はこのリポジトリの canonical な品質ゲートをそのまま呼びます。
   - 並列テストや依存再生成など、ここに無い手順は AGENTS.md / README.md を参照してください。
