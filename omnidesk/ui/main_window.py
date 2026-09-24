@@ -30,6 +30,7 @@ from .file_browser_status import (
 )
 from .icons import application_icon
 from .qt_lifetime import own_by_application
+from .scrollbar_input import install_scroll_bar_input
 from .shortcuts_dialog import ShortcutHelpDialog
 from .tab_container import TabContainer
 
@@ -86,6 +87,7 @@ class MainWindow(QMainWindow):
 
         self._restore_initial_state()
         apply_dark_title_bar(self)
+        self._scroll_bar_input = install_scroll_bar_input(self)
 
     def _restore_initial_state(self) -> None:
         opened = False

@@ -109,6 +109,7 @@ include = [
     "omnidesk/ui/media_file_system_model.py",
     "omnidesk/ui/thumbnail_jobs.py",
     "omnidesk/ui/file_operations.py",
+    "omnidesk/ui/scrollbar_input.py",
     "omnidesk/utils/thumbnail_cache.py",
     "omnidesk/utils/config.py",
     "omnidesk/utils/logging_config.py",
