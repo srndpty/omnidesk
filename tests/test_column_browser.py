@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import gc
 import os
+import threading
 import time
 from pathlib import Path
 from typing import cast
 
 import pytest
+from PyQt6 import sip
 from PyQt6.QtCore import QDir, QModelIndex, QPoint, QPointF, Qt, QUrl
 from PyQt6.QtGui import QIcon, QKeyEvent, QKeySequence, QWheelEvent
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QWidget
@@ -30,6 +33,7 @@ from omnidesk.ui.column_browser_model import (
     _DirectoryEntry,
     _DirectoryNode,
     _DirectoryScanJob,
+    _DirectoryScanSignals,
     _entry_matches_filters,
     _ScanToken,
     _sort_entries,
@@ -190,7 +194,7 @@ def test_set_root_path_cancels_scans_in_other_subtrees(qtbot, tmp_path, monkeypa
     browser = ColumnBrowser()
     qtbot.addWidget(browser)
     # スキャンを実際には走らせず「loading」のまま留めてスレッド占有を再現する。
-    monkeypatch.setattr(browser._model._scan_pool, "start", lambda _job: None)
+    monkeypatch.setattr(browser._model._scan_pool, "start", lambda _job, _priority=0: None)
 
     browser.set_root_path(deep)
     deep_index = browser._model.index(str(deep))
@@ -824,7 +828,7 @@ def test_cancelled_old_scan_does_not_remove_new_job_reference(qtbot, tmp_path, m
     target = tmp_path / "dir"
     target.mkdir()
     model = _ColumnFileSystemModel()
-    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job, _priority=0: None)
     index = model.setRootPath(str(target))
     node = model._node_from_index(index)
     assert node is not None
@@ -874,7 +878,9 @@ def test_set_resolve_symlinks_controls_scan_policy(qtbot, tmp_path, monkeypatch)
     for resolve in (False, True):
         model = _ColumnFileSystemModel()
         started_jobs: list[object] = []
-        monkeypatch.setattr(model._scan_pool, "start", started_jobs.append)
+        monkeypatch.setattr(
+            model._scan_pool, "start", lambda job, _priority=0, jobs=started_jobs: jobs.append(job)
+        )
         model.setResolveSymlinks(resolve)
         index = model.setRootPath(str(target))
 
@@ -891,7 +897,9 @@ def test_set_filter_is_passed_to_directory_scan_job(qtbot, tmp_path, monkeypatch
     target.mkdir()
     model = _ColumnFileSystemModel()
     started_jobs: list[object] = []
-    monkeypatch.setattr(model._scan_pool, "start", started_jobs.append)
+    monkeypatch.setattr(
+        model._scan_pool, "start", lambda job, _priority=0: started_jobs.append(job)
+    )
     model.setFilter(QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot)
     index = model.setRootPath(str(target))
 
@@ -1026,7 +1034,7 @@ def test_cancel_scan_try_takes_queued_job(qtbot, tmp_path, monkeypatch) -> None:
     target.mkdir()
     model = _ColumnFileSystemModel()
     taken: list[object] = []
-    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job, _priority=0: None)
     monkeypatch.setattr(model._scan_pool, "tryTake", lambda job: bool(taken.append(job)) or True)
     index = model.setRootPath(str(target))
     node = model._node_from_index(index)
@@ -1044,6 +1052,36 @@ def test_cancel_scan_try_takes_queued_job(qtbot, tmp_path, monkeypatch) -> None:
     assert node.loading is False
 
 
+def test_collecting_model_while_scan_runs_keeps_job_alive(qtbot, tmp_path, monkeypatch) -> None:
+    # 走査中のモデルが Python 側から回収されても、実行中のジョブとシグナルが先に
+    # 破棄されず、回収がジョブの完了待ちで止まりもしないこと。以前はジョブの寿命を
+    # モデルの _jobs で持ち、プールもモデルの子だったため、GC が _jobs を片付けた
+    # 時点で実行中のジョブが壊れ（xdist の CI でプロセスごと落ちた）、GIL を握った
+    # ままプールの完了待ちに入ってデッドロックすることもあった。
+    entered = threading.Event()
+    release = threading.Event()
+    real_scandir = os.scandir
+
+    def blocking_scandir(path):
+        entered.set()
+        release.wait(5)
+        return real_scandir(path)
+
+    monkeypatch.setattr(column_browser_model_module.os, "scandir", blocking_scandir)
+    model = _ColumnFileSystemModel()
+    root = model.setRootPath(str(tmp_path))
+    model.rowCount(root)
+    assert entered.wait(5), "scan job did not start"
+    job = next(iter(model._jobs.values()))
+
+    del model, root
+    gc.collect()  # ジョブの完了を待たずに戻ること（待つとここでデッドロックする）
+    release.set()
+
+    # 実行を終えたジョブはプールがワーカースレッドで破棄している。
+    qtbot.waitUntil(lambda: sip.isdeleted(job), timeout=5000)
+
+
 def test_cancelled_job_does_not_call_scandir(qtbot, tmp_path, monkeypatch) -> None:
     # 起動前にキャンセル済みの job は os.scandir に入る前に早期終了すること。
     target = tmp_path / "dir"
@@ -1055,16 +1093,18 @@ def test_cancelled_job_does_not_call_scandir(qtbot, tmp_path, monkeypatch) -> No
     monkeypatch.setattr(column_browser_model_module.os, "scandir", boom)
     token = _ScanToken()
     token.cancelled = True
+    signals = _DirectoryScanSignals()
     job = _DirectoryScanJob(
         target,
         normalize_directory_key(str(target)),
         1,
         token,
+        signals,
         filters=int((QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot).value),
         follow_symlinks=False,
     )
     finished: list[object] = []
-    job.signals.finished.connect(finished.append)
+    signals.finished.connect(finished.append)
 
     job.run()
 
@@ -1095,7 +1135,7 @@ def test_duplicate_batch_does_not_insert_duplicate_rows(qtbot, tmp_path, monkeyp
     target = tmp_path / "dir"
     target.mkdir()
     model = _ColumnFileSystemModel()
-    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job, _priority=0: None)
     root_index = model.setRootPath(str(target))
     node = model._node_from_index(root_index)
     assert node is not None
@@ -1117,7 +1157,7 @@ def test_parent_refresh_invalidates_direct_child_cache(qtbot, tmp_path, monkeypa
     child_path = target / "child"
     child_path.mkdir(parents=True)
     model = _ColumnFileSystemModel()
-    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job, _priority=0: None)
     root_index = model.setRootPath(str(target))
     node = model._node_from_index(root_index)
     assert node is not None
@@ -1155,7 +1195,7 @@ def test_scan_batch_invalidates_reused_child_when_type_changes(
     child_path = target / "child"
     child_path.mkdir(parents=True)
     model = _ColumnFileSystemModel()
-    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job, _priority=0: None)
     root_index = model.setRootPath(str(target))
     node = model._node_from_index(root_index)
     assert node is not None
@@ -1189,7 +1229,7 @@ def test_scan_batch_updates_child_keys_inside_insert_rows(qtbot, tmp_path, monke
     target = tmp_path / "dir"
     target.mkdir()
     model = _ColumnFileSystemModel()
-    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job, _priority=0: None)
     root_index = model.setRootPath(str(target))
     node = model._node_from_index(root_index)
     assert node is not None
@@ -1498,7 +1538,7 @@ def test_model_rescans_loaded_directory_on_revisit(qtbot, tmp_path, monkeypatch)
     target.mkdir()
     child.write_text("old", encoding="utf-8")
     model = _ColumnFileSystemModel()
-    monkeypatch.setattr(model._scan_pool, "start", lambda _job: None)
+    monkeypatch.setattr(model._scan_pool, "start", lambda _job, _priority=0: None)
     index = model.setRootPath(str(target))
     node = model._node_from_index(index)
     assert node is not None
@@ -1522,7 +1562,7 @@ def test_model_revisit_does_not_restart_unloaded_directory(qtbot, tmp_path, monk
     target.mkdir()
     model = _ColumnFileSystemModel()
     started: list[object] = []
-    monkeypatch.setattr(model._scan_pool, "start", started.append)
+    monkeypatch.setattr(model._scan_pool, "start", lambda job, _priority=0: started.append(job))
     index = model.setRootPath(str(target))
 
     model.rescan_if_loaded(index)
