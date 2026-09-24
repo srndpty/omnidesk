@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import sys
 from pathlib import Path
@@ -28,8 +29,16 @@ def drain_global_thread_pool():
     プロセスごと落ちる（CIで実際に発生した）。
 
     各テストの後にグローバルスレッドプールを空にして、この持ち越しを断つ。
+
+    待機の前に GUI スレッドで循環参照を回収しておく。テストが親なしで作った
+    ウィジェットやモデル（Python 所有）は、pytest-qt が ``deleteLater()`` しても
+    循環参照に残ったままになる。これをワーカースレッドで走る Python コード
+    （走査ジョブなど）の割り当てが引き起こした GC が回収すると、``QFileSystemModel``
+    などを GUI スレッド以外で破棄することになり、トレースバックもダンプも残さずに
+    プロセスごと落ちた（大量ファイルのストレステストの teardown で断続的に発生）。
     """
     yield
+    gc.collect()
     pool = QThreadPool.globalInstance()
     if pool is None:
         return
