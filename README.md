@@ -100,7 +100,7 @@ CI相当の品質確認は次のスクリプトで一括実行できます（`.\
 
 このスクリプトは以下を順番に実行し、失敗した時点で停止します。
 
-- `pytest -q`
+- `pytest -q -n auto --maxprocesses=8`（pytest-xdist で並列実行）
 - `python -m ruff check . --no-cache`
 - `python -m ruff format . --check`
 - `python -m pyright`
@@ -116,13 +116,11 @@ python -m pyright
 git diff --check
 ```
 
-pytest-xdist による並列実行を試す場合:
+`check.ps1` / `build-windows.ps1` / CI の pytest は pytest-xdist で並列実行します（ワーカー数はコア数に合わせ、最大 8）。手元で並列実行する場合:
 
 ```powershell
-.\scripts\check-parallel.ps1
+python -m pytest -n auto --maxprocesses=8
 ```
-
-Qtを使うテストがあるため、このスクリプトは安定性優先で `-n 2` に固定しています。
 
 依存を更新する場合は `requirements-dev.in` を編集し、pip-toolsで `requirements.txt` を再生成します。現状の `requirements.txt` は CI とローカル開発で使う dev lock で、`requirements-dev.txt` はその入口として残しています。
 

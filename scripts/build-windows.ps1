@@ -30,7 +30,7 @@ try {
 
     Invoke-PythonModule ruff check . --no-cache
     Invoke-PythonModule pyright
-    Invoke-PythonModule pytest
+    Invoke-PythonModule pytest -n auto --maxprocesses=8
 
     Remove-Item -LiteralPath "dist\OmniDesk" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath "dist\OmniDesk.exe" -Force -ErrorAction SilentlyContinue

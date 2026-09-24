@@ -24,12 +24,13 @@
 ## 品質ゲート
 - 通常の作業完了前に、可能な範囲で `.\dev.ps1 check`（= `.\scripts\check.ps1`）を実行してください。
 - `scripts/check.ps1` は以下を順に実行します。
-  - `pytest -q`
+  - `pytest -q -n auto --maxprocesses=8`（pytest-xdist で並列実行）
   - `python -m ruff check . --no-cache`
   - `python -m ruff format . --check`
   - `python -m pyright`
   - `git diff --check`
-- 並列実行を試す場合は `.\scripts\check-parallel.ps1` を使ってください。ただし通常の品質ゲートは `check.ps1` を優先してください。Qtテストがあるため、xdistは安定性優先で `-n 2` に固定しています。
+- `check.ps1` / `build-windows.ps1` / CI の pytest は pytest-xdist で並列実行します（`-n auto --maxprocesses=8`）。`.\dev.ps1 test` は `-k` での絞り込みや pdb でのデバッグを優先して直列のままです。並列にしたい場合は `.\dev.ps1 test -n auto` のように渡してください。
+- xdist ではテストがワーカーごとに別プロセス・別順序で走るため、テスト間の暗黙の依存は禁止です。`QApplication` は `tests/conftest.py` がセッション開始時に必ず用意し、サムネイルのディスクキャッシュもテスト専用の一時フォルダへ向けています。
 - `python -m pyright` が見つからない場合は、venv内で `python -m pip install -r requirements-dev.txt` を実行してください。
 - カバレッジ確認が必要な場合は、PowerShellで以下を使ってください。
   - `$env:COVERAGE_FILE='tmp/.coverage'; pytest --cov=omnidesk --cov-report=term-missing --cov-report=xml:tmp\coverage.xml`
