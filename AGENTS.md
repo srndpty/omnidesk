@@ -10,13 +10,14 @@
 - 日常的な操作は、リポジトリルートの統一入口 `.\dev.ps1 <command>` を推奨します（cmd.exe からは `dev.cmd <command>`）。
 - `dev` は既存手順の薄い front-end です。実処理は `scripts/*.ps1` と既存ツールへそのまま委譲し、新しいビルドシステムやテストランナーは導入していません。
   - Build: `.\dev.ps1 build` -> `scripts\build-windows.ps1`
+  - Install: `.\dev.ps1 install` -> `scripts\install-windows.ps1 -Build`（ビルド後、UAC昇格して `C:\Program Files\OmniDesk` へコピー）
   - Run GUI: `.\dev.ps1 gui`（`.\dev.ps1 run` も同じ） -> `python -m omnidesk`
   - Test: `.\dev.ps1 test` -> `python -m pytest`
   - Lint / 静的解析: `.\dev.ps1 lint` -> `ruff check` / `ruff format --check` / `pyright`
   - Full validation: `.\dev.ps1 check` -> `scripts\check.ps1`
   - Clean: `.\dev.ps1 clean`（生成物のみ削除。`tmp\` 直下の利用者ファイルは削除しません）
   - Help: `.\dev.ps1 help`
-- `test` / `gui` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。`build` / `check` / `clean` は追加引数を受け取りません（委譲先の `scripts\*.ps1` が引数を持たないため、渡すとエラーで止まります）。
+- `test` / `gui` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。`build` / `check` / `clean` は追加引数を受け取りません（委譲先の `scripts\*.ps1` が引数を持たないため、渡すとエラーで止まります）。`install` は `-Destination <path>` のみ受け付けます。
 - 失敗時は `dev` 自身も non-zero で終了します。
 - 従来どおり `scripts/*.ps1` を直接実行しても構いません。`dev` は入口を短くするだけで、既存手順を置き換えるものではありません。
 
