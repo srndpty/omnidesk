@@ -62,7 +62,9 @@ function Invoke-Native {
 function Invoke-RepoScript {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
-        [string[]]$Arguments = @()
+        [string[]]$Arguments = @(),
+        # 名前付き引数（スイッチ含む）を渡す場合に使う。
+        [hashtable]$NamedArguments = @{}
     )
 
     if ($script:ExitCode -ne 0) { return }
@@ -76,7 +78,9 @@ function Invoke-RepoScript {
 
     $global:LASTEXITCODE = 0
     try {
-        if ($Arguments.Count -gt 0) {
+        if ($NamedArguments.Count -gt 0) {
+            & $path @NamedArguments
+        } elseif ($Arguments.Count -gt 0) {
             & $path @Arguments
         } else {
             & $path
@@ -106,6 +110,29 @@ function Assert-NoExtraArguments {
     return $false
 }
 
+# install の追加引数を install-windows.ps1 の名前付き引数へ変換する。
+# 配列スプラットでは "-Destination" が名前付き引数として束縛されず位置引数になるため、
+# 受け付ける引数を明示的に解釈してハッシュテーブルで渡す。
+function ConvertTo-InstallArguments {
+    param([string[]]$Arguments = @())
+
+    $result = @{ Build = $true }
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $current = $Arguments[$i]
+        if ($current -ieq "-Destination" -and ($i + 1) -lt $Arguments.Count) {
+            $result["Destination"] = $Arguments[$i + 1]
+            $i++
+            continue
+        }
+
+        Write-Host "install が受け付けない引数です: $current" -ForegroundColor Red
+        Write-Host "使える引数は -Destination <path> のみです。" -ForegroundColor Red
+        $script:ExitCode = 2
+        return $null
+    }
+    return $result
+}
+
 function Show-Help {
     Write-Host @"
 dev - OmniDesk 開発コマンド
@@ -116,6 +143,8 @@ dev - OmniDesk 開発コマンド
 コマンド:
   build     Windows 配布ビルド        -> scripts\build-windows.ps1
             (ruff / pyright / pytest の後に PyInstaller と dist\OmniDesk.zip)
+  install   ビルドして Program Files へインストール -> scripts\install-windows.ps1 -Build
+            (ビルドは通常ユーザーで実行し、コピー時だけ UAC で昇格)
   run       アプリを起動              -> python -m omnidesk （gui の別名）
   gui       GUI アプリを起動          -> python -m omnidesk
   test      テストを実行              -> python -m pytest
@@ -128,6 +157,7 @@ dev - OmniDesk 開発コマンド
   - test / gui の追加引数はそのまま委譲先へ渡ります。例: .\dev.ps1 test -k thumbnail
   - lint の追加引数は ruff check にだけ渡ります（3つのツールへ同じ引数は渡せないため）。
   - build / check / clean は追加引数を受け取りません（渡すとエラーで止まります）。
+  - install は -Destination <path> のみ受け付けます。例: .\dev.ps1 install -Destination "C:\Program Files\OmniDesk-dev"
   - このリポジトリに CLI アプリはないため、run は gui の別名です。
   - check はこのリポジトリの canonical な品質ゲートをそのまま呼びます。
   - 並列テストや依存再生成など、ここに無い手順は AGENTS.md / README.md を参照してください。
@@ -179,6 +209,13 @@ try {
             if (Assert-NoExtraArguments -Name "build" -Arguments $Rest) {
                 Write-Step "build (scripts\build-windows.ps1)"
                 Invoke-RepoScript -Name "build-windows.ps1"
+            }
+        }
+        "install" {
+            $installArguments = ConvertTo-InstallArguments -Arguments $Rest
+            if ($null -ne $installArguments) {
+                Write-Step "install (scripts\install-windows.ps1 -Build)"
+                Invoke-RepoScript -Name "install-windows.ps1" -NamedArguments $installArguments
             }
         }
         { $_ -in @("run", "gui") } {

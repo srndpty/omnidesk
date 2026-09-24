@@ -27,7 +27,9 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QFileIconProvider
 
+from . import job_priority
 from .column_browser_helpers import normalize_directory_key
+from .qt_lifetime import own_by_application
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,14 @@ class _ScanToken:
 
 
 class _DirectoryScanSignals(QObject):
+    """走査ジョブが共有する、GUIスレッド常駐のシグナル置き場。
+
+    ``QRunnable`` ごとに ``QObject`` を持たせると、ジョブの破棄に巻き込まれて
+    GUIスレッド以外で破棄されたり、実行中のジョブが emit する最中に消えたりする
+    （``DirectoryScanSignals`` と同じ理由）。モデルごとに1つだけ作り、
+    :func:`own_by_application` で寿命を ``QApplication`` に預ける。
+    """
+
     batchReady = pyqtSignal(object)
     finished = pyqtSignal(object)
 
@@ -110,18 +120,22 @@ class _DirectoryScanJob(QRunnable):
         key: str,
         generation: int,
         token: _ScanToken,
+        signals: _DirectoryScanSignals,
         *,
         filters: int,
         follow_symlinks: bool,
     ) -> None:
         super().__init__()
+        # 実行中のジョブはプールが保持し、完了後にワーカースレッドで破棄する。
+        # Python側の参照（モデルの ``_jobs``）が先に消えても、実行中に破棄されない。
+        self.setAutoDelete(True)
         self._path = path
         self._key = key
         self._generation = generation
         self._token = token
         self._filters = filters
         self._follow_symlinks = follow_symlinks
-        self.signals = _DirectoryScanSignals()
+        self.signals = signals
 
     def run(self) -> None:  # noqa: D401 - QRunnable contract
         started = time.perf_counter()
@@ -333,9 +347,17 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         super().__init__(parent)
         self._nodes_by_key: dict[str, _DirectoryNode] = {}
         self._root_path = Path.home()
-        self._scan_pool = QThreadPool(self)
-        self._scan_pool.setMaxThreadCount(4)
+        # 他の走査ジョブと同じ共有プールを使う。モデル専用のプールを子に持つと、
+        # モデルの破棄でプールがジョブの完了を待つ。Python 側（GC など）から破棄
+        # されると GIL を握ったまま待つことになり、GIL を要する実行中のジョブと
+        # デッドロックする。
+        pool = QThreadPool.globalInstance()
+        assert pool is not None
+        self._scan_pool = pool
         self._jobs: dict[_ScanToken, _DirectoryScanJob] = {}
+        self._scan_signals = own_by_application(_DirectoryScanSignals())
+        self._scan_signals.batchReady.connect(self._handle_scan_batch)
+        self._scan_signals.finished.connect(self._handle_scan_finished)
         self._icon_provider = QFileIconProvider()
         self._icon_cache: dict[str, QIcon] = {}
         self._filters = _filter_value(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
@@ -576,20 +598,21 @@ class _ColumnFileSystemModel(QAbstractItemModel):
             key,
             node.scan_generation,
             token,
+            self._scan_signals,
             filters=self._filters,
             follow_symlinks=self._resolve_symlinks,
         )
-        # autoDelete を切り、job の寿命を _jobs（Python 参照）で管理する。これがないと
-        # 実行完了後に C++ 側が破棄され、_jobs に残った wrapper への tryTake が
-        # "wrapped C/C++ object has been deleted" で落ちる。finished で pop する。
-        job.setAutoDelete(False)
-        job.signals.batchReady.connect(self._handle_scan_batch)
-        job.signals.finished.connect(self._handle_scan_finished)
+        # _jobs は未起動ジョブを tryTake で取り除くための参照で、finished で pop する。
+        # ジョブ自体の寿命はプールが持つ（autoDelete）。以前は autoDelete を切って
+        # _jobs で寿命を管理していたが、モデルが GC で回収されると C++ 側のプールが
+        # 完了を待つより先に _jobs が片付き、実行中のジョブとシグナルが破棄されて
+        # プロセスごと落ちた（pytest-xdist の CI で発生）。
         self._jobs[token] = job
         logger.info(
             "Column directory scan started: %s generation=%d", node.path, node.scan_generation
         )
-        self._scan_pool.start(job)
+        # 利用者の移動操作に応える走査なので、サムネイル生成より先に取り出させる。
+        self._scan_pool.start(job, job_priority.STATUS)
 
     def _clear_children(self, node: _DirectoryNode) -> None:
         """node の children を通知付きで空にする。paint 経路から呼ばないこと。"""
@@ -617,9 +640,17 @@ class _ColumnFileSystemModel(QAbstractItemModel):
         token.cancelled = True
         # まだ起動していない queued job は pool から取り除き、_jobs からも消す。これで
         # 巨大フォルダのスキャンが順番待ちのまま新 root のスキャンを塞ぐのを防ぐ。
+        # 実行を終えたジョブはプールがワーカースレッドで破棄するため、wrapper が
+        # 破棄済みになっていることがある（判定と破棄が競合した場合も RuntimeError）。
+        # tryTake に成功したジョブは所有権が Python 側へ戻り、GUIスレッドで解放される。
         job = self._jobs.get(token)
-        if job is not None and not sip.isdeleted(job) and self._scan_pool.tryTake(job):
-            self._jobs.pop(token, None)
+        if job is not None and not sip.isdeleted(job):
+            try:
+                taken = self._scan_pool.tryTake(job)
+            except RuntimeError:
+                taken = False
+            if taken:
+                self._jobs.pop(token, None)
         # キャンセルで中断した partial children を通知付きで掃除する（rowCount/paint 経路
         # ではなくナビゲーション・refresh 経路から呼ばれるので beginRemoveRows は安全）。
         self._clear_children(node)

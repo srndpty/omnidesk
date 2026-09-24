@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..theme import FILE_BROWSER_VIEW_OBJECT_NAME
 from .file_browser.actions import FileBrowserActionsMixin
 from .file_browser.address_bar_controller import AddressBarController
 from .file_browser.clipboard import ClipboardController, FileBrowserClipboardMixin
@@ -150,6 +151,10 @@ class FileBrowserTab(
         self._tile_view.activated.connect(self._handle_index_activated)
         self._tile_view.setIconSize(QSize(128, 128))
 
+        # 縦スクロールバーをウィンドウ右端に密着させるため、右枠線をテーマ側で消す。
+        self._tree_view.setObjectName(FILE_BROWSER_VIEW_OBJECT_NAME)
+        self._tile_view.setObjectName(FILE_BROWSER_VIEW_OBJECT_NAME)
+
         self._view_stack = QStackedWidget(self)
         self._view_stack.addWidget(self._tree_view)
         self._view_stack.addWidget(self._tile_view)
@@ -282,7 +287,8 @@ class FileBrowserTab(
         self._refresh_button.clicked.connect(lambda: self.refresh(force=True))
 
         path_bar_layout = QHBoxLayout()
-        path_bar_layout.setContentsMargins(0, 0, 0, 0)
+        # ルートレイアウトは右余白を持たないため、アドレスバー側で右余白を確保する。
+        path_bar_layout.setContentsMargins(0, 0, 8, 0)
         path_bar_layout.setSpacing(6)
         path_bar_layout.addWidget(self._back_button)
         path_bar_layout.addWidget(self._forward_button)
@@ -292,7 +298,9 @@ class FileBrowserTab(
         path_bar_layout.addWidget(self._refresh_button)
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(8, 8, 8, 8)
+        # Windows Explorer と同様に、ファイル一覧の縦スクロールバーを右端ぴったりに置く。
+        # 最大化時に画面の一番右までマウスを振り切っても、そのまま掴めるようにするため。
+        root_layout.setContentsMargins(8, 8, 0, 8)
         root_layout.setSpacing(6)
         root_layout.addLayout(path_bar_layout)
         root_layout.addWidget(self._view_stack, stretch=1)

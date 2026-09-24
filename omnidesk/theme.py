@@ -16,6 +16,10 @@ _SCROLLBAR_ARROW_DOWN = _stylesheet_resource_url("icons", "scrollbar-arrow-down.
 _SCROLLBAR_ARROW_LEFT = _stylesheet_resource_url("icons", "scrollbar-arrow-left.svg")
 _SCROLLBAR_ARROW_RIGHT = _stylesheet_resource_url("icons", "scrollbar-arrow-right.svg")
 
+# タブ表示のファイル一覧（詳細・タイル）に付ける objectName。
+# 縦スクロールバーをウィンドウ右端へ密着させるため、右枠線だけを消す対象にする。
+FILE_BROWSER_VIEW_OBJECT_NAME = "fileBrowserView"
+
 
 DARK_STYLESHEET = (
     """
@@ -54,6 +58,11 @@ QTreeView, QColumnView {
     show-decoration-selected: 1;
 }
 
+QTreeView#__FILE_BROWSER_VIEW__, QListView#__FILE_BROWSER_VIEW__ {
+    border: 1px solid #34363c;
+    border-right: 0px;
+}
+
 QTreeView::item:selected, QColumnView::item:selected {
     background-color: #3d7bfd;
     color: #ffffff;
@@ -88,6 +97,8 @@ QStatusBar {
 
 QTabWidget::pane {
     border: 1px solid #34363c;
+    /* タブ内ファイル一覧の縦スクロールバーをウィンドウ右端へ密着させる */
+    border-right: 0px;
     background: #1e1f22;
 }
 
@@ -208,6 +219,7 @@ QSplitter::handle {
     background: #1e1f22;
 }
 """.replace("__SCROLLBAR_ARROW_UP__", _SCROLLBAR_ARROW_UP)
+    .replace("__FILE_BROWSER_VIEW__", FILE_BROWSER_VIEW_OBJECT_NAME)
     .replace("__SCROLLBAR_ARROW_DOWN__", _SCROLLBAR_ARROW_DOWN)
     .replace("__SCROLLBAR_ARROW_LEFT__", _SCROLLBAR_ARROW_LEFT)
     .replace("__SCROLLBAR_ARROW_RIGHT__", _SCROLLBAR_ARROW_RIGHT)

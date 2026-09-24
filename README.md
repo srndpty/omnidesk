@@ -56,10 +56,11 @@ python -m omnidesk
 .\dev.ps1 lint     # ruff check / ruff format --check / pyright
 .\dev.ps1 check    # コミット前の品質ゲート (scripts\check.ps1)
 .\dev.ps1 build    # Windows ビルド (scripts\build-windows.ps1)
+.\dev.ps1 install  # ビルドして Program Files へインストール (scripts\install-windows.ps1 -Build)
 .\dev.ps1 clean    # 生成物のみ削除
 ```
 
-`test` / `gui` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。`build` / `check` / `clean` は追加引数を受け取りません（委譲先の `scripts\*.ps1` が引数を持たないため、渡すとエラーで止まります）。cmd.exe からは `dev.cmd <command>` を使ってください。従来どおり `scripts/*.ps1` を直接実行しても構いません。
+`test` / `gui` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。`build` / `check` / `clean` は追加引数を受け取りません（委譲先の `scripts\*.ps1` が引数を持たないため、渡すとエラーで止まります）。`install` は `-Destination <path>` のみ受け付けます。cmd.exe からは `dev.cmd <command>` を使ってください。従来どおり `scripts/*.ps1` を直接実行しても構いません。
 
 ## ログとクラッシュ調査
 
@@ -99,7 +100,7 @@ CI相当の品質確認は次のスクリプトで一括実行できます（`.\
 
 このスクリプトは以下を順番に実行し、失敗した時点で停止します。
 
-- `pytest -q`
+- `pytest -q -n auto --maxprocesses=8`（pytest-xdist で並列実行）
 - `python -m ruff check . --no-cache`
 - `python -m ruff format . --check`
 - `python -m pyright`
@@ -115,13 +116,11 @@ python -m pyright
 git diff --check
 ```
 
-pytest-xdist による並列実行を試す場合:
+`check.ps1` / `build-windows.ps1` / CI の pytest は pytest-xdist で並列実行します（ワーカー数はコア数に合わせ、最大 8）。手元で並列実行する場合:
 
 ```powershell
-.\scripts\check-parallel.ps1
+python -m pytest -n auto --maxprocesses=8
 ```
-
-Qtを使うテストがあるため、このスクリプトは安定性優先で `-n 2` に固定しています。
 
 依存を更新する場合は `requirements-dev.in` を編集し、pip-toolsで `requirements.txt` を再生成します。現状の `requirements.txt` は CI とローカル開発で使う dev lock で、`requirements-dev.txt` はその入口として残しています。
 
@@ -168,6 +167,7 @@ pre-commit run --all-files
    ```powershell
    .\install_windows.bat -Build
    ```
+   `.\dev.ps1 install` でも同じ処理（`-Build` 付きのインストール）を実行できます。
    既定では `C:\Program Files\OmniDesk` の中身を、現在の `dist\OmniDesk` の内容で置き換えます。既存の同名ディレクトリに手動で置いたファイルは削除されます。配置先を変える場合は、`Program Files` 直下の `OmniDesk` または `OmniDesk-*` という名前のアプリ用ディレクトリを指定してください。`C:\Program Files` 自体、他アプリのディレクトリ、他アプリ配下のディレクトリは指定できません。
    ```powershell
    .\install_windows.bat -Destination "C:\Program Files\OmniDesk-dev"

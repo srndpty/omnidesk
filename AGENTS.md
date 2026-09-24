@@ -10,25 +10,27 @@
 - 日常的な操作は、リポジトリルートの統一入口 `.\dev.ps1 <command>` を推奨します（cmd.exe からは `dev.cmd <command>`）。
 - `dev` は既存手順の薄い front-end です。実処理は `scripts/*.ps1` と既存ツールへそのまま委譲し、新しいビルドシステムやテストランナーは導入していません。
   - Build: `.\dev.ps1 build` -> `scripts\build-windows.ps1`
+  - Install: `.\dev.ps1 install` -> `scripts\install-windows.ps1 -Build`（ビルド後、UAC昇格して `C:\Program Files\OmniDesk` へコピー）
   - Run GUI: `.\dev.ps1 gui`（`.\dev.ps1 run` も同じ） -> `python -m omnidesk`
   - Test: `.\dev.ps1 test` -> `python -m pytest`
   - Lint / 静的解析: `.\dev.ps1 lint` -> `ruff check` / `ruff format --check` / `pyright`
   - Full validation: `.\dev.ps1 check` -> `scripts\check.ps1`
   - Clean: `.\dev.ps1 clean`（生成物のみ削除。`tmp\` 直下の利用者ファイルは削除しません）
   - Help: `.\dev.ps1 help`
-- `test` / `gui` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。`build` / `check` / `clean` は追加引数を受け取りません（委譲先の `scripts\*.ps1` が引数を持たないため、渡すとエラーで止まります）。
+- `test` / `gui` の追加引数はそのまま委譲先へ渡ります（例: `.\dev.ps1 test -k thumbnail`）。`lint` の追加引数は `ruff check` にだけ渡ります（3つのツールへ同じ引数は渡せないため）。`build` / `check` / `clean` は追加引数を受け取りません（委譲先の `scripts\*.ps1` が引数を持たないため、渡すとエラーで止まります）。`install` は `-Destination <path>` のみ受け付けます。
 - 失敗時は `dev` 自身も non-zero で終了します。
 - 従来どおり `scripts/*.ps1` を直接実行しても構いません。`dev` は入口を短くするだけで、既存手順を置き換えるものではありません。
 
 ## 品質ゲート
 - 通常の作業完了前に、可能な範囲で `.\dev.ps1 check`（= `.\scripts\check.ps1`）を実行してください。
 - `scripts/check.ps1` は以下を順に実行します。
-  - `pytest -q`
+  - `pytest -q -n auto --maxprocesses=8`（pytest-xdist で並列実行）
   - `python -m ruff check . --no-cache`
   - `python -m ruff format . --check`
   - `python -m pyright`
   - `git diff --check`
-- 並列実行を試す場合は `.\scripts\check-parallel.ps1` を使ってください。ただし通常の品質ゲートは `check.ps1` を優先してください。Qtテストがあるため、xdistは安定性優先で `-n 2` に固定しています。
+- `check.ps1` / `build-windows.ps1` / CI の pytest は pytest-xdist で並列実行します（`-n auto --maxprocesses=8`）。`.\dev.ps1 test` は `-k` での絞り込みや pdb でのデバッグを優先して直列のままです。並列にしたい場合は `.\dev.ps1 test -n auto` のように渡してください。
+- xdist ではテストがワーカーごとに別プロセス・別順序で走るため、テスト間の暗黙の依存は禁止です。`QApplication` は `tests/conftest.py` がセッション開始時に必ず用意し、サムネイルのディスクキャッシュもテスト専用の一時フォルダへ向けています。
 - `python -m pyright` が見つからない場合は、venv内で `python -m pip install -r requirements-dev.txt` を実行してください。
 - カバレッジ確認が必要な場合は、PowerShellで以下を使ってください。
   - `$env:COVERAGE_FILE='tmp/.coverage'; pytest --cov=omnidesk --cov-report=term-missing --cov-report=xml:tmp\coverage.xml`

@@ -27,7 +27,8 @@ function Invoke-Check {
 Invoke-Check "ruff check" @($Python, "-m", "ruff", "check", ".", "--no-cache")
 Invoke-Check "ruff format" @($Python, "-m", "ruff", "format", ".", "--check")
 Invoke-Check "pyright" @($Python, "-m", "pyright")
-Invoke-Check "pytest" @($Python, "-m", "pytest", "-q")
+# pytest-xdist で並列実行する。ワーカー数はコア数に合わせ、起動コストが勝つ 8 で頭打ちにする。
+Invoke-Check "pytest" @($Python, "-m", "pytest", "-q", "-n", "auto", "--maxprocesses=8")
 Invoke-Check "git diff whitespace check" @("git", "diff", "--check")
 
 Write-Host "All checks passed."
