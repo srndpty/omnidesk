@@ -11,6 +11,7 @@ from PyQt6.QtCore import (
     QItemSelectionModel,
     QMimeData,
     QModelIndex,
+    QObject,
     QPoint,
     QPointF,
     QRect,
@@ -3225,4 +3226,53 @@ def test_explicit_scroll_wins_over_remembered_position(qtbot, tmp_path: Path) ->
     assert tab._select_path(tmp_path / "f000.txt", QAbstractItemView.ScrollHint.PositionAtTop)
 
     assert tab._tile_view._scroll_keeper.pending_value is None
+    _quiesce(qtbot, tab)
+
+
+def test_folder_deletion_only_paints_the_settled_center_position(qtbot, tmp_path: Path) -> None:
+    """削除後の途中のスクロール位置を描画せず、隣のフォルダを中央に戻す。"""
+    for number in range(400):
+        (tmp_path / f"folder{number:03d}").mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    view = tab._tile_view
+    # 多数のバッチに分けて、途中で描画イベントが入る条件を作る。
+    view.setBatchSize(16)
+    deleted = tmp_path / "folder200"
+    replacement = tmp_path / "folder199"
+    assert tab._select_path(deleted, QAbstractItemView.ScrollHint.PositionAtCenter)
+    qtbot.wait(800)
+    bar = view.verticalScrollBar()
+    assert bar is not None and bar.value() > 0
+    painted_positions: list[int] = []
+
+    class PaintObserver(QObject):
+        def eventFilter(self, watched, event) -> bool:  # noqa: N802
+            if event.type() == QEvent.Type.Paint:
+                painted_positions.append(bar.value())
+            return False
+
+    observer = PaintObserver(view)
+    view.viewport().installEventFilter(observer)
+    deleted.rmdir()
+    tab._model.hide_removed_paths([deleted])
+    assert not view.updatesEnabled()
+    tab._handle_file_operation_finished(
+        FileOperationResult([], [tmp_path]), select_after=[replacement]
+    )
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    qtbot.waitUntil(view.updatesEnabled, timeout=3000)
+    qtbot.wait(800)
+
+    assert tab._selected_paths() == [replacement]
+    rect = view.visualRect(tab._model.index(str(replacement)))
+    assert abs(rect.center().y() - view.viewport().rect().center().y()) <= 2
+    assert painted_positions
+    # 最終位置だけを調べると、途中で先頭へ飛んで戻る不具合を見逃す。
+    assert max(painted_positions) - min(painted_positions) <= 2
     _quiesce(qtbot, tab)
