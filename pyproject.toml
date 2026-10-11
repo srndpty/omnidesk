@@ -76,6 +76,9 @@ skip_covered = false
 fail_under = 70
 
 [tool.pyright]
+# Windowsの開発用venvを自動検出できない環境でも、依存先の型と実装を参照する。
+# CIのようにvenvを使わない環境では、通常のPython環境の探索も引き続き行われる。
+extraPaths = [".venv/Lib/site-packages"]
 include = [
     "omnidesk/ui/file_browser/actions.py",
     "omnidesk/ui/file_browser/address_bar_controller.py",

@@ -109,7 +109,7 @@ class ScrollBarInputFilter(QObject):
         self._window_widget = window_widget
 
     def eventFilter(self, a0: QObject | None, a1: QEvent | None) -> bool:
-        if not isinstance(a1, QMouseEvent) or a1.type() not in _PRESS_TYPES:
+        if a1 is None or not isinstance(a1, QMouseEvent) or a1.type() not in _PRESS_TYPES:
             return False
         if a1.button() != Qt.MouseButton.LeftButton:
             return False
