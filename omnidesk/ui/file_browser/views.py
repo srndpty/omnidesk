@@ -38,6 +38,7 @@ from ..file_browser_drop import (
 from ..file_browser_selection import rubber_band_intersecting_rows, rubber_band_target_rows
 from ..file_browser_visible import visible_row_range
 from .delegates import _DropTargetItemDelegate, _TwoLineTileNameDelegate
+from .layout_update_guard import LayoutUpdateGuard
 from .scroll_keeper import BatchedLayoutScrollKeeper
 from .sort_model import SortedFileSystemModel
 
@@ -593,8 +594,20 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         assert scroll_bar is not None
         # Batched レイアウトのやり直しでスクロール位置が飛ぶのを防ぐ。
         self._scroll_keeper = BatchedLayoutScrollKeeper(scroll_bar, self)
+        self._layout_update_guard = LayoutUpdateGuard(self, self.scrollTo)
 
     def setModel(self, model) -> None:  # noqa: N802
+        previous = self.model()
+        if previous is not None:
+            previous.rowsAboutToBeRemoved.disconnect(self._layout_update_guard.begin)
+            previous.layoutAboutToBeChanged.disconnect(self._layout_update_guard.begin)
+            previous.rowsRemoved.disconnect(self._remember_scroll_position)
+            previous.rowsInserted.disconnect(self._remember_scroll_position)
+        self._layout_update_guard.finish(apply_scroll=False)
+        if model is not None:
+            # ビュー自身の自動スクロールより先に表示を保留する。
+            model.rowsAboutToBeRemoved.connect(self._layout_update_guard.begin)
+            model.layoutAboutToBeChanged.connect(self._layout_update_guard.begin)
         super().setModel(model)
         if model is None:
             return
@@ -610,6 +623,7 @@ class _FileTileView(_BaseFileViewMixin, QListView):
 
     def setRootIndex(self, index: QModelIndex) -> None:  # noqa: N802
         # 別のディレクトリを表示するときは、前の位置を持ち越さない。
+        self._layout_update_guard.finish(apply_scroll=False)
         self._scroll_keeper.cancel()
         super().setRootIndex(index)
 
@@ -620,4 +634,6 @@ class _FileTileView(_BaseFileViewMixin, QListView):
     ) -> None:
         # 明示的なスクロール（選択の復元など）が入ったら、そちらを優先する。
         self._scroll_keeper.cancel()
+        if self._layout_update_guard.defer_scroll(index, hint):
+            return
         super().scrollTo(index, hint)
