@@ -601,13 +601,18 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         if previous is not None:
             previous.rowsAboutToBeRemoved.disconnect(self._layout_update_guard.begin)
             previous.layoutAboutToBeChanged.disconnect(self._layout_update_guard.begin)
+            previous.rowsAboutToBeInserted.disconnect(self._layout_update_guard.begin)
             previous.rowsRemoved.disconnect(self._remember_scroll_position)
             previous.rowsInserted.disconnect(self._remember_scroll_position)
+            previous.layoutChanged.disconnect(self._remember_scroll_position_after_layout)
         self._layout_update_guard.finish(apply_scroll=False)
         if model is not None:
             # ビュー自身の自動スクロールより先に表示を保留する。
             model.rowsAboutToBeRemoved.connect(self._layout_update_guard.begin)
             model.layoutAboutToBeChanged.connect(self._layout_update_guard.begin)
+            # 行の追加（貼り付けたフォルダが現れたときなど）も、レイアウトを最初から
+            # やり直す。保留しないと、丸められた先頭付近の位置がしばらく描画される。
+            model.rowsAboutToBeInserted.connect(self._layout_update_guard.begin)
         super().setModel(model)
         if model is None:
             return
@@ -616,10 +621,30 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         # バッチレイアウトによる丸めはさらに後で起きるので、間に合う。
         model.rowsRemoved.connect(self._remember_scroll_position)
         model.rowsInserted.connect(self._remember_scroll_position)
+        # 並べ替え直し（動的ソートによる行の移動など）も、レイアウトを最初から
+        # やり直すので同じく丸められる。コピー中のフォルダは再走査のたびに
+        # 更新日時が変わってこれが起き、表示が先頭へ飛んだまま戻らなかった。
+        model.layoutChanged.connect(self._remember_scroll_position_after_layout)
 
     def _remember_scroll_position(self, parent: QModelIndex, first: int, last: int) -> None:
         _ = parent, first, last
         self._scroll_keeper.remember()
+
+    def _remember_scroll_position_after_layout(self, *_args: object) -> None:
+        self._scroll_keeper.remember()
+
+    def scrollContentsBy(self, dx: int, dy: int) -> None:  # noqa: N802
+        """表示を保留している間は、ビューポートの中身を動かさない。
+
+        ``QWidget.scroll()`` は描画を止めていても、画面上の画素を直接ずらす。
+        保留中にバッチレイアウトでスクロール値が丸められると、画素だけが大きく
+        ずれ、空いた領域は描き直されないまま背景色で表示されていた（削除の直後に
+        一覧が一瞬空になる現象）。オフセットはスクロールバーの値から引かれるので、
+        ここで動かさなくても、保留を解いたときの全体再描画で正しい位置に描かれる。
+        """
+        if self._layout_update_guard.active:
+            return
+        super().scrollContentsBy(dx, dy)
 
     def setRootIndex(self, index: QModelIndex) -> None:  # noqa: N802
         # 別のディレクトリを表示するときは、前の位置を持ち越さない。

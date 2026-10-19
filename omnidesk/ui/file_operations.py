@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable, Iterator
+import threading
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -35,6 +37,73 @@ class FileOperationRequest:
     sources: list[Path]
     destination: Path | None
     mode: FileOperationMode
+
+
+# ---------------------------------------------------------------------------
+# 実行中の操作が使っているパス
+# ---------------------------------------------------------------------------
+# コピー・移動はワーカースレッドで走るので、その途中でも別の操作を投入できる。
+# 書き込み中のコピー先を削除すると、残りのファイルの書き込みがすべて
+# ``FileNotFoundError`` になり、中途半端なフォルダがゴミ箱に残る。そこで実行中の
+# 操作が使うパスを登録しておき、それに触れる操作をサービス層で拒否する。
+_busy_lock = threading.Lock()
+_busy_paths: dict[str, int] = {}
+
+BUSY_PATH_MESSAGE = "Another file operation is still using this item: {path}"
+
+
+@contextmanager
+def _mark_busy(paths: Iterable[Path]) -> Iterator[None]:
+    """``paths`` を、ブロックを抜けるまで使用中として登録する。"""
+    keys = [_normalise_path_text(_absolute(path)) for path in paths]
+    with _busy_lock:
+        for key in keys:
+            _busy_paths[key] = _busy_paths.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _busy_lock:
+            for key in keys:
+                remaining = _busy_paths.get(key, 0) - 1
+                if remaining > 0:
+                    _busy_paths[key] = remaining
+                else:
+                    _busy_paths.pop(key, None)
+
+
+def busy_operation_path(path: Path) -> Path | None:
+    """``path`` と重なる（同じ・親・子孫の）使用中パスがあれば返す。"""
+    key = _normalise_path_text(_absolute(path))
+    separator = _path_text_separator()
+    with _busy_lock:
+        busy = list(_busy_paths)
+    for other in busy:
+        if key == other or key.startswith(other + separator) or other.startswith(key + separator):
+            return Path(other)
+    return None
+
+
+def _absolute(path: Path) -> Path:
+    try:
+        return path.resolve(strict=False)
+    except OSError:
+        return path.absolute()
+
+
+def describe_copy_error(src: Path, target: Path, exc: BaseException) -> str:
+    """コピー・移動の失敗を、ダイアログに出せる長さの1行にまとめる。
+
+    ``shutil.copytree`` は失敗したファイルを全件 ``shutil.Error`` に詰めて投げる。
+    そのまま文字列にすると数百件ぶんのパスがダイアログに並ぶので、件数と最初の
+    1件だけに縮める（全件はログに残る）。
+    """
+    if isinstance(exc, shutil.Error) and exc.args and isinstance(exc.args[0], list):
+        failures = exc.args[0]
+        if failures:
+            first = failures[0]
+            reason = first[2] if isinstance(first, tuple) and len(first) == 3 else first
+            return f"{src} -> {target}: {len(failures)} item(s) failed (e.g. {reason})"
+    return f"{src} -> {target}: {exc}"
 
 
 def is_dangerous_operation_path(path: Path) -> bool:
@@ -102,6 +171,10 @@ def delete_paths_with_result(
         if is_dangerous_operation_path(path):
             logger.error("Refusing to delete dangerous path: %s", path)
             errors.append(f"Refusing to delete dangerous path: {path}")
+            continue
+        if busy_operation_path(path) is not None:
+            logger.warning("実行中の操作が使っているため削除を拒否しました: %s", path)
+            errors.append(BUSY_PATH_MESSAGE.format(path=path))
             continue
         if not path.exists() and not path.is_symlink():
             logger.warning("Path does not exist, cannot move to trash: %s", path)
@@ -207,6 +280,12 @@ def perform_copy_or_move_with_result(
             logger.warning("Source path does not exist: %s", src)
             errors.append(f"Missing: {src}")
             continue
+        if busy_operation_path(src) is not None:
+            # 書き込み途中のものをコピーすると中途半端な複製ができ、移動すると
+            # 書き込み中の操作が失敗する。
+            logger.warning("実行中の操作が使っているためコピー・移動を拒否しました: %s", src)
+            errors.append(BUSY_PATH_MESSAGE.format(path=src))
+            continue
         try:
             if move and src.parent.resolve() == dest_dir.resolve():
                 continue
@@ -241,18 +320,19 @@ def perform_copy_or_move_with_result(
             errors.append(str(exc))
             continue
         try:
-            if move:
-                shutil.move(str(src), str(target))
-                changed_dirs.extend([dest_dir, src.parent])
-            elif src.is_dir():
-                shutil.copytree(src, target)
-                changed_dirs.append(dest_dir)
-            else:
-                shutil.copy2(src, target)
-                changed_dirs.append(dest_dir)
+            with _mark_busy([src, target] if move else [target]):
+                if move:
+                    shutil.move(str(src), str(target))
+                    changed_dirs.extend([dest_dir, src.parent])
+                elif src.is_dir():
+                    shutil.copytree(src, target)
+                    changed_dirs.append(dest_dir)
+                else:
+                    shutil.copy2(src, target)
+                    changed_dirs.append(dest_dir)
         except (OSError, shutil.Error) as exc:  # pragma: no cover - filesystem dependent
             logger.exception("Failed to copy/move %s to %s", src, target)
-            errors.append(f"{src} -> {target}: {exc}")
+            errors.append(describe_copy_error(src, target, exc))
     return FileOperationResult(errors, changed_dirs)
 
 
@@ -419,6 +499,9 @@ def rename_path(original: Path, new_name: str) -> tuple[Path | None, str | None]
     target = original.with_name(new_name)
     if target.exists():
         return None, f"{target} already exists."
+    if busy_operation_path(original) is not None:
+        logger.warning("実行中の操作が使っているため名前の変更を拒否しました: %s", original)
+        return None, BUSY_PATH_MESSAGE.format(path=original)
     try:
         original.rename(target)
     except Exception as exc:  # pragma: no cover - filesystem dependent

@@ -153,3 +153,15 @@ def _resolve_program_candidate(
         if exists_file(candidate):
             return str(candidate), ext in (".bat", ".cmd")
     return None, False
+
+
+def summarize_errors_for_dialog(errors: list[str], limit: int = 10) -> str:
+    """エラー一覧を、ダイアログに収まる行数へ縮める。
+
+    数百件の対象を操作して失敗すると、1件1行でも画面に収まらないダイアログになる。
+    先頭 ``limit`` 件だけを出し、残りは件数で示す（全件はログに残っている）。
+    """
+    if len(errors) <= limit:
+        return "\n".join(errors)
+    shown = "\n".join(errors[:limit])
+    return f"{shown}\n…and {len(errors) - limit} more (see the log for details)"

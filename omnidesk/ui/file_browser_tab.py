@@ -176,7 +176,6 @@ class FileBrowserTab(
             model=self._model,
             header=self._header,
             tree_view=self._tree_view,
-            tile_view=self._tile_view,
             selected_path=lambda: self._selected_index_path(),
             select_path=lambda path: self._select_path(path),
         )

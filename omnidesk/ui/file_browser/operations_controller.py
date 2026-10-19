@@ -14,11 +14,14 @@ from PyQt6.QtWidgets import QAbstractItemView, QInputDialog, QMessageBox, QWidge
 
 from .. import job_priority
 from ..file_browser_drop import has_blocked_self_move
+from ..file_browser_helpers import summarize_errors_for_dialog
 from ..file_browser_navigation import same_navigation_path
 from ..file_operation_jobs import FileOperationJob, FileOperationSignals
 from ..file_operations import (
+    BUSY_PATH_MESSAGE,
     FileOperationRequest,
     FileOperationResult,
+    busy_operation_path,
     clip_child_name,
     create_file,
     create_folder,
@@ -265,6 +268,13 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
         paths = self._selected_paths()
         if not paths:
             return
+        busy = next((path for path in paths if busy_operation_path(path) is not None), None)
+        if busy is not None:
+            # コピー中のフォルダを消すと、コピーの残りがすべて失敗する。
+            # 確認を出す前に止める（サービス層でも同じ理由で拒否する）。
+            logger.info("実行中の操作が使っているため削除を取りやめました: %s", busy)
+            QMessageBox.information(self, "Move to Trash", BUSY_PATH_MESSAGE.format(path=busy.name))
+            return
         select_after_delete = self._selection_path_before_deleted_items(paths)
         logger.info("削除確認を表示します: count=%d", len(paths))
         self._delete_confirmation_open = True
@@ -408,7 +418,7 @@ class FileBrowserOperationsMixin(_OperationsMixinBase):
             return
         self._mark_changed_directories(result.changed_dirs)
         if result.errors:
-            QMessageBox.warning(self, error_title, "\n".join(result.errors))
+            QMessageBox.warning(self, error_title, summarize_errors_for_dialog(result.errors))
         if not result.errors and select_after:
             replacement = next(
                 (path for path in select_after if path.exists()),
