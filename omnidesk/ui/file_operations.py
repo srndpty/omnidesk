@@ -520,13 +520,7 @@ def create_file(dest_dir: Path, name: str) -> tuple[Path | None, str | None]:
     if not is_plain_child_name(name):
         logger.warning("Rejected invalid file name %r in %s", name, dest_dir)
         return None, "Name must not contain path separators."
-    target = resolve_destination(dest_dir, name, move=False)
-    try:
-        target.touch(exist_ok=False)
-    except Exception as exc:  # pragma: no cover - filesystem dependent
-        logger.exception("Failed to create file: %s", target)
-        return None, str(exc)
-    return target, None
+    return _create_new_entry(dest_dir, name, lambda target: target.touch(exist_ok=False))
 
 
 def create_folder(dest_dir: Path, name: str) -> tuple[Path | None, str | None]:
@@ -534,10 +528,32 @@ def create_folder(dest_dir: Path, name: str) -> tuple[Path | None, str | None]:
     if not is_plain_child_name(name):
         logger.warning("Rejected invalid folder name %r in %s", name, dest_dir)
         return None, "Name must not contain path separators."
-    target = resolve_destination(dest_dir, name, move=False)
+    return _create_new_entry(
+        dest_dir, name, lambda target: target.mkdir(parents=True, exist_ok=False)
+    )
+
+
+def _create_new_entry(
+    dest_dir: Path, name: str, create: Callable[[Path], None]
+) -> tuple[Path | None, str | None]:
+    """名前を決めて書き込み予約を取り、その間に新しいファイル／フォルダーを作る。
+
+    コピー中のフォルダーは完了前に一覧へ現れるので、その中へ入って新規作成できて
+    しまう。予約を取らずに作ると、あとからコピーされる同名ファイルに上書きされ得る。
+    コピー先と同じく、名前の決定と予約を同じロック区間で行う。
+    """
     try:
-        target.mkdir(parents=True, exist_ok=False)
-    except Exception as exc:  # pragma: no cover - filesystem dependent
-        logger.exception("Failed to create folder: %s", target)
+        with RESERVATIONS.reserve_new_child(
+            _destination_candidates(dest_dir, name), exists=Path.exists
+        ) as target:
+            try:
+                create(target)
+            except Exception as exc:  # pragma: no cover - filesystem dependent
+                logger.exception("Failed to create: %s", target)
+                return None, str(exc)
+            return target, None
+    except BusyPathError as exc:
+        logger.warning("実行中の操作が使っているため新規作成を拒否しました: %s", dest_dir)
         return None, str(exc)
-    return target, None
+    except ValueError:
+        return None, f"Unable to resolve destination for {name}: too many copies"

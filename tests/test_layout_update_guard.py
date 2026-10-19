@@ -1,7 +1,14 @@
 """分割レイアウト中の表示保留と、解除時のスクロールを検証する。"""
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt
-from PyQt6.QtGui import QKeyEvent, QStandardItem, QStandardItemModel, QWheelEvent
+from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, Qt, QUrl
+from PyQt6.QtGui import (
+    QDragMoveEvent,
+    QDropEvent,
+    QKeyEvent,
+    QStandardItem,
+    QStandardItemModel,
+    QWheelEvent,
+)
 from PyQt6.QtWidgets import QAbstractItemView, QApplication, QListView, QVBoxLayout, QWidget
 
 from omnidesk.ui.file_browser.layout_update_guard import LayoutUpdateGuard
@@ -271,3 +278,73 @@ def test_destroying_the_view_while_frozen_is_safe(qtbot):
     assert guard.freezing
     view.deleteLater()
     qtbot.wait(200)
+
+
+def test_drag_move_and_drop_are_refused_during_the_hold(qtbot):
+    """保留中のドロップは、見えているのとは別の項目に落ち得るので断る。
+
+    Qt は実際のドラッグ中でないと、作ったドラッグ系イベントをウィジェットへ
+    配送しない。そのためイベントフィルタの判定を直接確かめる（実際のドラッグでは
+    フィルタは通常どおり呼ばれる）。
+    """
+    view, model, _, _ = _guard(qtbot)
+    refused: list[bool] = []
+    guard = LayoutUpdateGuard(
+        view, lambda index, hint: None, drop_refused=lambda: refused.append(True)
+    )
+    viewport = view.viewport()
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile("C:/dropped.txt")])
+    point = QPointF(view.visualRect(model.index(52, 0)).center())
+
+    def drag_move() -> QDragMoveEvent:
+        event = QDragMoveEvent(
+            point.toPoint(),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        event.accept()
+        return event
+
+    def drop() -> QDropEvent:
+        event = QDropEvent(
+            point,
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        event.accept()
+        return event
+
+    guard.begin()
+    move_event = drag_move()
+    drop_event = drop()
+
+    # ビューへ渡さず（True）、受け付けない（ignore）。
+    assert guard.eventFilter(viewport, move_event) is True
+    assert not move_event.isAccepted()
+    assert guard.eventFilter(viewport, drop_event) is True
+    assert not drop_event.isAccepted()
+    # ドロップを断ったら、ドラッグ中の表示を片付けるよう知らせる。
+    assert refused == [True]
+
+    guard.finish()
+    after_move = drag_move()
+    after_drop = drop()
+    assert guard.eventFilter(viewport, after_move) is False
+    assert guard.eventFilter(viewport, after_drop) is False
+    assert after_move.isAccepted() and after_drop.isAccepted()
+    assert refused == [True]
+
+
+def test_tile_view_clears_drag_state_when_a_drop_is_refused(qtbot, tmp_path):
+    """タイル表示は、断られたドロップのあとにドロップ先の強調を片付ける。"""
+    from omnidesk.ui.file_browser_tab import FileBrowserTab
+
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    assert view._layout_update_guard._drop_refused == view._reset_drag_state

@@ -594,7 +594,9 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         assert scroll_bar is not None
         # Batched レイアウトのやり直しでスクロール位置が飛ぶのを防ぐ。
         self._scroll_keeper = BatchedLayoutScrollKeeper(scroll_bar, self)
-        self._layout_update_guard = LayoutUpdateGuard(self, self.scrollTo)
+        self._layout_update_guard = LayoutUpdateGuard(
+            self, self.scrollTo, drop_refused=self._reset_drag_state
+        )
 
     def setModel(self, model) -> None:  # noqa: N802
         previous = self.model()

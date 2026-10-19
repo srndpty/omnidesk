@@ -436,3 +436,37 @@ def test_cancellation_between_sources_releases_reservations(
 
     assert result.cancelled is True
     assert copied == ["first"]
+
+
+def test_new_entries_are_not_created_inside_a_folder_being_written(tmp_path: Path) -> None:
+    """コピー中のフォルダーの中へは、新規ファイル・フォルダーを作らせない。
+
+    完了前に一覧へ現れたコピー先へ入って作ると、あとからコピーされる同名の
+    ファイルに上書きされ得る。
+    """
+    copying = tmp_path / "album - Copy 1"
+    copying.mkdir()
+
+    with RESERVATIONS.reserve(writes=[copying]):
+        created_file, file_error = file_operations.create_file(copying, "New File.txt")
+        created_folder, folder_error = file_operations.create_folder(copying, "New Folder")
+
+    assert created_file is None and created_folder is None
+    assert file_error is not None and "still using" in file_error
+    assert folder_error is not None and "still using" in folder_error
+    assert list(copying.iterdir()) == []
+    # 予約が外れれば、通常どおり作れる。
+    assert file_operations.create_file(copying, "New File.txt") == (
+        copying / "New File.txt",
+        None,
+    )
+
+
+def test_new_entry_avoids_a_name_reserved_by_another_operation(tmp_path: Path) -> None:
+    """別の操作が書き込もうとしている名前は避けて、次の名前で作る。"""
+    with RESERVATIONS.reserve(writes=[tmp_path / "New Folder"]):
+        created, error = file_operations.create_folder(tmp_path, "New Folder")
+
+    assert error is None
+    assert created == tmp_path / "New Folder - Copy 1"
+    assert created.is_dir()

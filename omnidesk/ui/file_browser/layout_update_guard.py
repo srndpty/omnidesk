@@ -18,6 +18,8 @@
 * クリックは捨てる。見えている絵（古い配置）と当たり判定（新しい配置）が
   一致しないので、別の項目を選んでしまう。押下を捨てたボタンは覚えておき、
   保留が終わった後に届いた離しも捨てる（押下のない離しをビューに渡さない）。
+* 外部からのドラッグ移動とドロップは断る。ドロップ先のフォルダーは当たり判定で
+  決まるので、見えているのとは別のフォルダーへコピー・移動してしまう。
 
 ウィジェットの大きさや倍率が撮影時と変わったら、画像は使えないので凍結（描画の
 差し替え）だけをやめる。通常のリサイズと同じ見え方になる。入力の扱いは保留が
@@ -39,6 +41,11 @@ logger = logging.getLogger(__name__)
 _REPLAYED_INPUT = (QEvent.Type.Wheel, QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
 # 保留中は捨てる入力（古い絵の上でのクリック）。
 _DISCARDED_PRESS = (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick)
+# 保留中は受け付けないドラッグ＆ドロップ。ドロップ先は現在の（配置途中の）
+# レイアウトの indexAt() で決まるので、見えているフォルダーとは別のフォルダーへ
+# コピー・移動してしまう。DragEnter は MIME だけで判定し位置を使わないので通す
+# （拒否すると、保留が終わっても入り直すまでドラッグを受け付けなくなる）。
+_REJECTED_DRAG = (QEvent.Type.DragMove, QEvent.Type.Drop)
 
 
 class LayoutUpdateGuard(QObject):
@@ -48,10 +55,16 @@ class LayoutUpdateGuard(QObject):
         self,
         view: QListView,
         scroll: Callable[[QModelIndex, QAbstractItemView.ScrollHint], None],
+        *,
+        drop_refused: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(view)
         self._view = view
         self._scroll = scroll
+        # ドロップを断ったとき、ビューがドラッグ中の表示（ドロップ先の強調など）を
+        # 片付けるための呼び出し。Qt は実際のドラッグ外で作った離脱イベントを
+        # 配送しないので、イベントではなく直接知らせる。
+        self._drop_refused = drop_refused
         self._active = False
         self._pending_scroll: tuple[QPersistentModelIndex, QAbstractItemView.ScrollHint] | None = (
             None
@@ -119,6 +132,8 @@ class LayoutUpdateGuard(QObject):
             if clone is not None:
                 self._queued_input.append((watched, clone))
             return True
+        if event_type in _REJECTED_DRAG:
+            return self._reject_drag(event)
         if event_type in _DISCARDED_PRESS and isinstance(event, QMouseEvent):
             logger.debug("レイアウト確定待ちの間のクリックを無視しました")
             self._swallowed_buttons[watched] = (
@@ -126,6 +141,15 @@ class LayoutUpdateGuard(QObject):
             )
             return True
         return False
+
+    def _reject_drag(self, event: QEvent) -> bool:
+        """位置に依存するドラッグ移動とドロップを、保留が終わるまで断る。"""
+        event.ignore()
+        if event.type() == QEvent.Type.Drop:
+            logger.info("レイアウト確定待ちの間のドロップを受け付けませんでした")
+            if self._drop_refused is not None:
+                self._drop_refused()
+        return True
 
     def _swallow_release(self, watched: QObject, event: QEvent) -> bool:
         buttons = self._swallowed_buttons.get(watched)
