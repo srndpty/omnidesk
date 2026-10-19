@@ -9,17 +9,19 @@
 描画要求にはその画像で応える（凍結）。誰が再描画を起こしても、見えるのは確定前の
 画面ではなく保留を始めたときの画面になる。
 
-凍結中は画面と内部状態（配置途中のレイアウト、丸められたスクロール値）が
-食い違うので、ユーザー操作は次のように扱う。
+保留中は画面と内部状態（配置途中のレイアウト、丸められたスクロール値）が
+食い違うので、ユーザー操作は保留が終わるまで一貫して次のように扱う。
 
 * ホイールとキー入力は溜めておき、保留を解いてから順に再生する。丸められた
   スクロール値を基準に動かすと、解除後に意図しない位置へ飛ぶため。再生は選択
   復元のスクロールより後なので、ユーザーの操作が最後に勝つ。
 * クリックは捨てる。見えている絵（古い配置）と当たり判定（新しい配置）が
-  一致しないので、別の項目を選んでしまう。押下を捨てたら、対になる離しも捨てる。
+  一致しないので、別の項目を選んでしまう。押下を捨てたボタンは覚えておき、
+  保留が終わった後に届いた離しも捨てる（押下のない離しをビューに渡さない）。
 
-ウィジェットの大きさや倍率が撮影時と変わったら、画像は使えないので凍結だけを
-やめる（スクロール位置の保留は続ける）。通常のリサイズと同じ見え方になる。
+ウィジェットの大きさや倍率が撮影時と変わったら、画像は使えないので凍結（描画の
+差し替え）だけをやめる。通常のリサイズと同じ見え方になる。入力の扱いは保留が
+終わるまで変えないので、溜めた入力と後から来た入力の順序が入れ替わることはない。
 """
 
 from __future__ import annotations
@@ -27,15 +29,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from PyQt6.QtCore import QEvent, QModelIndex, QObject, QPersistentModelIndex, QTimer
-from PyQt6.QtGui import QPainter, QPixmap
+from PyQt6.QtCore import QEvent, QModelIndex, QObject, QPersistentModelIndex, Qt, QTimer
+from PyQt6.QtGui import QMouseEvent, QPainter, QPixmap
 from PyQt6.QtWidgets import QAbstractItemView, QApplication, QListView, QWidget
 
 logger = logging.getLogger(__name__)
 
-# 凍結中に溜めて、解除後に再生する入力。
+# 保留中に溜めて、解除後に再生する入力。
 _REPLAYED_INPUT = (QEvent.Type.Wheel, QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
-# 凍結中は捨てる入力（古い絵の上でのクリック）。
+# 保留中は捨てる入力（古い絵の上でのクリック）。
 _DISCARDED_PRESS = (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick)
 
 
@@ -56,8 +58,11 @@ class LayoutUpdateGuard(QObject):
         )
         # 保留中に代わりに描く画像。キーは描画を差し替えるウィジェット。
         self._frozen: dict[QWidget, QPixmap] = {}
+        # 保留中に入力を受け止めるウィジェット（凍結を解いても保留が終わるまで残す）。
+        self._input_targets: list[QWidget] = []
         self._queued_input: list[tuple[QObject, QEvent]] = []
-        self._discarding_release = False
+        # 押下を捨てたボタン。対になる離しが届くまで、保留が終わっても覚えておく。
+        self._swallowed_buttons: dict[QObject, Qt.MouseButton] = {}
         self._timer = QTimer(self)
         self._timer.setInterval(80)
         self._timer.timeout.connect(self._try_finish)
@@ -87,9 +92,8 @@ class LayoutUpdateGuard(QObject):
         self._active = True
         self._freeze(self._view.viewport())
         self._freeze(bar)
-        if self._frozen:
-            # キー入力はビュー本体に届くので、ビューでも受ける。
-            self._view.installEventFilter(self)
+        # キー入力はビュー本体に届くので、ビューでも受ける。
+        self._watch_input(self._view)
         self._timer.start()
         self._deadline.start()
 
@@ -100,9 +104,14 @@ class LayoutUpdateGuard(QObject):
         return True
 
     def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:  # noqa: N802
-        if watched is None or event is None or not self._frozen:
+        if watched is None or event is None:
             return False
         event_type = event.type()
+        if event_type == QEvent.Type.MouseButtonRelease:
+            # 保留が終わった後でも、押下を捨てたボタンの離しは捨てる。
+            return self._swallow_release(watched, event)
+        if not self._active:
+            return False
         if event_type == QEvent.Type.Paint:
             return self._paint_frozen(watched)
         if event_type in _REPLAYED_INPUT:
@@ -110,14 +119,29 @@ class LayoutUpdateGuard(QObject):
             if clone is not None:
                 self._queued_input.append((watched, clone))
             return True
-        if event_type in _DISCARDED_PRESS:
+        if event_type in _DISCARDED_PRESS and isinstance(event, QMouseEvent):
             logger.debug("レイアウト確定待ちの間のクリックを無視しました")
-            self._discarding_release = True
-            return True
-        if event_type == QEvent.Type.MouseButtonRelease and self._discarding_release:
-            self._discarding_release = False
+            self._swallowed_buttons[watched] = (
+                self._swallowed_buttons.get(watched, Qt.MouseButton.NoButton) | event.button()
+            )
             return True
         return False
+
+    def _swallow_release(self, watched: QObject, event: QEvent) -> bool:
+        buttons = self._swallowed_buttons.get(watched)
+        if buttons is None or not isinstance(event, QMouseEvent):
+            return False
+        button = event.button()
+        if not buttons & button:
+            return False
+        remaining = Qt.MouseButton(buttons.value & ~button.value)
+        if remaining == Qt.MouseButton.NoButton:
+            del self._swallowed_buttons[watched]
+            if not self._active and isinstance(watched, QWidget):
+                watched.removeEventFilter(self)
+        else:
+            self._swallowed_buttons[watched] = remaining
+        return True
 
     def _paint_frozen(self, watched: QObject) -> bool:
         pixmap = self._frozen.get(watched) if isinstance(watched, QWidget) else None
@@ -129,6 +153,7 @@ class LayoutUpdateGuard(QObject):
             or pixmap.devicePixelRatio() != watched.devicePixelRatioF()
         ):
             # 大きさや倍率が変わった。画像は合わないので、通常の描画へ戻す。
+            # 入力の扱いは保留が終わるまで変えない（順序を入れ替えないため）。
             logger.debug("レイアウト確定待ちの間にサイズが変わったため凍結を解きました")
             self._thaw()
             return False
@@ -144,20 +169,32 @@ class LayoutUpdateGuard(QObject):
             return
         # 撮影は描画を伴うので、差し替えを有効にする前に行う。
         self._frozen[widget] = widget.grab()
+        self._watch_input(widget)
+
+    def _watch_input(self, widget: QWidget) -> None:
+        if widget in self._input_targets:
+            return
+        self._input_targets.append(widget)
         widget.installEventFilter(self)
 
     def _thaw(self) -> None:
+        """描画の差し替えだけをやめる。入力の扱いは保留が終わるまで続ける。"""
         frozen = self._frozen
         self._frozen = {}
-        self._view.removeEventFilter(self)
         for widget in frozen:
-            widget.removeEventFilter(self)
             widget.update()
+
+    def _stop_watching_input(self) -> None:
+        targets = self._input_targets
+        self._input_targets = []
+        for widget in targets:
+            # 押下を捨てたボタンの離しを待っているものは、届くまでフィルタを残す。
+            if widget not in self._swallowed_buttons:
+                widget.removeEventFilter(self)
 
     def _replay_queued_input(self) -> None:
         queued = self._queued_input
         self._queued_input = []
-        self._discarding_release = False
         for receiver, event in queued:
             QApplication.sendEvent(receiver, event)
 
@@ -189,8 +226,8 @@ class LayoutUpdateGuard(QObject):
                 self._scroll(QModelIndex(pending[0]), pending[1])
         finally:
             self._thaw()
+            self._stop_watching_input()
             if apply_scroll:
                 self._replay_queued_input()
             else:
                 self._queued_input = []
-                self._discarding_release = False

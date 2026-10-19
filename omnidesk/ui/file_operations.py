@@ -21,8 +21,8 @@ from .path_reservations import (
 from .path_reservations import (
     RESERVATIONS,
     BusyPathError,
+    is_same_or_descendant_text,
     normalise_path_text,
-    path_text_separator,
 )
 
 logger = logging.getLogger(__name__)
@@ -398,9 +398,7 @@ def _is_relative_to_path(path: Path, parent: Path) -> bool:
         path.relative_to(parent)
         return True
     except ValueError:
-        path_text = normalise_path_text(path)
-        parent_text = normalise_path_text(parent)
-        return path_text == parent_text or path_text.startswith(parent_text + path_text_separator())
+        return is_same_or_descendant_text(normalise_path_text(path), normalise_path_text(parent))
 
 
 _COPY_NUMBER_LIMIT = 9999

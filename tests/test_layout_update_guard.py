@@ -1,6 +1,6 @@
 """分割レイアウト中の表示保留と、解除時のスクロールを検証する。"""
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QKeyEvent, QStandardItem, QStandardItemModel, QWheelEvent
 from PyQt6.QtWidgets import QAbstractItemView, QApplication, QListView, QVBoxLayout, QWidget
 
@@ -158,8 +158,15 @@ def test_resize_while_frozen_stops_freezing_but_keeps_the_scroll_pending(qtbot):
 
     assert not guard.freezing
     assert guard.active
+    # 凍結を解いても、入力は保留が終わるまで溜める（順序を入れ替えない）。
+    bar = view.verticalScrollBar()
+    before = bar.value()
+    QApplication.sendEvent(view.viewport(), _wheel(view, -120))
+    assert bar.value() == before
+    assert len(guard._queued_input) == 1
     guard.finish()
     assert scrolls == [(50, hint)]
+    assert guard._queued_input == []
 
 
 def test_wheel_during_freeze_is_replayed_after_the_pending_scroll(qtbot):
@@ -223,6 +230,39 @@ def test_click_on_the_frozen_image_is_ignored(qtbot):
     # 保留が終われば、クリックは通常どおり効く。
     qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=point)
     assert view.currentIndex().row() == 52
+
+
+def test_release_after_finish_is_dropped_when_its_press_was_dropped(qtbot):
+    """押下→保留終了→離しの順でも、押下のない離しをビューへ渡さない。"""
+    view, model, guard, _ = _guard(qtbot)
+    view.setCurrentIndex(model.index(50, 0))
+    viewport = view.viewport()
+    releases: list[Qt.MouseButton] = []
+
+    class ReleaseObserver(QObject):
+        def eventFilter(self, watched, event) -> bool:  # noqa: N802
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                releases.append(event.button())
+            return False
+
+    observer = ReleaseObserver(viewport)
+    viewport.installEventFilter(observer)
+    point = view.visualRect(model.index(52, 0)).center()
+    guard.begin()
+
+    qtbot.mousePress(viewport, Qt.MouseButton.LeftButton, pos=point)
+    guard.finish()
+    # 押していないボタンの離しは、そのまま通す。
+    qtbot.mouseRelease(viewport, Qt.MouseButton.RightButton, pos=point)
+    qtbot.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=point)
+
+    assert releases == [Qt.MouseButton.RightButton]
+    assert view.currentIndex().row() == 50
+    # 対になる離しを捨てたあとは、通常どおりクリックが効く。
+    qtbot.mouseClick(viewport, Qt.MouseButton.LeftButton, pos=point)
+    assert releases[-1] == Qt.MouseButton.LeftButton
+    assert view.currentIndex().row() == 52
+    assert guard._swallowed_buttons == {}
 
 
 def test_destroying_the_view_while_frozen_is_safe(qtbot):

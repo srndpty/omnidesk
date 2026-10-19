@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -14,13 +15,14 @@ from pathlib import Path
 import pytest
 from pytest_mock import MockerFixture
 
-from omnidesk.ui import file_operations
+from omnidesk.ui import file_operations, path_reservations
 from omnidesk.ui.file_operations import FileOperationResult
 from omnidesk.ui.path_reservations import (
     BUSY_PATH_MESSAGE,
     RESERVATIONS,
     BusyPathError,
     PathReservations,
+    normalise_path_text,
 )
 
 WAIT_SECONDS = 5
@@ -34,27 +36,51 @@ def _no_reservations_left_behind():
 
 
 class _BlockingCall:
-    """呼ばれたら合図を出し、解放されるまで戻らない差し替え用の関数。"""
+    """呼ばれたら記録し、解放されるまで戻らない差し替え用の関数。"""
 
     def __init__(self, action: Callable[..., object] | None = None) -> None:
-        self.entered = threading.Event()
         self.release = threading.Event()
         self.calls: list[tuple[object, ...]] = []
+        self._called = threading.Condition()
         self._action = action
 
     def __call__(self, *args: object) -> None:
-        self.calls.append(args)
         if self._action is not None:
             self._action(*args)
-        self.entered.set()
+        with self._called:
+            self.calls.append(args)
+            self._called.notify_all()
         assert self.release.wait(WAIT_SECONDS)
 
+    def wait_for_calls(self, count: int) -> None:
+        """``count`` 件の呼び出しが、書き込み中のまま止まるのを待つ。"""
+        with self._called:
+            assert self._called.wait_for(lambda: len(self.calls) >= count, WAIT_SECONDS)
 
-def _run_in_thread(func: Callable[[], FileOperationResult]) -> tuple[threading.Thread, list]:
-    results: list[FileOperationResult] = []
-    thread = threading.Thread(target=lambda: results.append(func()), daemon=True)
-    thread.start()
-    return thread, results
+
+class _Worker:
+    """別スレッドで操作を走らせる。スレッド内の例外は :meth:`result` で再送出する。"""
+
+    def __init__(self, func: Callable[[], FileOperationResult]) -> None:
+        self._result: FileOperationResult | None = None
+        self._error: BaseException | None = None
+
+        def run() -> None:
+            try:
+                self._result = func()
+            except BaseException as exc:  # noqa: BLE001 - メインスレッドで再送出する
+                self._error = exc
+
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+
+    def result(self) -> FileOperationResult:
+        self._thread.join(WAIT_SECONDS)
+        assert not self._thread.is_alive(), "ワーカーが時間内に終わりませんでした"
+        if self._error is not None:
+            raise self._error
+        assert self._result is not None
+        return self._result
 
 
 def _album(tmp_path: Path, name: str = "album") -> Path:
@@ -173,6 +199,62 @@ def test_new_child_skips_names_reserved_by_another_operation(tmp_path: Path) -> 
         pass
 
 
+def test_new_child_also_skips_a_candidate_that_is_only_being_read(tmp_path: Path) -> None:
+    """読み取り予約しかない候補も、使われている名前として避ける。"""
+    reservations = PathReservations()
+    candidates = [tmp_path / "a - Copy 1", tmp_path / "a - Copy 2"]
+    with (
+        reservations.reserve(reads=[candidates[0]]),
+        reservations.reserve_new_child(candidates, exists=Path.exists) as chosen,
+    ):
+        assert chosen == candidates[1]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows のパス表記を検証する")
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("C:\\", "c:\\"),
+        ("C:/", "c:\\"),
+        ("C:\\Users\\", "c:\\users"),
+        ("C:\\Users", "c:\\users"),
+        ("\\\\Server\\Share\\", "\\\\server\\share\\"),
+        ("\\\\Server\\Share\\Dir\\", "\\\\server\\share\\dir"),
+    ],
+)
+def test_normalise_path_text_keeps_the_root_separator_on_windows(raw: str, expected: str) -> None:
+    assert normalise_path_text(Path(raw)) == expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows のパス表記を検証する")
+@pytest.mark.parametrize(
+    ("left", "right", "overlaps"),
+    [
+        ("C:\\", "C:\\Users\\a", True),
+        ("C:\\Users", "C:\\Users\\a", True),
+        ("C:\\Users", "C:\\Users2", False),
+        ("C:\\", "D:\\data", False),
+        ("\\\\server\\share\\", "\\\\server\\share\\dir\\x", True),
+        ("\\\\server\\share\\dir", "\\\\server\\share\\dir2", False),
+    ],
+)
+def test_root_and_unc_overlap_on_windows(left: str, right: str, overlaps: bool) -> None:
+    # 予約は resolve() を通すので、存在しないUNC共有で名前解決を待たないよう
+    # 正規化と重なり判定そのものを確かめる。
+    left_key = normalise_path_text(Path(left))
+    right_key = normalise_path_text(Path(right))
+    assert path_reservations._overlaps(left_key, right_key) is overlaps
+    assert path_reservations._overlaps(right_key, left_key) is overlaps
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX のルートを検証する")
+def test_posix_root_overlaps_everything() -> None:
+    assert normalise_path_text(Path("/")) == "/"
+    reservations = PathReservations()
+    with reservations.reserve(reads=[Path("/")]):
+        assert reservations.busy_path(Path("/tmp/x")) is not None
+
+
 # ----------------------------------------------------------------------
 # 実際のファイル操作（別スレッドで書き込み中のまま止める）
 # ----------------------------------------------------------------------
@@ -184,21 +266,18 @@ def test_concurrent_copies_of_the_same_folder_get_distinct_targets(
     blocking = _BlockingCall(lambda _src, dst: Path(dst).mkdir())
     mocker.patch.object(file_operations.shutil, "copytree", side_effect=blocking)
 
-    first, first_results = _run_in_thread(
+    first = _Worker(
         lambda: file_operations.perform_copy_or_move_with_result([src], tmp_path, move=False)
     )
-    assert blocking.entered.wait(WAIT_SECONDS)
-    blocking.entered.clear()
-    second, second_results = _run_in_thread(
+    blocking.wait_for_calls(1)
+    second = _Worker(
         lambda: file_operations.perform_copy_or_move_with_result([src], tmp_path, move=False)
     )
-    assert blocking.entered.wait(WAIT_SECONDS)
+    blocking.wait_for_calls(2)
     blocking.release.set()
-    first.join(WAIT_SECONDS)
-    second.join(WAIT_SECONDS)
 
-    assert first_results[0].errors == []
-    assert second_results[0].errors == []
+    assert first.result().errors == []
+    assert second.result().errors == []
     targets = sorted(Path(call[1]).name for call in blocking.calls)
     assert targets == ["album - Copy 1", "album - Copy 2"]
 
@@ -215,15 +294,14 @@ def test_concurrent_moves_to_the_same_target_only_one_proceeds(
     blocking = _BlockingCall()
     mocker.patch.object(file_operations.shutil, "move", side_effect=blocking)
 
-    first, first_results = _run_in_thread(
+    first = _Worker(
         lambda: file_operations.perform_copy_or_move_with_result([first_src], dest, move=True)
     )
-    assert blocking.entered.wait(WAIT_SECONDS)
+    blocking.wait_for_calls(1)
     second = file_operations.perform_copy_or_move_with_result([second_src], dest, move=True)
     blocking.release.set()
-    first.join(WAIT_SECONDS)
 
-    assert first_results[0].errors == []
+    assert first.result().errors == []
     assert second.errors == [BUSY_PATH_MESSAGE.format(path=dest / "album")]
     assert len(blocking.calls) == 1
 
@@ -249,10 +327,10 @@ def test_nothing_may_touch_a_folder_while_it_is_being_copied(
     mocker.patch.object(file_operations.shutil, "copytree", side_effect=blocking)
     real_move = mocker.patch.object(file_operations.shutil, "move")
 
-    thread, results = _run_in_thread(
+    copy_job = _Worker(
         lambda: file_operations.perform_copy_or_move_with_result([src], tmp_path, move=False)
     )
-    assert blocking.entered.wait(WAIT_SECONDS)
+    blocking.wait_for_calls(1)
     try:
         delete = file_operations.delete_paths_with_result([copying])
         delete_parent_child = file_operations.delete_paths_with_result([copying / "1.gif"])
@@ -266,9 +344,8 @@ def test_nothing_may_touch_a_folder_while_it_is_being_copied(
         )
     finally:
         blocking.release.set()
-        thread.join(WAIT_SECONDS)
 
-    assert results[0].errors == []
+    assert copy_job.result().errors == []
     for result in (delete, delete_parent_child, copy_it, move_into, move_source):
         assert len(result.errors) == 1
         assert "still using" in result.errors[0]
@@ -287,18 +364,23 @@ def test_reading_the_same_source_twice_is_allowed(mocker: MockerFixture, tmp_pat
     blocking = _BlockingCall(lambda _src, dst: Path(dst).mkdir(parents=True))
     mocker.patch.object(file_operations.shutil, "copytree", side_effect=blocking)
 
-    thread, results = _run_in_thread(
+    first = _Worker(
         lambda: file_operations.perform_copy_or_move_with_result(
             [src], tmp_path / "one", move=False
         )
     )
-    assert blocking.entered.wait(WAIT_SECONDS)
+    blocking.wait_for_calls(1)
+    # 1つ目が読んでいる最中に2つ目を始め、両方が同時に書き込み中になることを確かめる。
+    second = _Worker(
+        lambda: file_operations.perform_copy_or_move_with_result(
+            [src], tmp_path / "two", move=False
+        )
+    )
+    blocking.wait_for_calls(2)
     blocking.release.set()
-    second = file_operations.perform_copy_or_move_with_result([src], tmp_path / "two", move=False)
-    thread.join(WAIT_SECONDS)
 
-    assert results[0].errors == []
-    assert second.errors == []
+    assert first.result().errors == []
+    assert second.result().errors == []
 
 
 def test_only_busy_sources_are_skipped_in_a_multi_source_operation(

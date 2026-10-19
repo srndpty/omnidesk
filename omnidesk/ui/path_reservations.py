@@ -45,11 +45,35 @@ def path_text_separator() -> str:
 
 
 def normalise_path_text(path: Path) -> str:
-    """大文字小文字と区切り文字の違いを吸収した、比較用のパス文字列。"""
+    """大文字小文字と区切り文字の違いを吸収した、比較用のパス文字列。
+
+    末尾の区切り文字は落とすが、ルート（``C:\\``、``\\\\server\\share\\``、``/``）の
+    区切り文字は残す。``C:`` はドライブ相対パスで ``C:\\`` とは別物であり、
+    POSIX の ``/`` を空文字列にすると、どのパスとも重ならなくなってしまう。
+    """
     separator = path_text_separator()
-    return (
-        os.path.normcase(str(path)).replace("/", separator).replace("\\", separator).rstrip("\\/")
-    )
+
+    def unify(text: str) -> str:
+        return os.path.normcase(text).replace("/", separator).replace("\\", separator)
+
+    text = unify(str(path))
+    anchor = unify(path.anchor)
+    stripped = text.rstrip(separator)
+    if anchor and len(stripped) < len(anchor):
+        return anchor
+    return stripped
+
+
+def is_same_or_descendant_text(path: str, ancestor: str) -> bool:
+    """正規化済みのパス文字列で、``path`` が ``ancestor`` 自身かその配下か。
+
+    ルートは末尾に区切り文字を持つので、区切り文字を二重に付けない。
+    """
+    if path == ancestor:
+        return True
+    separator = path_text_separator()
+    prefix = ancestor if ancestor.endswith(separator) else ancestor + separator
+    return path.startswith(prefix)
 
 
 def _reservation_key(path: Path) -> str:
@@ -61,8 +85,7 @@ def _reservation_key(path: Path) -> str:
 
 
 def _overlaps(left: str, right: str) -> bool:
-    separator = path_text_separator()
-    return left == right or left.startswith(right + separator) or right.startswith(left + separator)
+    return is_same_or_descendant_text(left, right) or is_same_or_descendant_text(right, left)
 
 
 @dataclass(frozen=True)
@@ -128,8 +151,19 @@ class PathReservations:
         選んでしまう。名前の決定と予約を同じロック区間で行い、2つ目には
         次の候補を割り当てる。
 
-        候補そのものではなく親（コピー先のフォルダ）が使用中なら、どの候補も
-        使えないので :class:`BusyPathError` を投げる。候補が尽きたら ``ValueError``。
+        候補ごとの判定は次のとおり。
+
+        * 候補そのもの（またはその配下）に予約があれば、読み取り・書き込みを問わず
+          「使われている名前」とみなして次の候補へ進む。まだ存在しないコピー先候補が
+          別の操作の書き込み先になっているのが通常の場合で、読み取り予約でも同じく
+          避ける（その名前で書き込むと、読んでいる操作の対象を変えてしまうため）。
+        * 候補の親（コピー先のフォルダ）が使用中なら、どの候補も使えないので
+          :class:`BusyPathError` を投げる。
+        * 候補が尽きたら ``ValueError``。
+
+        防げるのは OmniDesk 内部の操作どうしの競合だけ。``exists`` で確かめてから
+        実際に作るまでの間に外部のプロセスが同じ名前を作った場合は、その後の
+        ファイル操作が失敗し、エラーとして報告される。
         """
         read_items = [(_reservation_key(path), path) for path in reads]
         with self._lock:
@@ -140,7 +174,7 @@ class PathReservations:
             for candidate in candidates:
                 key = _reservation_key(candidate)
                 conflict = self._conflict_locked(key, "write")
-                if conflict is not None and not _is_same_or_descendant(conflict, key):
+                if conflict is not None and not is_same_or_descendant_text(conflict, key):
                     # 親が使用中。名前を変えても避けられない。
                     raise BusyPathError(candidate)
                 if conflict is not None or exists(candidate):
@@ -180,10 +214,6 @@ class PathReservations:
             if _overlaps(key, entry.key):
                 return entry.key
         return None
-
-
-def _is_same_or_descendant(path: str, ancestor: str) -> bool:
-    return path == ancestor or path.startswith(ancestor + path_text_separator())
 
 
 # アプリ全体で共有する台帳。複数のタブ・ドロップ先からの操作が同じ台帳を見る。
