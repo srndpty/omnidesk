@@ -634,15 +634,15 @@ class _FileTileView(_BaseFileViewMixin, QListView):
         self._scroll_keeper.remember()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:  # noqa: N802
-        """表示を保留している間は、ビューポートの中身を動かさない。
+        """保留中の画像で描いている間は、ビューポートの中身を動かさない。
 
-        ``QWidget.scroll()`` は描画を止めていても、画面上の画素を直接ずらす。
-        保留中にバッチレイアウトでスクロール値が丸められると、画素だけが大きく
-        ずれ、空いた領域は描き直されないまま背景色で表示されていた（削除の直後に
-        一覧が一瞬空になる現象）。オフセットはスクロールバーの値から引かれるので、
-        ここで動かさなくても、保留を解いたときの全体再描画で正しい位置に描かれる。
+        ``QWidget.scroll()`` は画面上の画素を直接ずらし、空いた部分だけを描き直す。
+        保留中にバッチレイアウトでスクロール値が丸められると、保留前の画像が
+        ずれた位置に残り、空いた部分にだけ画像の端が描かれてしまう。オフセットは
+        スクロールバーの値から引かれるので、ここで動かさなくても、保留を解いたときの
+        全体再描画で正しい位置に描かれる。
         """
-        if self._layout_update_guard.active:
+        if self._layout_update_guard.freezing:
             return
         super().scrollContentsBy(dx, dy)
 

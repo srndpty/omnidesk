@@ -1,8 +1,8 @@
 """分割レイアウト中の表示保留と、解除時のスクロールを検証する。"""
 
-from PyQt6.QtCore import QRect
-from PyQt6.QtGui import QStandardItem, QStandardItemModel
-from PyQt6.QtWidgets import QAbstractItemView, QListView, QVBoxLayout, QWidget
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
+from PyQt6.QtGui import QKeyEvent, QStandardItem, QStandardItemModel, QWheelEvent
+from PyQt6.QtWidgets import QAbstractItemView, QApplication, QListView, QVBoxLayout, QWidget
 
 from omnidesk.ui.file_browser.layout_update_guard import LayoutUpdateGuard
 
@@ -128,3 +128,106 @@ def test_guard_recovers_on_timeout_with_a_deleted_scroll_target(qtbot):
     assert scrolls == []
     guard.finish()
     assert not guard.active
+
+
+def _wheel(view: QListView, delta_y: int) -> QWheelEvent:
+    center = QPointF(view.viewport().rect().center())
+    return QWheelEvent(
+        center,
+        QPointF(view.viewport().mapToGlobal(center.toPoint())),
+        QPoint(0, 0),
+        QPoint(0, delta_y),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
+def test_resize_while_frozen_stops_freezing_but_keeps_the_scroll_pending(qtbot):
+    view, model, guard, scrolls = _guard(qtbot)
+    hint = QAbstractItemView.ScrollHint.PositionAtCenter
+    guard.begin()
+    guard.defer_scroll(model.index(50, 0), hint)
+    assert guard.freezing
+
+    old_size = view.viewport().size()
+    view.resize(view.width() + 40, view.height() + 40)
+    qtbot.waitUntil(lambda: view.viewport().size() != old_size)
+    view.viewport().grab()  # 描画イベントを確実に発生させる
+
+    assert not guard.freezing
+    assert guard.active
+    guard.finish()
+    assert scrolls == [(50, hint)]
+
+
+def test_wheel_during_freeze_is_replayed_after_the_pending_scroll(qtbot):
+    """保留中のホイールは、選択復元のスクロールより後に反映される。"""
+    view, model, guard, _ = _guard(qtbot)
+    bar = view.verticalScrollBar()
+    restored: list[int] = []
+
+    def restore(index, hint) -> None:
+        view.scrollTo(index, hint)
+        restored.append(bar.value())
+
+    guard._scroll = restore
+    guard.begin()
+    guard.defer_scroll(model.index(50, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+    frozen_value = bar.value()
+
+    QApplication.sendEvent(view.viewport(), _wheel(view, -120))
+
+    # 凍結中は、丸められているかもしれない値を基準に動かさない。
+    assert bar.value() == frozen_value
+    guard.finish()
+    # 復元した位置から、ホイールのぶんだけ下へ進んでいる。
+    assert bar.value() > restored[0]
+
+
+def test_navigation_discards_input_queued_during_freeze(qtbot):
+    view, _, guard, _ = _guard(qtbot)
+    bar = view.verticalScrollBar()
+    guard.begin()
+    before = bar.value()
+    QApplication.sendEvent(view.viewport(), _wheel(view, -120))
+    guard.finish(apply_scroll=False)
+    assert bar.value() == before
+
+
+def test_key_during_freeze_is_replayed_after_finish(qtbot):
+    view, model, guard, _ = _guard(qtbot)
+    view.setCurrentIndex(model.index(50, 0))
+    guard.begin()
+
+    QApplication.sendEvent(
+        view, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
+    )
+
+    assert view.currentIndex().row() == 50
+    guard.finish()
+    assert view.currentIndex().row() == 51
+
+
+def test_click_on_the_frozen_image_is_ignored(qtbot):
+    view, model, guard, _ = _guard(qtbot)
+    view.setCurrentIndex(model.index(50, 0))
+    guard.begin()
+    point = view.visualRect(model.index(52, 0)).center()
+
+    qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=point)
+    guard.finish()
+
+    assert view.currentIndex().row() == 50
+    # 保留が終われば、クリックは通常どおり効く。
+    qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=point)
+    assert view.currentIndex().row() == 52
+
+
+def test_destroying_the_view_while_frozen_is_safe(qtbot):
+    view, _, guard, _ = _guard(qtbot)
+    guard.begin()
+    assert guard.freezing
+    view.deleteLater()
+    qtbot.wait(200)

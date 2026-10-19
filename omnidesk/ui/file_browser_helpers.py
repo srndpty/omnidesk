@@ -155,13 +155,25 @@ def _resolve_program_candidate(
     return None, False
 
 
-def summarize_errors_for_dialog(errors: list[str], limit: int = 10) -> str:
-    """エラー一覧を、ダイアログに収まる行数へ縮める。
+def summarize_errors_for_dialog(
+    errors: list[str], limit: int = 10, *, line_chars: int = 300
+) -> str:
+    """エラー一覧を、ダイアログに収まる大きさへ縮める。
 
     数百件の対象を操作して失敗すると、1件1行でも画面に収まらないダイアログになる。
-    先頭 ``limit`` 件だけを出し、残りは件数で示す（全件はログに残っている）。
+    先頭 ``limit`` 件だけを出し、残りは件数で示す。1件が非常に長い（深いパスや
+    例外の詳細を含む）こともあるので、各行も ``line_chars`` 文字で中央を省く。
+    全件の詳細はログに残っている。
     """
+    shown = "\n".join(_ellipsize_middle(error, line_chars) for error in errors[:limit])
     if len(errors) <= limit:
-        return "\n".join(errors)
-    shown = "\n".join(errors[:limit])
+        return shown
     return f"{shown}\n…and {len(errors) - limit} more (see the log for details)"
+
+
+def _ellipsize_middle(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    head = (limit - 1) // 2
+    tail = limit - 1 - head
+    return f"{text[:head]}…{text[-tail:]}"

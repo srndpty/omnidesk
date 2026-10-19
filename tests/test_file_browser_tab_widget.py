@@ -3375,7 +3375,7 @@ def test_resort_keeps_tile_scroll_position(qtbot, tmp_path: Path) -> None:
 
 def test_delete_refuses_folder_still_being_copied(monkeypatch, qtbot, tmp_path: Path) -> None:
     """コピー中のフォルダは、削除確認を出す前に断る。"""
-    from omnidesk.ui import file_operations
+    from omnidesk.ui.path_reservations import RESERVATIONS
 
     copying = tmp_path / "album - Copy 1"
     copying.mkdir()
@@ -3396,7 +3396,7 @@ def test_delete_refuses_folder_still_being_copied(monkeypatch, qtbot, tmp_path: 
         lambda _parent, _title, message: infos.append(message),
     )
 
-    with file_operations._mark_busy([copying]):
+    with RESERVATIONS.reserve(writes=[copying]):
         tab._delete_selected()
 
     assert len(infos) == 1
