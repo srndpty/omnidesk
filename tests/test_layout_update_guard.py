@@ -1,8 +1,15 @@
 """分割レイアウト中の表示保留と、解除時のスクロールを検証する。"""
 
-from PyQt6.QtCore import QRect
-from PyQt6.QtGui import QStandardItem, QStandardItemModel
-from PyQt6.QtWidgets import QAbstractItemView, QListView
+from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, Qt, QUrl
+from PyQt6.QtGui import (
+    QDragMoveEvent,
+    QDropEvent,
+    QKeyEvent,
+    QStandardItem,
+    QStandardItemModel,
+    QWheelEvent,
+)
+from PyQt6.QtWidgets import QAbstractItemView, QApplication, QListView, QVBoxLayout, QWidget
 
 from omnidesk.ui.file_browser.layout_update_guard import LayoutUpdateGuard
 
@@ -26,38 +33,80 @@ def _guard(qtbot):
 def test_guard_waits_for_last_row_and_applies_latest_persistent_scroll(qtbot, monkeypatch):
     view, model, guard, scrolls = _guard(qtbot)
     guard.begin()
-    assert not view.updatesEnabled()
+    assert guard.active
     hint = QAbstractItemView.ScrollHint.PositionAtCenter
     assert guard.defer_scroll(model.index(40, 0), hint)
     assert guard.defer_scroll(model.index(50, 0), hint)
     model.removeRow(0)
     monkeypatch.setattr(view, "visualRect", lambda index: QRect())
     guard._try_finish()
-    assert not view.updatesEnabled()
+    assert guard.active
     assert scrolls == []
 
     monkeypatch.setattr(view, "visualRect", lambda index: QRect(0, 0, 10, 10))
     guard._try_finish()
     assert scrolls == [(49, hint)]
-    assert view.updatesEnabled()
+    assert not guard.active
     assert not guard.defer_scroll(model.index(10, 0), hint)
 
 
-def test_navigation_discards_pending_scroll_and_restores_updates(qtbot):
+def test_guard_paints_the_frozen_image_even_when_the_parent_repaints(qtbot):
+    """保留中に親が再描画しても、一覧の領域は保留開始時の画像のまま。
+
+    描画を止める方式では、親が背景を塗ったあとにビューの描画が飛ばされ、
+    一覧の領域が空に見えていた。
+    """
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    layout = QVBoxLayout(parent)
+    view = QListView(parent)
+    layout.addWidget(view)
+    model = QStandardItemModel(view)
+    for number in range(100):
+        model.appendRow(QStandardItem(f"item {number}"))
+    view.setModel(model)
+    parent.show()
+    qtbot.waitExposed(parent)
+    view.scrollTo(model.index(50, 0), QAbstractItemView.ScrollHint.PositionAtTop)
+    qtbot.wait(50)
+    viewport = view.viewport()
+
+    def viewport_area_after_parent_repaint():
+        # 親ごと描き直したときに、ビューポートの領域に何が描かれるか。
+        area = viewport.geometry().translated(view.pos())
+        return parent.grab().toImage().copy(area)
+
+    before = viewport_area_after_parent_repaint()
+    guard = LayoutUpdateGuard(view, lambda index, hint: None)
+
+    guard.begin()
+    # 表示中の行を消し、スクロール位置も動かしてから親ごと描き直させる。
+    model.removeRows(0, 60)
+    view.verticalScrollBar().setValue(0)
+    during = viewport_area_after_parent_repaint()
+
+    assert during == before
+    guard.finish(apply_scroll=False)
+    assert viewport_area_after_parent_repaint() != before
+
+
+def test_navigation_discards_pending_scroll_and_stops_freezing(qtbot):
     view, model, guard, scrolls = _guard(qtbot)
     guard.begin()
     guard.defer_scroll(model.index(50, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
     guard.finish(apply_scroll=False)
-    assert view.updatesEnabled()
+    assert not guard.active
+    assert guard._frozen == {}
     assert scrolls == []
     assert not guard._timer.isActive()
     assert not guard._deadline.isActive()
 
 
-def test_guard_does_not_enable_updates_disabled_by_another_owner(qtbot):
+def test_guard_leaves_updates_disabled_by_another_owner_alone(qtbot):
     view, _, guard, _ = _guard(qtbot)
     view.setUpdatesEnabled(False)
     guard.begin()
+    assert not guard.active
     guard.finish()
     assert not view.updatesEnabled()
 
@@ -66,12 +115,12 @@ def test_guard_ignores_top_and_hidden_views(qtbot):
     view, model, guard, _ = _guard(qtbot)
     view.verticalScrollBar().setValue(0)
     guard.begin()
-    assert view.updatesEnabled()
+    assert not guard.active
     assert not guard._timer.isActive()
     view.scrollTo(model.index(50, 0))
     view.hide()
     guard.begin()
-    assert view.updatesEnabled()
+    assert not guard.active
     assert not guard._timer.isActive()
 
 
@@ -81,7 +130,221 @@ def test_guard_recovers_on_timeout_with_a_deleted_scroll_target(qtbot):
     guard.defer_scroll(model.index(50, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
     model.removeRow(50)
     guard._expire()
-    assert view.updatesEnabled()
+    assert not guard.active
+    assert guard._frozen == {}
     assert scrolls == []
     guard.finish()
-    assert view.updatesEnabled()
+    assert not guard.active
+
+
+def _wheel(view: QListView, delta_y: int) -> QWheelEvent:
+    center = QPointF(view.viewport().rect().center())
+    return QWheelEvent(
+        center,
+        QPointF(view.viewport().mapToGlobal(center.toPoint())),
+        QPoint(0, 0),
+        QPoint(0, delta_y),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
+def test_resize_while_frozen_stops_freezing_but_keeps_the_scroll_pending(qtbot):
+    view, model, guard, scrolls = _guard(qtbot)
+    hint = QAbstractItemView.ScrollHint.PositionAtCenter
+    guard.begin()
+    guard.defer_scroll(model.index(50, 0), hint)
+    assert guard.freezing
+
+    old_size = view.viewport().size()
+    view.resize(view.width() + 40, view.height() + 40)
+    qtbot.waitUntil(lambda: view.viewport().size() != old_size)
+    view.viewport().grab()  # 描画イベントを確実に発生させる
+
+    assert not guard.freezing
+    assert guard.active
+    # 凍結を解いても、入力は保留が終わるまで溜める（順序を入れ替えない）。
+    bar = view.verticalScrollBar()
+    before = bar.value()
+    QApplication.sendEvent(view.viewport(), _wheel(view, -120))
+    assert bar.value() == before
+    assert len(guard._queued_input) == 1
+    guard.finish()
+    assert scrolls == [(50, hint)]
+    assert guard._queued_input == []
+
+
+def test_wheel_during_freeze_is_replayed_after_the_pending_scroll(qtbot):
+    """保留中のホイールは、選択復元のスクロールより後に反映される。"""
+    view, model, guard, _ = _guard(qtbot)
+    bar = view.verticalScrollBar()
+    restored: list[int] = []
+
+    def restore(index, hint) -> None:
+        view.scrollTo(index, hint)
+        restored.append(bar.value())
+
+    guard._scroll = restore
+    guard.begin()
+    guard.defer_scroll(model.index(50, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+    frozen_value = bar.value()
+
+    QApplication.sendEvent(view.viewport(), _wheel(view, -120))
+
+    # 凍結中は、丸められているかもしれない値を基準に動かさない。
+    assert bar.value() == frozen_value
+    guard.finish()
+    # 復元した位置から、ホイールのぶんだけ下へ進んでいる。
+    assert bar.value() > restored[0]
+
+
+def test_navigation_discards_input_queued_during_freeze(qtbot):
+    view, _, guard, _ = _guard(qtbot)
+    bar = view.verticalScrollBar()
+    guard.begin()
+    before = bar.value()
+    QApplication.sendEvent(view.viewport(), _wheel(view, -120))
+    guard.finish(apply_scroll=False)
+    assert bar.value() == before
+
+
+def test_key_during_freeze_is_replayed_after_finish(qtbot):
+    view, model, guard, _ = _guard(qtbot)
+    view.setCurrentIndex(model.index(50, 0))
+    guard.begin()
+
+    QApplication.sendEvent(
+        view, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
+    )
+
+    assert view.currentIndex().row() == 50
+    guard.finish()
+    assert view.currentIndex().row() == 51
+
+
+def test_click_on_the_frozen_image_is_ignored(qtbot):
+    view, model, guard, _ = _guard(qtbot)
+    view.setCurrentIndex(model.index(50, 0))
+    guard.begin()
+    point = view.visualRect(model.index(52, 0)).center()
+
+    qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=point)
+    guard.finish()
+
+    assert view.currentIndex().row() == 50
+    # 保留が終われば、クリックは通常どおり効く。
+    qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=point)
+    assert view.currentIndex().row() == 52
+
+
+def test_release_after_finish_is_dropped_when_its_press_was_dropped(qtbot):
+    """押下→保留終了→離しの順でも、押下のない離しをビューへ渡さない。"""
+    view, model, guard, _ = _guard(qtbot)
+    view.setCurrentIndex(model.index(50, 0))
+    viewport = view.viewport()
+    releases: list[Qt.MouseButton] = []
+
+    class ReleaseObserver(QObject):
+        def eventFilter(self, watched, event) -> bool:  # noqa: N802
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                releases.append(event.button())
+            return False
+
+    observer = ReleaseObserver(viewport)
+    viewport.installEventFilter(observer)
+    point = view.visualRect(model.index(52, 0)).center()
+    guard.begin()
+
+    qtbot.mousePress(viewport, Qt.MouseButton.LeftButton, pos=point)
+    guard.finish()
+    # 押していないボタンの離しは、そのまま通す。
+    qtbot.mouseRelease(viewport, Qt.MouseButton.RightButton, pos=point)
+    qtbot.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=point)
+
+    assert releases == [Qt.MouseButton.RightButton]
+    assert view.currentIndex().row() == 50
+    # 対になる離しを捨てたあとは、通常どおりクリックが効く。
+    qtbot.mouseClick(viewport, Qt.MouseButton.LeftButton, pos=point)
+    assert releases[-1] == Qt.MouseButton.LeftButton
+    assert view.currentIndex().row() == 52
+    assert guard._swallowed_buttons == {}
+
+
+def test_destroying_the_view_while_frozen_is_safe(qtbot):
+    view, _, guard, _ = _guard(qtbot)
+    guard.begin()
+    assert guard.freezing
+    view.deleteLater()
+    qtbot.wait(200)
+
+
+def test_drag_move_and_drop_are_refused_during_the_hold(qtbot):
+    """保留中のドロップは、見えているのとは別の項目に落ち得るので断る。
+
+    Qt は実際のドラッグ中でないと、作ったドラッグ系イベントをウィジェットへ
+    配送しない。そのためイベントフィルタの判定を直接確かめる（実際のドラッグでは
+    フィルタは通常どおり呼ばれる）。
+    """
+    view, model, _, _ = _guard(qtbot)
+    refused: list[bool] = []
+    guard = LayoutUpdateGuard(
+        view, lambda index, hint: None, drop_refused=lambda: refused.append(True)
+    )
+    viewport = view.viewport()
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile("C:/dropped.txt")])
+    point = QPointF(view.visualRect(model.index(52, 0)).center())
+
+    def drag_move() -> QDragMoveEvent:
+        event = QDragMoveEvent(
+            point.toPoint(),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        event.accept()
+        return event
+
+    def drop() -> QDropEvent:
+        event = QDropEvent(
+            point,
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        event.accept()
+        return event
+
+    guard.begin()
+    move_event = drag_move()
+    drop_event = drop()
+
+    # ビューへ渡さず（True）、受け付けない（ignore）。
+    assert guard.eventFilter(viewport, move_event) is True
+    assert not move_event.isAccepted()
+    assert guard.eventFilter(viewport, drop_event) is True
+    assert not drop_event.isAccepted()
+    # ドロップを断ったら、ドラッグ中の表示を片付けるよう知らせる。
+    assert refused == [True]
+
+    guard.finish()
+    after_move = drag_move()
+    after_drop = drop()
+    assert guard.eventFilter(viewport, after_move) is False
+    assert guard.eventFilter(viewport, after_drop) is False
+    assert after_move.isAccepted() and after_drop.isAccepted()
+    assert refused == [True]
+
+
+def test_tile_view_clears_drag_state_when_a_drop_is_refused(qtbot, tmp_path):
+    """タイル表示は、断られたドロップのあとにドロップ先の強調を片付ける。"""
+    from omnidesk.ui.file_browser_tab import FileBrowserTab
+
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    view = tab._tile_view
+    assert view._layout_update_guard._drop_refused == view._reset_drag_state

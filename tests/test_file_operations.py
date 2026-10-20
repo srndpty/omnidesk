@@ -580,3 +580,21 @@ def test_individual_retry_after_a_failed_batch_can_be_cancelled_midway(
     assert result.cancelled is True
     assert len(deleted) == 2
     assert paths[-1].exists()
+
+
+def test_copytree_error_is_summarized_for_the_dialog(tmp_path: Path) -> None:
+    src = tmp_path / "album"
+    target = tmp_path / "album - Copy 1"
+    failures = [
+        (str(src / f"{n}.gif"), str(target / f"{n}.gif"), f"[Errno 2] missing {n}.gif")
+        for n in range(150)
+    ]
+
+    message = file_operations.describe_copy_error(
+        src, target, file_operations.shutil.Error(failures)
+    )
+
+    assert message == (f"{src} -> {target}: 150 item(s) failed (e.g. [Errno 2] missing 0.gif)")
+    assert file_operations.describe_copy_error(src, target, OSError("disk full")).endswith(
+        "disk full"
+    )

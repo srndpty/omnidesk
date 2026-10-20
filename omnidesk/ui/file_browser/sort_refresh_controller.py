@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QHeaderView
 
 from ..file_browser_navigation import refresh_sort_action, same_navigation_path
 from .sort_model import SortedFileSystemModel
-from .views import _FileTileView, _FileTreeView
+from .views import _FileTreeView
 
 
 class SortRefreshController:
@@ -23,14 +23,12 @@ class SortRefreshController:
         model: SortedFileSystemModel,
         header: QHeaderView,
         tree_view: _FileTreeView,
-        tile_view: _FileTileView,
         selected_path: Callable[[], Path | None],
         select_path: Callable[[Path], bool],
     ) -> None:
         self._model = model
         self._header = header
         self._tree_view = tree_view
-        self._tile_view = tile_view
         self._selected_path = selected_path
         self._select_path = select_path
         self._active = False
@@ -64,8 +62,14 @@ class SortRefreshController:
             column = 0
         order = self._header.sortIndicatorOrder()
         _ = reason
+        # タイルの再レイアウトはここで要求しない。並びが実際に変われば、プロキシが
+        # ``layoutChanged`` を出してビューが自分でレイアウトし直す（その前の
+        # ``layoutAboutToBeChanged`` で ``LayoutUpdateGuard`` が描画も保留する）。
+        # 変わらなければ親クラスの ``sort()`` は何もしないので、やり直す理由がない。
+        # 以前は無条件に ``scheduleDelayedItemsLayout()`` を呼んでいたため、削除後の
+        # refresh のたびに保留なしの分割レイアウトが走り、スクロール位置が丸められた
+        # 途中の画面（中央付近なら空の領域）が一瞬描画されていた。
         self._model.sort(column, order)
-        self._tile_view.scheduleDelayedItemsLayout()
 
     def schedule_refresh_sort(self) -> None:
         if not self._active or self._retries <= 0:

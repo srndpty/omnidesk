@@ -216,3 +216,24 @@ def test_format_browser_status_includes_selection_summary(tmp_path: Path) -> Non
         == f"{tmp_path} | 2個選択中（ファイル合計 1.50 KB） | "
         "4個の項目（フォルダ1個/ファイル3個）"
     )
+
+
+def test_summarize_errors_for_dialog_limits_lines() -> None:
+    from omnidesk.ui.file_browser_helpers import summarize_errors_for_dialog
+
+    assert summarize_errors_for_dialog(["a", "b"]) == "a\nb"
+    summary = summarize_errors_for_dialog([f"e{n}" for n in range(25)], limit=3)
+    assert summary == "e0\ne1\ne2\n…and 22 more (see the log for details)"
+
+
+def test_summarize_errors_for_dialog_shortens_each_long_line() -> None:
+    from omnidesk.ui.file_browser_helpers import summarize_errors_for_dialog
+
+    long_error = "D:\\" + "a" * 500 + "\\file.gif: [Errno 2] No such file"
+    summary = summarize_errors_for_dialog([long_error, "short"], line_chars=40)
+    first, second = summary.split("\n")
+    assert len(first) == 40
+    assert first.startswith("D:\\aaa")
+    assert first.endswith("No such file")
+    assert "…" in first
+    assert second == "short"

@@ -22,7 +22,6 @@ def test_sort_refresh_controller_stops_when_user_selection_changed(
         model=mocker.Mock(),
         header=mocker.Mock(),
         tree_view=mocker.Mock(),
-        tile_view=mocker.Mock(),
         selected_path=lambda: current,
         select_path=mocker.Mock(return_value=True),
     )
@@ -46,7 +45,6 @@ def test_sort_refresh_controller_reselects_name_column_for_same_mode(mocker, qtb
         model=model,
         header=header,
         tree_view=tree_view,
-        tile_view=mocker.Mock(),
         selected_path=lambda: None,
         select_path=mocker.Mock(return_value=True),
     )
@@ -79,7 +77,6 @@ def test_sort_refresh_controller_does_not_resort_on_selection_retry(
         model=model,
         header=header,
         tree_view=mocker.Mock(),
-        tile_view=mocker.Mock(),
         selected_path=lambda: None,
         # 行がまだ現れておらず、復元に失敗し続ける状況を再現する。
         select_path=mocker.Mock(return_value=False),
@@ -105,7 +102,6 @@ def test_sort_refresh_controller_sorts_once_on_explicit_request(mocker, qtbot) -
         model=model,
         header=header,
         tree_view=mocker.Mock(),
-        tile_view=mocker.Mock(),
         selected_path=lambda: None,
         select_path=mocker.Mock(return_value=False),
     )

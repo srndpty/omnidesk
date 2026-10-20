@@ -80,6 +80,7 @@ fail_under = 70
 # CIのようにvenvを使わない環境では、通常のPython環境の探索も引き続き行われる。
 extraPaths = [".venv/Lib/site-packages"]
 include = [
+    "omnidesk/ui/path_reservations.py",
     "omnidesk/ui/file_browser/actions.py",
     "omnidesk/ui/file_browser/address_bar_controller.py",
     "omnidesk/ui/file_browser/clipboard.py",

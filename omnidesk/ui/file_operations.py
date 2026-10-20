@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -13,6 +14,16 @@ from typing import Literal
 from send2trash import send2trash
 
 from omnidesk.utils.config import DEFAULT_CONFIG_DIR
+
+from .path_reservations import (
+    BUSY_PATH_MESSAGE as BUSY_PATH_MESSAGE,
+)
+from .path_reservations import (
+    RESERVATIONS,
+    BusyPathError,
+    is_same_or_descendant_text,
+    normalise_path_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +46,31 @@ class FileOperationRequest:
     sources: list[Path]
     destination: Path | None
     mode: FileOperationMode
+
+
+def busy_operation_path(path: Path) -> Path | None:
+    """``path`` を変更する操作の妨げになる、実行中の操作の予約があれば返す。
+
+    UIが確認ダイアログを出す前の目安。実際に拒否するかは、各操作の開始時に
+    予約が取れるかで改めて決まる（:mod:`omnidesk.ui.path_reservations`）。
+    """
+    return RESERVATIONS.busy_path(path, "write")
+
+
+def describe_copy_error(src: Path, target: Path, exc: BaseException) -> str:
+    """コピー・移動の失敗を、ダイアログに出せる長さの1行にまとめる。
+
+    ``shutil.copytree`` は失敗したファイルを全件 ``shutil.Error`` に詰めて投げる。
+    そのまま文字列にすると数百件ぶんのパスがダイアログに並ぶので、件数と最初の
+    1件だけに縮める（全件はログに残る）。
+    """
+    if isinstance(exc, shutil.Error) and exc.args and isinstance(exc.args[0], list):
+        failures = exc.args[0]
+        if failures:
+            first = failures[0]
+            reason = first[2] if isinstance(first, tuple) and len(first) == 3 else first
+            return f"{src} -> {target}: {len(failures)} item(s) failed (e.g. {reason})"
+    return f"{src} -> {target}: {exc}"
 
 
 def is_dangerous_operation_path(path: Path) -> bool:
@@ -95,20 +131,39 @@ def delete_paths_with_result(
     changed_dirs: list[Path] = []
     logger.info("Deleting %d path(s)", len(paths))
 
-    targets: list[Path] = []
-    for path in paths:
-        if is_cancelled is not None and is_cancelled():
-            return FileOperationResult(errors, changed_dirs, cancelled=True)
-        if is_dangerous_operation_path(path):
-            logger.error("Refusing to delete dangerous path: %s", path)
-            errors.append(f"Refusing to delete dangerous path: {path}")
-            continue
-        if not path.exists() and not path.is_symlink():
-            logger.warning("Path does not exist, cannot move to trash: %s", path)
-            errors.append(f"Missing: {path}")
-            continue
-        targets.append(path)
+    # 対象ごとに予約し、ゴミ箱へ送り終えるまで保持する。予約できなかった
+    # （実行中の別の操作と重なる）対象だけを外し、残りは削除する。
+    with ExitStack() as reservations:
+        targets: list[Path] = []
+        for path in paths:
+            if is_cancelled is not None and is_cancelled():
+                return FileOperationResult(errors, changed_dirs, cancelled=True)
+            if is_dangerous_operation_path(path):
+                logger.error("Refusing to delete dangerous path: %s", path)
+                errors.append(f"Refusing to delete dangerous path: {path}")
+                continue
+            if not path.exists() and not path.is_symlink():
+                logger.warning("Path does not exist, cannot move to trash: %s", path)
+                errors.append(f"Missing: {path}")
+                continue
+            try:
+                reservations.enter_context(RESERVATIONS.reserve(writes=[path]))
+            except BusyPathError as exc:
+                logger.warning("実行中の操作が使っているため削除を拒否しました: %s", path)
+                errors.append(str(exc))
+                continue
+            targets.append(path)
 
+        return _move_targets_to_trash(targets, errors, changed_dirs, is_cancelled=is_cancelled)
+
+
+def _move_targets_to_trash(
+    targets: list[Path],
+    errors: list[str],
+    changed_dirs: list[Path],
+    *,
+    is_cancelled: Callable[[], bool] | None,
+) -> FileOperationResult:
     if not targets:
         return FileOperationResult(errors, changed_dirs)
 
@@ -234,26 +289,65 @@ def perform_copy_or_move_with_result(
     for src in operation_sources:
         if is_cancelled is not None and is_cancelled():
             return FileOperationResult(errors, changed_dirs, cancelled=True)
-        try:
-            target = resolve_destination(dest_dir, src.name, move)
-        except ValueError as exc:
-            logger.warning("Could not resolve destination for %s into %s: %s", src, dest_dir, exc)
-            errors.append(str(exc))
-            continue
-        try:
-            if move:
-                shutil.move(str(src), str(target))
-                changed_dirs.extend([dest_dir, src.parent])
-            elif src.is_dir():
-                shutil.copytree(src, target)
-                changed_dirs.append(dest_dir)
-            else:
-                shutil.copy2(src, target)
-                changed_dirs.append(dest_dir)
-        except (OSError, shutil.Error) as exc:  # pragma: no cover - filesystem dependent
-            logger.exception("Failed to copy/move %s to %s", src, target)
-            errors.append(f"{src} -> {target}: {exc}")
+        with ExitStack() as reservation:
+            try:
+                target = reservation.enter_context(_reserved_target(src, dest_dir, move=move))
+            except BusyPathError as exc:
+                # 書き込み途中のものをコピーすると中途半端な複製ができ、移動すると
+                # 書き込み中の操作が失敗する。書き込み中のフォルダの配下へ書くのも同じ。
+                logger.warning("実行中の操作と重なるためコピー・移動を拒否しました: %s", exc.path)
+                errors.append(str(exc))
+                continue
+            except ValueError as exc:
+                logger.warning(
+                    "Could not resolve destination for %s into %s: %s", src, dest_dir, exc
+                )
+                errors.append(str(exc))
+                continue
+            try:
+                if move:
+                    shutil.move(str(src), str(target))
+                    changed_dirs.extend([dest_dir, src.parent])
+                elif src.is_dir():
+                    shutil.copytree(src, target)
+                    changed_dirs.append(dest_dir)
+                else:
+                    shutil.copy2(src, target)
+                    changed_dirs.append(dest_dir)
+            except (OSError, shutil.Error) as exc:  # pragma: no cover - filesystem dependent
+                logger.exception("Failed to copy/move %s to %s", src, target)
+                errors.append(describe_copy_error(src, target, exc))
     return FileOperationResult(errors, changed_dirs)
+
+
+@contextmanager
+def _reserved_target(src: Path, dest_dir: Path, *, move: bool) -> Generator[Path]:
+    """書き込み先を決めて予約し、ブロックの間だけ保持する。
+
+    名前の決定と予約を同じロック区間で行うので、同時に走る別の操作と同じ
+    書き込み先を選ぶことはない。移動は移動元も書き換えるので両方を予約する。
+    """
+    if move:
+        target = dest_dir / src.name
+        if target.exists():
+            raise ValueError(f"Destination already has {src.name}")
+        with RESERVATIONS.reserve(writes=[src, target]):
+            yield target
+        return
+    with ExitStack() as stack:
+        try:
+            target = stack.enter_context(
+                RESERVATIONS.reserve_new_child(
+                    _destination_candidates(dest_dir, src.name),
+                    exists=Path.exists,
+                    reads=[src],
+                )
+            )
+        except ValueError:
+            raise ValueError(
+                f"Unable to resolve destination for {src.name}: too many copies"
+            ) from None
+        yield target
 
 
 def execute_file_operation(
@@ -296,7 +390,7 @@ def validate_copy_or_move(src: Path, dest_dir: Path, *, move: bool) -> str | Non
 
 
 def _same_path(left: Path, right: Path) -> bool:
-    return _normalise_path_text(left) == _normalise_path_text(right)
+    return normalise_path_text(left) == normalise_path_text(right)
 
 
 def _is_relative_to_path(path: Path, parent: Path) -> bool:
@@ -304,22 +398,7 @@ def _is_relative_to_path(path: Path, parent: Path) -> bool:
         path.relative_to(parent)
         return True
     except ValueError:
-        path_text = _normalise_path_text(path)
-        parent_text = _normalise_path_text(parent)
-        return path_text == parent_text or path_text.startswith(
-            parent_text + _path_text_separator()
-        )
-
-
-def _normalise_path_text(path: Path) -> str:
-    separator = _path_text_separator()
-    return (
-        os.path.normcase(str(path)).replace("/", separator).replace("\\", separator).rstrip("\\/")
-    )
-
-
-def _path_text_separator() -> str:
-    return "\\" if os.name == "nt" else os.sep
+        return is_same_or_descendant_text(normalise_path_text(path), normalise_path_text(parent))
 
 
 _COPY_NUMBER_LIMIT = 9999
@@ -332,13 +411,18 @@ def resolve_destination(dest_dir: Path, name: str, move: bool) -> Path:
         return target
     if move:
         raise ValueError(f"Destination already has {name}")
-    stem = target.stem
-    suffix = target.suffix
-    for n in range(1, _COPY_NUMBER_LIMIT + 1):
-        candidate = dest_dir / f"{stem} - Copy {n}{suffix}"
+    for candidate in _destination_candidates(dest_dir, name):
         if not candidate.exists():
             return candidate
     raise ValueError(f"Unable to resolve destination for {name}: too many copies")
+
+
+def _destination_candidates(dest_dir: Path, name: str) -> Iterator[Path]:
+    """``name`` そのもの、続いて ``name - Copy N`` を順に返す。"""
+    target = dest_dir / name
+    yield target
+    for n in range(1, _COPY_NUMBER_LIMIT + 1):
+        yield dest_dir / f"{target.stem} - Copy {n}{target.suffix}"
 
 
 # Filesystem name-length limits used to keep renames within bounds. These are
@@ -420,7 +504,11 @@ def rename_path(original: Path, new_name: str) -> tuple[Path | None, str | None]
     if target.exists():
         return None, f"{target} already exists."
     try:
-        original.rename(target)
+        with RESERVATIONS.reserve(writes=[original, target]):
+            original.rename(target)
+    except BusyPathError as exc:
+        logger.warning("実行中の操作が使っているため名前の変更を拒否しました: %s", original)
+        return None, str(exc)
     except Exception as exc:  # pragma: no cover - filesystem dependent
         logger.exception("Failed to rename %s to %s", original, target)
         return None, str(exc)
@@ -432,13 +520,7 @@ def create_file(dest_dir: Path, name: str) -> tuple[Path | None, str | None]:
     if not is_plain_child_name(name):
         logger.warning("Rejected invalid file name %r in %s", name, dest_dir)
         return None, "Name must not contain path separators."
-    target = resolve_destination(dest_dir, name, move=False)
-    try:
-        target.touch(exist_ok=False)
-    except Exception as exc:  # pragma: no cover - filesystem dependent
-        logger.exception("Failed to create file: %s", target)
-        return None, str(exc)
-    return target, None
+    return _create_new_entry(dest_dir, name, lambda target: target.touch(exist_ok=False))
 
 
 def create_folder(dest_dir: Path, name: str) -> tuple[Path | None, str | None]:
@@ -446,10 +528,32 @@ def create_folder(dest_dir: Path, name: str) -> tuple[Path | None, str | None]:
     if not is_plain_child_name(name):
         logger.warning("Rejected invalid folder name %r in %s", name, dest_dir)
         return None, "Name must not contain path separators."
-    target = resolve_destination(dest_dir, name, move=False)
+    return _create_new_entry(
+        dest_dir, name, lambda target: target.mkdir(parents=True, exist_ok=False)
+    )
+
+
+def _create_new_entry(
+    dest_dir: Path, name: str, create: Callable[[Path], None]
+) -> tuple[Path | None, str | None]:
+    """名前を決めて書き込み予約を取り、その間に新しいファイル／フォルダーを作る。
+
+    コピー中のフォルダーは完了前に一覧へ現れるので、その中へ入って新規作成できて
+    しまう。予約を取らずに作ると、あとからコピーされる同名ファイルに上書きされ得る。
+    コピー先と同じく、名前の決定と予約を同じロック区間で行う。
+    """
     try:
-        target.mkdir(parents=True, exist_ok=False)
-    except Exception as exc:  # pragma: no cover - filesystem dependent
-        logger.exception("Failed to create folder: %s", target)
+        with RESERVATIONS.reserve_new_child(
+            _destination_candidates(dest_dir, name), exists=Path.exists
+        ) as target:
+            try:
+                create(target)
+            except Exception as exc:  # pragma: no cover - filesystem dependent
+                logger.exception("Failed to create: %s", target)
+                return None, str(exc)
+            return target, None
+    except BusyPathError as exc:
+        logger.warning("実行中の操作が使っているため新規作成を拒否しました: %s", dest_dir)
         return None, str(exc)
-    return target, None
+    except ValueError:
+        return None, f"Unable to resolve destination for {name}: too many copies"

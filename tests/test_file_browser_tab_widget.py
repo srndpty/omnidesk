@@ -3253,7 +3253,8 @@ def test_folder_deletion_only_paints_the_settled_center_position(qtbot, tmp_path
 
     class PaintObserver(QObject):
         def eventFilter(self, watched, event) -> bool:  # noqa: N802
-            if event.type() == QEvent.Type.Paint:
+            # 保留中の描画は、保留を始めたときの画像で差し替えられる。
+            if event.type() == QEvent.Type.Paint and not view._layout_update_guard.active:
                 painted_positions.append(bar.value())
             return False
 
@@ -3261,12 +3262,12 @@ def test_folder_deletion_only_paints_the_settled_center_position(qtbot, tmp_path
     view.viewport().installEventFilter(observer)
     deleted.rmdir()
     tab._model.hide_removed_paths([deleted])
-    assert not view.updatesEnabled()
+    assert view._layout_update_guard.active
     tab._handle_file_operation_finished(
         FileOperationResult([], [tmp_path]), select_after=[replacement]
     )
     _wait_for_directory_load(qtbot, tab, tmp_path)
-    qtbot.waitUntil(view.updatesEnabled, timeout=3000)
+    qtbot.waitUntil(lambda: not view._layout_update_guard.active, timeout=3000)
     qtbot.wait(800)
 
     assert tab._selected_paths() == [replacement]
@@ -3275,4 +3276,173 @@ def test_folder_deletion_only_paints_the_settled_center_position(qtbot, tmp_path
     assert painted_positions
     # 最終位置だけを調べると、途中で先頭へ飛んで戻る不具合を見逃す。
     assert max(painted_positions) - min(painted_positions) <= 2
+    _quiesce(qtbot, tab)
+
+
+def test_folder_deletion_after_watcher_rescan_does_not_paint_partial_layout(
+    qtbot, tmp_path: Path
+) -> None:
+    """監視の再走査が先に行を消した後の refresh で、途中のレイアウトを描画しない。
+
+    ゴミ箱への移動に時間がかかると、ジョブ完了より先に再走査が行を消す。
+    そのあとの refresh が無条件にタイルを再レイアウトさせていたため、保留なしの
+    分割レイアウトが走り、スクロール位置が丸められた途中の画面が一瞬描画されていた。
+    """
+    for number in range(400):
+        (tmp_path / f"folder{number:03d}").mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    view = tab._tile_view
+    # 多数のバッチに分けて、途中で描画イベントが入る条件を作る。
+    view.setBatchSize(16)
+    deleted = tmp_path / "folder200"
+    replacement = tmp_path / "folder199"
+    assert tab._select_path(deleted, QAbstractItemView.ScrollHint.PositionAtCenter)
+    qtbot.wait(800)
+    bar = view.verticalScrollBar()
+    assert bar is not None and bar.value() > 0
+
+    # ジョブ完了より先に、監視の再走査で行が消える。
+    deleted.rmdir()
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    qtbot.waitUntil(lambda: not view._layout_update_guard.active, timeout=3000)
+    qtbot.wait(300)
+    settled_before_finish = bar.value()
+    painted_positions: list[int] = []
+
+    class PaintObserver(QObject):
+        def eventFilter(self, watched, event) -> bool:  # noqa: N802
+            # 保留中の描画は、保留を始めたときの画像で差し替えられる。
+            if event.type() == QEvent.Type.Paint and not view._layout_update_guard.active:
+                painted_positions.append(bar.value())
+            return False
+
+    observer = PaintObserver(view)
+    view.viewport().installEventFilter(observer)
+    tab._model.hide_removed_paths([deleted])
+    tab._handle_file_operation_finished(
+        FileOperationResult([], [tmp_path]), select_after=[replacement]
+    )
+    qtbot.waitUntil(lambda: not view._layout_update_guard.active, timeout=3000)
+    qtbot.wait(800)
+
+    assert tab._selected_paths() == [replacement]
+    settled_after_finish = bar.value()
+    # 描画されてよいのは、完了前の位置と、代わりの項目を中央へ寄せた最終位置だけ。
+    assert all(
+        abs(value - settled_before_finish) <= 2 or abs(value - settled_after_finish) <= 2
+        for value in painted_positions
+    ), painted_positions
+    _quiesce(qtbot, tab)
+
+
+def test_resort_keeps_tile_scroll_position(qtbot, tmp_path: Path) -> None:
+    """並べ替え直し（``layoutChanged``）で、タイルのスクロール位置が先頭へ飛ばない。
+
+    コピー中のフォルダは再走査のたびに更新日時が変わり、動的ソートが並べ替え直す。
+    そのたびに分割レイアウトでスクロール値が丸められ、戻らないままになっていた。
+    """
+    for number in range(400):
+        (tmp_path / f"folder{number:03d}").mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    view = tab._tile_view
+    view.setBatchSize(16)
+    assert tab._select_path(tmp_path / "folder200", QAbstractItemView.ScrollHint.PositionAtCenter)
+    qtbot.wait(800)
+    bar = view.verticalScrollBar()
+    assert bar is not None
+    before = bar.value()
+    assert before > 0
+
+    tab._model.invalidate()
+    qtbot.waitUntil(lambda: not view._layout_update_guard.active, timeout=3000)
+    qtbot.wait(300)
+
+    assert abs(bar.value() - before) <= 2
+    _quiesce(qtbot, tab)
+
+
+def test_delete_refuses_folder_still_being_copied(monkeypatch, qtbot, tmp_path: Path) -> None:
+    """コピー中のフォルダは、削除確認を出す前に断る。"""
+    from omnidesk.ui.path_reservations import RESERVATIONS
+
+    copying = tmp_path / "album - Copy 1"
+    copying.mkdir()
+    infos: list[str] = []
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(tab, "_selected_paths", lambda: [copying])
+
+    def unexpected_question(*_args, **_kwargs):
+        raise AssertionError("削除確認を出してはいけない")
+
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.question",
+        unexpected_question,
+    )
+    monkeypatch.setattr(
+        "omnidesk.ui.file_browser.operations_controller.QMessageBox.information",
+        lambda _parent, _title, message: infos.append(message),
+    )
+
+    with RESERVATIONS.reserve(writes=[copying]):
+        tab._delete_selected()
+
+    assert len(infos) == 1
+    assert copying.name in infos[0]
+    assert tab._file_operation_jobs == []
+    assert copying.exists()
+
+
+def test_inserted_folder_does_not_paint_partial_layout(qtbot, tmp_path: Path) -> None:
+    """行が増えたときも、丸められた途中の位置（先頭付近）を描画しない。
+
+    貼り付けたフォルダはコピーの完了より先に一覧へ現れる。その再レイアウトを
+    保留していなかったため、先頭付近の画面がしばらく見えていた。
+    """
+    for number in range(400):
+        (tmp_path / f"folder{number:03d}").mkdir()
+    tab = FileBrowserTab()
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.navigate_to(tmp_path)
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    view = tab._tile_view
+    view.setBatchSize(16)
+    assert tab._select_path(tmp_path / "folder200", QAbstractItemView.ScrollHint.PositionAtCenter)
+    qtbot.wait(800)
+    bar = view.verticalScrollBar()
+    assert bar is not None
+    before = bar.value()
+    assert before > 0
+    painted_positions: list[int] = []
+
+    class PaintObserver(QObject):
+        def eventFilter(self, watched, event) -> bool:  # noqa: N802
+            if event.type() == QEvent.Type.Paint and not view._layout_update_guard.active:
+                painted_positions.append(bar.value())
+            return False
+
+    observer = PaintObserver(view)
+    view.viewport().installEventFilter(observer)
+    (tmp_path / "folder200 - Copy 1").mkdir()
+    _wait_for_directory_load(qtbot, tab, tmp_path)
+    qtbot.waitUntil(lambda: not view._layout_update_guard.active, timeout=3000)
+    qtbot.wait(300)
+
+    assert abs(bar.value() - before) <= 2
+    assert all(abs(value - before) <= 2 for value in painted_positions), painted_positions
     _quiesce(qtbot, tab)
